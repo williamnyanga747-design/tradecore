@@ -1,0 +1,28 @@
+{
+  "name": "GlobalTradeCore - Online Marketplace Tanzania",
+  "short_name": "TradeCore",
+  "description": "Buy wholesale & retail goods from verified Tanzanian companies. Fair prices with delivery across all 26 regions.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f766e",
+  "theme_color": "#0f766e",
+  "lang": "en",
+  "categories": ["shopping", "business"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

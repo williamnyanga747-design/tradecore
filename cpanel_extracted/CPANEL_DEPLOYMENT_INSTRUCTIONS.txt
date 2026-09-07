@@ -1,0 +1,162 @@
+================================================================================
+  TRADECORE UNIFIED ERP & POS - CPANEL PRODUCTION DEPLOYMENT GUIDE
+  Target Domain: https://tanzaniatradecore.co.tz
+================================================================================
+
+This deployment ZIP package (cpanel_tradecore_deploy.zip) contains everything required
+to host TradeCore ERP & POS on your cPanel web hosting.
+
+--------------------------------------------------------------------------------
+STEP 1: IMPORT THE MYSQL DATABASE SCHEMA IN CPANEL
+--------------------------------------------------------------------------------
+1. Log into your cPanel dashboard (e.g. https://tanzaniatradecore.co.tz:2083 or via host).
+2. Open "MySQL Databases" under the Databases section.
+3. Ensure your database and user exist:
+   - Database Name: tanzatrade_tradecore_erp
+   - DB Username:   tanzatrade_tanzatrade
+   - DB Password:   123456789@Tanzatrade
+4. Make sure user `tanzatrade_tanzatrade` has "ALL PRIVILEGES" assigned on database `tanzatrade_tradecore_erp`.
+5. Open "phpMyAdmin" in cPanel.
+6. Select database `tanzatrade_tradecore_erp` on the left sidebar.
+7. Click the "Import" tab at the top.
+8. Choose `database.sql` from this package and click "Go".
+   (This creates `tradecore_system_state`, `user_sessions`, and `audit_trails` tables).
+
+--------------------------------------------------------------------------------
+STEP 2: UPLOAD & EXTRACT FILES IN CPANEL FILE MANAGER
+--------------------------------------------------------------------------------
+1. In cPanel, open "File Manager".
+2. Navigate to your domain's document root folder:
+   - For primary domain: `public_html`
+   - For subdomain/addon domain: `public_html/tanzaniatradecore.co.tz`
+3. Click "Upload" at the top menu and select `cpanel_tradecore_deploy.zip`.
+4. Once uploaded (100% green bar), go back to File Manager.
+5. Select `cpanel_tradecore_deploy.zip` and click "Extract".
+6. Ensure files extract into `public_html/` (or your domain document root).
+7. Make sure hidden files are visible (cPanel File Manager Settings -> "Show Hidden Files (.dotfiles)").
+8. Verify that `.htaccess` is present in `public_html`.
+
+--------------------------------------------------------------------------------
+STEP 3: SET THE GEMINI AI API KEY (REQUIRED FOR AI ASSIST & COPILOT)
+--------------------------------------------------------------------------------
+1. Get a free API key from https://aistudio.google.com/apikey
+2. Set it one of two ways:
+
+   Option A - cPanel Environment Variables:
+      Use the "Environment Variables" tool in cPanel (under "Advanced",
+      if available) and add:
+         Variable Name:  GEMINI_API_KEY
+         Variable Value: (your key)
+
+   Option B - .env file (recommended):
+      Upload a file named `.env` into your domain document root
+      (public_html) with this single line:
+         GEMINI_API_KEY=your_key_here
+      The API automatically looks for `.env` in public_html, in the
+      `api/` folder, and next to api.php.
+
+3. AI features work even without a key: the system falls back to built-in
+   local analysis logic. To use the full Gemini-powered AI Assistant and
+   Executive Copilot, complete this step.
+
+--------------------------------------------------------------------------------
+STEP 3B: CONFIGURE SMTP FOR THE "FORGOT PASSWORD" EMAIL (RECOMMENDED)
+------------------------------------------------------------------------------
+The Forgot Password feature emails a secure one-time reset link to the user.
+If SMTP is NOT configured, the reset token is shown on screen for testing only.
+
+Add these lines to your `.env` file in the domain document root (public_html):
+
+   MAIL_HOST=smtp.example.com
+   MAIL_PORT=587
+   MAIL_ENCRYPTION=tls
+   MAIL_USERNAME=no-reply@yourdomain.com
+   MAIL_PASSWORD=your_smtp_password
+   MAIL_FROM=no-reply@yourdomain.com
+   MAIL_FROM_NAME=TradeCore ERP
+
+Notes:
+- Port 465 with SSL is also supported (MAIL_PORT=465, MAIL_ENCRYPTION=ssl).
+- cPanel/Exim users: cPanel normally requires SMTP username = the FULL email
+  address of the mailbox (e.g. no-reply@tanzaniatradecore.co.tz), and the mail
+  host is usually mail.tanzaniatradecore.co.tz (or localhost with port 25).
+- If SMTP fails, the app automatically falls back to the server's built-in
+  mail() function (local Exim on cPanel), so most setups still deliver.
+- EVERY forgot-password attempt is logged to /cpanel/mail_debug.log with the
+  target email, whether the email matched an account (found=yes/no), the reset
+  link (token_created reset_url=...), and the outcome (smtp_sent /
+  smtp_failed / mail_fallback / test_token_shown / no_send). Check this file
+  after each test attempt to see exactly what happened.
+- "If an account exists for that email..." with no email received usually means
+  the typed email does NOT match any user email in the system (anti-enumeration),
+  OR the mail was handed to the mail server but bounced/delivery failed.
+  The mail_debug.log found=yes/no line tells you which.
+- The reset link expires after 10 minutes and can be used only once.
+- The same email address may request at most 3 resets per hour (rate limit).
+- Passwords are stored and transmitted only as salted SHA-256 hashes (never
+  plaintext); old passwords or hashes are never displayed to users.
+
+-----------------------------------------------------------------------------
+STEP 3C: PUBLIC REGISTRATION, SUBSCRIPTIONS & PAYMENT APPROVAL
+-----------------------------------------------------------------------------
+The public homepage (/) flows through: Homepage -> Register -> Sign In ->
+Protected Dashboard. Companies self-register, pay via M-Pesa / TigoPesa /
+Airtel Money / Bank, and submit a payment reference (with optional receipt
+photo). A Super Admin then approves or rejects the payment:
+
+- Super Admin menu -> "Subscriptions & Payments" (SA) panel:
+    * Pending tab: verify each payment, view the receipt, then Activate with
+      a subscription period (1M / 3M / 6M / 1Y / 2Y / Custom) or Reject with
+      a feedback note.
+    * Plans tab: edit subscription tiers, pricing (TZS), duration and
+      Most Popular flag.
+    * Pay Numbers tab: configure the USSD pay numbers and bank account shown
+      on the registration form.
+    * History tab: immutable audit trail of every approved/rejected request
+      with receipts and admin notes.
+- Pending / rejected companies are blocked behind an approval-gate screen with
+  a "Re-check Approval Status" button and (for rejected) "Resubmit Payment".
+- Activation sets the company subscription period; the Header shows an amber
+  alert in the last 7 days before expiry.
+- "Start 2-Day Free Demo" provisions a @demo_user account with demoExpiresAt;
+  when the demo expires, the user sees a demo-expired screen directing them to
+  real registration.
+- Server-side endpoint: POST /api/register (or /api/api.php?action=register)
+  mirrors the frontend registration with the same salted SHA-256 password
+  scheme and writes to the state blob. Every attempt is logged to
+  /cpanel/mail_debug.log (line: register username=... saved=yes/no ...).
+
+------------------------------------------------------------------------------
+STEP 4: TEST YOUR PRODUCTION SYSTEM
+--------------------------------------------------------------------------------
+1. Visit https://tanzaniatradecore.co.tz in your browser.
+2. Test API Status directly:
+   - https://tanzaniatradecore.co.tz/api/api.php
+   - https://tanzaniatradecore.co.tz/api.php
+   You should see: {"success":true, "status":"online", "domain":"tanzaniatradecore.co.tz", "message":"TradeCore PHP REST API service ready."}
+3. Test the AI endpoints (POST requests) directly:
+   - https://tanzaniatradecore.co.tz/api/ai-assist
+   - https://tanzaniatradecore.co.tz/api/copilot-analysis
+4. Log in to your TradeCore ERP & POS system using your credentials!
+
+--------------------------------------------------------------------------------
+FILE STRUCTURE IN PUBLIC_HTML
+--------------------------------------------------------------------------------
+public_html/
+ ├── index.html                  (React Single Page App)
+ ├── .htaccess                   (Apache URL rewrite rule for SPA routes & API routing)
+ ├── api.php                     (REST API + JWT/Session helper & MySQL backend)
+ ├── database.sql                (MySQL Schema file for phpMyAdmin)
+ ├── api/
+ │   ├── api.php                 (REST API endpoint)
+ │   └── php_sync.php            (Compatibility REST API endpoint)
+ └── assets/                     (Compiled JavaScript, CSS, & Web Assets)
+
+--------------------------------------------------------------------------------
+SUPPORTED FEATURES:
+--------------------------------------------------------------------------------
+- Full Offline & Online State Synchronization
+- JWT Token Validation & Session Tracking (`user_sessions`)
+- Real-time SSE Sync (`stream_updates`)
+- Full Audit Trail Logging (`audit_trails`)
+- CORS Header Support for https://tanzaniatradecore.co.tz

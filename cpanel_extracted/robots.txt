@@ -1,0 +1,10 @@
+User-agent: *
+Allow: /
+
+Disallow: /marketplace/checkout
+Disallow: /marketplace/track
+Disallow: /marketplace/orders
+Disallow: /admin
+Disallow: /pos
+
+Sitemap: https://tanzaniatradecore.co.tz/sitemap.xml

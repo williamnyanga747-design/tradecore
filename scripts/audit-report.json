@@ -1,0 +1,35 @@
+{
+ "generatedAt": "2026-08-24T19:52:45.025Z",
+ "totalKeys": 2472,
+ "langs": {
+  "en_missing_swahili_keys": 16,
+  "sw_missing_english_keys": 0,
+  "fr_missing": 0,
+  "es_missing": 0
+ },
+ "enNeedsReview": [],
+ "ok": {},
+ "missing": {
+  "en_swahili": [
+   "Add Product Video (Optional)",
+   "Could not read the video file.",
+   "Customers order instantly via WhatsApp chat. If empty, your Phone number is used. Format: country code without leading zeros or + (e.g. 255712345678).",
+   "Direct billing store — pay the seller directly via M-Pesa. No platform checkout for this store.",
+   "M-Pesa · Tigo · Bank",
+   "Max 1 video, up to 30 seconds, up to 50MB (MP4/MOV/WebM).",
+   "Mobile Money (M-Pesa/Tigo)",
+   "Product Video",
+   "Seller Wallet (M-Pesa payouts)",
+   "VIDEO AVAILABLE",
+   "Video attached",
+   "Video available",
+   "Video is optional, helps increase sales by 80%",
+   "Video must be MP4, MOV or WebM.",
+   "Video",
+   "commission on every approved order that comes through your referral link or QR code. Payout via M-Pesa, Tigo Pesa or bank."
+  ],
+  "sw_english_source": [],
+  "fr": [],
+  "es": []
+ }
+}
