@@ -1,4 +1,4 @@
 ---
 deployment:
   tasks:
-    - /bin/cp -R cpanel_extracted/. /home/tanzatrade/tanzaniatradecore.co.tz/
+    - /bin/cp -R cpanel_extracted/. /home/tanzatrade/public_html/
