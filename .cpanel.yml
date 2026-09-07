@@ -2,5 +2,15 @@
 deployment:
   tasks:
     - export DEPLOYPATH=/home/tanzatrade/tanzaniatradecore.co.tz/
-    - /bin/cp -R cpanel_extracted/* $DEPLOYPATH
+    - /bin/cp -R cpanel_extracted/cpanel $DEPLOYPATH
+    - /bin/cp cpanel_extracted/index.html $DEPLOYPATH
     - /bin/cp cpanel_extracted/.htaccess $DEPLOYPATH
+    - /bin/cp cpanel_extracted/robots.txt $DEPLOYPATH
+    - /bin/cp cpanel_extracted/sitemap.php $DEPLOYPATH
+    - /bin/cp cpanel_extracted/manifest.json $DEPLOYPATH
+    - /bin/cp cpanel_extracted/sw.js $DEPLOYPATH
+    - /bin/cp cpanel_extracted/offline.html $DEPLOYPATH
+    - /bin/cp cpanel_extracted/icon-192.png $DEPLOYPATH
+    - /bin/cp cpanel_extracted/icon-512.png $DEPLOYPATH
+    - /bin/mkdir -p $DEPLOYPATH/assets
+    - /bin/cp -R cpanel_extracted/assets/* $DEPLOYPATH/assets/
