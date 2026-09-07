@@ -11,6 +11,5 @@ coverage/
 **/db.local.php
 
 # Deploy scripts (local only)
-deploy.ps1
 deploy.bat
 quick-deploy.bat
