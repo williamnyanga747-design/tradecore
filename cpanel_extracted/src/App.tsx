@@ -3384,8 +3384,8 @@ export default function App() {
     const persistDraft = () => {
       try {
         if (currentUser) return; // signed-in: nothing to preserve on the public form
-        const draft = { username: loginDraftRef.current.username, password: loginDraftRef.current.password, authView: loginDraftRef.current.authView };
-        if (draft.username || draft.password) {
+        const draft = { username: loginDraftRef.current.username, authView: loginDraftRef.current.authView };
+        if (draft.username) {
           try { localStorage.setItem('loginFormData', JSON.stringify(draft)); } catch {}
         }
       } catch (e) {}
@@ -3397,7 +3397,6 @@ export default function App() {
         const d = JSON.parse(raw);
         if (d && typeof d === 'object') {
           if (typeof d.username === 'string') setLoginUsername(d.username);
-          if (typeof d.password === 'string') setLoginPassword(d.password);
           if (d.authView && (d.authView === 'login' || d.authView === 'register' || d.authView === 'forgot' || d.authView === 'reset')) setAuthView(d.authView);
           console.log('User data preserved and restored');
         }

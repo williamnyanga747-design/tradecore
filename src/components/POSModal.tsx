@@ -139,7 +139,7 @@ export default function POSModal({
     }
     const cust = customers.find(c => c.id === completedOrder?.customerId);
     const storeObj = stores.find(s => s.id === completedOrder?.storeId);
-    const companyName = localStorage.getItem('tradecore_receipt_company_name') || storeObj?.name || 'Singida Grain Millers Ltd';
+    const companyName = storeObj?.name || 'Store';
     const totalDisplay = formatMoney(completedOrder?.total || 0, activeCurrency, activeExchangeRate);
 
     let itemsText = '';
@@ -1125,10 +1125,10 @@ export default function POSModal({
     const cust = customers.find(c => c.id === completedOrder.customerId);
     const storeObj = stores.find(s => s.id === completedOrder.storeId);
 
-    // Retrieve customizable company branding details from localStorage
-    const companyName = localStorage.getItem('tradecore_receipt_company_name') || storeObj?.name || 'Singida Grain Millers Ltd';
-    const companyBranch = localStorage.getItem('tradecore_receipt_company_branch') || storeObj?.location || 'Central Depot, Singida-Dodoma Rd';
-    const companyPhone = localStorage.getItem('tradecore_receipt_company_phone') || storeObj?.phone || '+255 26 250 1234';
+    // Use store data directly (receipt branding from server)
+    const companyName = storeObj?.name || 'Store';
+    const companyBranch = storeObj?.location || storeObj?.address || '';
+    const companyPhone = storeObj?.phone || '';
     const customLogo = localStorage.getItem('tradecore_receipt_custom_logo');
 
     return (
@@ -1497,7 +1497,6 @@ export default function POSModal({
                         onChange={(e) => {
                           const val = e.target.checked;
                           setAllowNegativeStock(val);
-                          localStorage.setItem('pos_allow_negative_stock', String(val));
                           if (saveAllData && settings) {
                             saveAllData({ settings: { ...settings, allowNegativeStock: val } });
                           }

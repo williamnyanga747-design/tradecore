@@ -90,10 +90,11 @@ export default function Receipts({
 
   // Logo & Branding state
   const [customLogo, setCustomLogo] = useState<string | null>(null);
-  const [companyName, setCompanyName] = useState(() => localStorage.getItem('tradecore_receipt_company_name') || 'Singida Grain Millers Ltd');
-  const [companyBranch, setCompanyBranch] = useState(() => localStorage.getItem('tradecore_receipt_company_branch') || 'Central Depot, Singida-Dodoma Rd');
-  const [companyPhone, setCompanyPhone] = useState(() => localStorage.getItem('tradecore_receipt_company_phone') || '+255 26 250 1234');
-  const [companyEmail, setCompanyEmail] = useState(() => localStorage.getItem('tradecore_receipt_company_email') || 'logistics@singidagrain.co.tz');
+  const currentStore = stores.find(s => s.id === currentStoreId);
+  const [companyName, setCompanyName] = useState(() => currentStore?.name || '');
+  const [companyBranch, setCompanyBranch] = useState(() => currentStore?.location || currentStore?.address || '');
+  const [companyPhone, setCompanyPhone] = useState(() => currentStore?.phone || '');
+  const [companyEmail, setCompanyEmail] = useState(() => '');
   const [showBrandingConfig, setShowBrandingConfig] = useState(false);
   const [showWhatsAppInput, setShowWhatsAppInput] = useState(false);
   const [whatsappPhone, setWhatsappPhone] = useState('');
@@ -326,16 +327,12 @@ export default function Receipts({
   const handleUpdateCompanyDetail = (key: string, value: string) => {
     if (key === 'name') {
       setCompanyName(value);
-      localStorage.setItem('tradecore_receipt_company_name', value);
     } else if (key === 'branch') {
       setCompanyBranch(value);
-      localStorage.setItem('tradecore_receipt_company_branch', value);
     } else if (key === 'phone') {
       setCompanyPhone(value);
-      localStorage.setItem('tradecore_receipt_company_phone', value);
     } else if (key === 'email') {
       setCompanyEmail(value);
-      localStorage.setItem('tradecore_receipt_company_email', value);
     }
   };
 
