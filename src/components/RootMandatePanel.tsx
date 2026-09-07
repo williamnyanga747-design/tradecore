@@ -8,7 +8,7 @@ import {
   Coins, BadgePercent, CreditCard, Wallet, CalendarClock, Star, Navigation, LocateFixed,
   ThumbsUp, ThumbsDown, MessageCircle, Share2, Landmark, Webhook as WebhookIcon, Zap, Inbox,
   Smartphone, AlertTriangle, ClipboardList, HandCoins, Users as UsersIcon, Bike, Video, Gift, MessageCircle as ChatIcon, Radio, XCircle,
-  QrCode, Mic
+  QrCode, Mic, Info
 } from 'lucide-react';
 import {
   Company, MarketplaceProduct, MarketplaceOrder, MarketplaceClick, User, Settings,
@@ -202,6 +202,8 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
   const [stats, setStats] = useState<{ db: string; files: string; products: number; users: number } | null>(null);
   const [loadingStats, setLoadingStats] = useState(false);
   const [confirmTarget, setConfirmTarget] = useState<{ type: string; id: number; label: string } | null>(null);
+  const [appVersion, setAppVersion] = useState<{ version: string; name: string; date: string; description: string } | null>(null);
+  const [appVersion, setAppVersion] = useState<{ version: string; name: string; date: string; description: string } | null>(null);
 
   // Hoisted form states (Rules of Hooks — never declare hooks inside render functions)
   const [newCat, setNewCat] = useState('');
@@ -283,6 +285,22 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
     })();
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch version info on mount
+  useEffect(() => {
+    fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => { if (d?.version) setAppVersion(d); })
+      .catch(() => {});
+  }, []);
+
+  // Fetch version info on mount
+  useEffect(() => {
+    fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => { if (d?.version) setAppVersion(d); })
+      .catch(() => {});
   }, []);
 
   const updateSettings = (patch: Partial<Settings>) => onSaveSettings({ ...settings, ...patch });
@@ -1931,6 +1949,26 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
             </div>
           </div>
         ))}
+        {appVersion && (
+          <div className="bg-gradient-to-r from-brand/5 to-brand/10 border border-brand/20 rounded-xl p-4 mt-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Info className="w-4 h-4 text-brand" />
+              <span className="text-xs font-bold text-brand uppercase">{t('System Version')}</span>
+            </div>
+            <div className="flex items-baseline gap-3">
+              <div className="text-2xl font-extrabold text-gray-900">v{appVersion.version}</div>
+              <div className="text-xs text-gray-500 font-medium">{appVersion.name}</div>
+            </div>
+            <div className="text-[11px] text-gray-600 mt-1">
+              {t('Released')}: {appVersion.date}
+              {appVersion.description && <span className="ml-2 text-gray-400">— {appVersion.description}</span>}
+            </div>
+            <a href="https://github.com/williamnyanga747-design/tradecore/releases" target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 mt-2 text-[10px] font-bold text-brand hover:underline">
+              {t('View all releases')} <ExternalLink className="w-3 h-3" />
+            </a>
+          </div>
+        )}
       </div>
     );
   };
