@@ -125,12 +125,26 @@ function tcMirrorCategories($pdo, $cats) {
             foreach ($names as $name) {
                 try { $upsert->execute([(string)$cid, $name, $now, $now]); } catch (Throwable $e) {}
             }
-            $ph = implode(',', array_fill(0, count($names), '?'));
-            $params = array_merge([(string)$cid], $names);
+            // SAFETY: Only soft-delete categories not in the incoming array if the
+            // incoming set appears complete (2+ companies or matches DB count)
+            $dbCatCount = 0;
             try {
-                $del = $pdo->prepare("DELETE FROM tradecore_categories WHERE company_id=? AND deleted_at IS NULL AND category_name NOT IN ($ph)");
-                $del->execute($params);
-            } catch (Throwable $e) {}
+                $dbStmt = $pdo->prepare("SELECT COUNT(*) as cnt FROM tradecore_categories WHERE company_id=? AND deleted_at IS NULL");
+                $dbStmt->execute([(string)$cid]);
+                $dbRow = $dbStmt->fetch(PDO::FETCH_ASSOC);
+                $dbCatCount = (int)($dbRow['cnt'] ?? 0);
+            } catch (Throwable $eDb) {}
+            $incomingCount = count($names);
+            $isCompleteSet = (count($byCompany) >= 2) || ($incomingCount >= $dbCatCount) || ($dbCatCount === 0);
+            if ($isCompleteSet) {
+                $ph = implode(',', array_fill(0, count($names), '?'));
+                $params = array_merge([(string)$cid], $names);
+                try {
+                    // SOFT DELETE instead of hard delete
+                    $del = $pdo->prepare("UPDATE tradecore_categories SET deleted_at=?, updated_at=? WHERE company_id=? AND deleted_at IS NULL AND category_name NOT IN ($ph)");
+                    $del->execute([$now, $now, (string)$cid, ...$names]);
+                } catch (Throwable $e) {}
+            }
         }
         error_log('[TradeCore API] CATEGORIES mirrored to MySQL across ' . count($byCompany) . ' companies (' . count($cats) . ' entries)');
     } catch (Throwable $e) {
@@ -161,7 +175,10 @@ function tcEnsureNormalizedTables($pdo) {
         $pdo->exec("CREATE TABLE IF NOT EXISTS stores (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, branch_id VARCHAR(64) DEFAULT NULL, name VARCHAR(255) NOT NULL, code VARCHAR(64) DEFAULT NULL, phone VARCHAR(32) DEFAULT NULL, email VARCHAR(190) DEFAULT NULL, address VARCHAR(255) DEFAULT NULL, city VARCHAR(100) DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, settings_json TEXT DEFAULT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, INDEX idx_store_company (company_id, deleted_at), INDEX idx_store_active (is_active, deleted_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $pdo->exec("CREATE TABLE IF NOT EXISTS stock_categories (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, name VARCHAR(255) NOT NULL, parent_id VARCHAR(64) DEFAULT NULL, color VARCHAR(16) DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, UNIQUE KEY uniq_sc_cat_company (company_id, name), INDEX idx_sc_company (company_id, deleted_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $pdo->exec("CREATE TABLE IF NOT EXISTS products (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, store_id VARCHAR(64) DEFAULT NULL, category_id VARCHAR(64) DEFAULT NULL, sku VARCHAR(128) DEFAULT NULL, name VARCHAR(255) NOT NULL, barcode VARCHAR(128) DEFAULT NULL, unit_price DECIMAL(18,2) NOT NULL DEFAULT 0, cost_price DECIMAL(18,2) NOT NULL DEFAULT 0, stock_qty DECIMAL(18,3) NOT NULL DEFAULT 0, low_stock_threshold DECIMAL(18,3) DEFAULT NULL, tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0, unit VARCHAR(32) DEFAULT NULL, image_url VARCHAR(500) DEFAULT NULL, description TEXT DEFAULT NULL, tags_json TEXT DEFAULT NULL, extra_json TEXT DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, INDEX idx_prod_company (company_id, deleted_at), INDEX idx_prod_store (store_id, deleted_at), INDEX idx_prod_cat (category_id, deleted_at), INDEX idx_prod_updated (company_id, updated_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-        $pdo->exec("CREATE TABLE IF NOT EXISTS user_accounts (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) DEFAULT NULL, full_name VARCHAR(255) DEFAULT NULL, username VARCHAR(100) DEFAULT NULL, phone VARCHAR(24) NOT NULL, email VARCHAR(190) DEFAULT NULL, role VARCHAR(50) NOT NULL DEFAULT 'Cashier', password_hash VARCHAR(255) DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, status VARCHAR(20) NOT NULL DEFAULT 'active', locale VARCHAR(5) NOT NULL DEFAULT 'en', permissions_json TEXT DEFAULT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, UNIQUE KEY uniq_ua_phone_company (phone, company_id), UNIQUE KEY uniq_ua_username (username), INDEX idx_ua_company (company_id, deleted_at), INDEX idx_ua_active (is_active, deleted_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS user_accounts (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) DEFAULT NULL, branch_id VARCHAR(64) DEFAULT NULL, store_id VARCHAR(64) DEFAULT NULL, full_name VARCHAR(255) DEFAULT NULL, username VARCHAR(100) DEFAULT NULL, phone VARCHAR(24) NOT NULL, email VARCHAR(190) DEFAULT NULL, role VARCHAR(50) NOT NULL DEFAULT 'Cashier', password_hash VARCHAR(255) DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, status VARCHAR(20) NOT NULL DEFAULT 'active', locale VARCHAR(5) NOT NULL DEFAULT 'en', permissions_json TEXT DEFAULT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, UNIQUE KEY uniq_ua_phone_company (phone, company_id), UNIQUE KEY uniq_ua_username (username), INDEX idx_ua_company (company_id, deleted_at), INDEX idx_ua_active (is_active, deleted_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        // MIGRATION: add branch_id/store_id columns if missing (safe for existing tables)
+        try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN branch_id VARCHAR(64) DEFAULT NULL AFTER company_id"); } catch (Throwable $eMig) {}
+        try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN store_id VARCHAR(64) DEFAULT NULL AFTER branch_id"); } catch (Throwable $eMig2) {}
         $pdo->exec("CREATE TABLE IF NOT EXISTS audit_trails (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, store_id VARCHAR(64) DEFAULT NULL, user_id VARCHAR(64) DEFAULT NULL, user_name VARCHAR(255) DEFAULT NULL, action VARCHAR(100) NOT NULL, entity_type VARCHAR(100) DEFAULT NULL, entity_id VARCHAR(64) DEFAULT NULL, entity_name VARCHAR(255) DEFAULT NULL, details TEXT DEFAULT NULL, details_json TEXT DEFAULT NULL, ip_address VARCHAR(45) DEFAULT NULL, created_at BIGINT NOT NULL, INDEX idx_at_company_action (company_id, action), INDEX idx_at_created (created_at), INDEX idx_at_entity (entity_type, entity_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $done = true;
     } catch (Throwable $e) {
@@ -349,10 +366,16 @@ function tcUpsertUserRow($pdo, $u, $now) {
     if (!$pdo || !is_array($u) || !isset($u['id'])) return false;
     $id = (string)$u['id'];
     $companyId = (string)($u['company_id'] ?? $u['companyId'] ?? '');
+    $branchId = (string)($u['branch_id'] ?? $u['branchId'] ?? '');
+    if ($branchId === '') $branchId = null;
+    $storeId = (string)($u['store_id'] ?? $u['storeId'] ?? '');
+    if ($storeId === '') $storeId = null;
     $phone = (string)($u['phone'] ?? $u['phoneNumber'] ?? '');
     $password = isset($u['password']) ? (string)$u['password'] : (isset($u['passwordHash']) ? (string)$u['passwordHash'] : null);
     $data = [
         'company_id' => $companyId === '' ? null : $companyId,
+        'branch_id' => $branchId,
+        'store_id' => $storeId,
         'full_name' => isset($u['full_name']) ? (string)$u['full_name'] : (isset($u['fullName']) ? (string)$u['fullName'] : null),
         'username' => isset($u['username']) ? (string)$u['username'] : null,
         'phone' => $phone,
@@ -367,10 +390,10 @@ function tcUpsertUserRow($pdo, $u, $now) {
     try {
         // IF(VALUES(password_hash) IS NULL, password_hash, VALUES(password_hash)) keeps an
         // existing hash when the incoming payload carries none (safe re-syncs).
-        $pdo->prepare("INSERT INTO user_accounts (id, company_id, full_name, username, phone, email, role, password_hash, is_active, status, locale, permissions_json, created_at, updated_at, deleted_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
-            ON DUPLICATE KEY UPDATE company_id=VALUES(company_id), full_name=VALUES(full_name), username=VALUES(username), phone=VALUES(phone), email=VALUES(email), role=VALUES(role), password_hash=IF(VALUES(password_hash) IS NULL, password_hash, VALUES(password_hash)), is_active=VALUES(is_active), status=VALUES(status), locale=VALUES(locale), permissions_json=VALUES(permissions_json), updated_at=VALUES(updated_at), deleted_at=NULL")
-            ->execute([$id, $data['company_id'], $data['full_name'], $data['username'], $data['phone'], $data['email'], $data['role'], $data['password_hash'], $data['is_active'], $data['status'], $data['locale'], $data['permissions_json'], $now, $now]);
+        $pdo->prepare("INSERT INTO user_accounts (id, company_id, branch_id, store_id, full_name, username, phone, email, role, password_hash, is_active, status, locale, permissions_json, created_at, updated_at, deleted_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
+            ON DUPLICATE KEY UPDATE company_id=VALUES(company_id), branch_id=VALUES(branch_id), store_id=VALUES(store_id), full_name=VALUES(full_name), username=VALUES(username), phone=VALUES(phone), email=VALUES(email), role=VALUES(role), password_hash=IF(VALUES(password_hash) IS NULL, password_hash, VALUES(password_hash)), is_active=VALUES(is_active), status=VALUES(status), locale=VALUES(locale), permissions_json=VALUES(permissions_json), updated_at=VALUES(updated_at), deleted_at=NULL")
+            ->execute([$id, $data['company_id'], $data['branch_id'], $data['store_id'], $data['full_name'], $data['username'], $data['phone'], $data['email'], $data['role'], $data['password_hash'], $data['is_active'], $data['status'], $data['locale'], $data['permissions_json'], $now, $now]);
     } catch (Throwable $e) { error_log('[TradeCore API] upsert user_account failed: ' . $e->getMessage()); return false; }
     // Legacy atomic mirror so existing login/auth keeps working during transition.
     try {
@@ -1090,13 +1113,10 @@ try {
                     $so->execute([$companyId, $since]);
                     foreach ($so->fetchAll() as $r) { $d = json_decode($r['data'], true); if ($d) $orders[] = $d; }
                 } else {
-                    // FULL: return all active items
-                    $sp = $pdo->prepare("SELECT data FROM tradecore_products WHERE company_id=? AND deleted_at IS NULL");
-                    $sp->execute([$companyId]);
-                    foreach ($sp->fetchAll() as $r) { $d = json_decode($r['data'], true); if ($d) $products[] = $d; }
-                    $su = $pdo->prepare("SELECT data FROM tradecore_users WHERE company_id=? AND deleted_at IS NULL");
-                    $su->execute([$companyId]);
-                    foreach ($su->fetchAll() as $r) { $d = json_decode($r['data'], true); if ($d) $users[] = $d; }
+                    // FULL: return all active items from NORMALIZED tables
+                    // Use tcLoadUsersN and tcLoadProductsN for faster, normalized reads
+                    $users = tcLoadUsersN($pdo, $companyId);
+                    $products = tcLoadProductsN($pdo, $companyId);
                     $ss = $pdo->prepare("SELECT data FROM tradecore_sales WHERE company_id=?");
                     $ss->execute([$companyId]);
                     foreach ($ss->fetchAll() as $r) { $d = json_decode($r['data'], true); if ($d) $sales[] = $d; }
@@ -1134,7 +1154,7 @@ try {
                 // list (per-company rows + timestamps; source of truth). Incremental
                 // fetches omit this key so the client keeps its already-loaded categories.
                 if ($since === 0) {
-                    $result['categories'] = tcLoadCategories($pdo);
+                    $result['categories'] = tcLoadCategoriesN($pdo, $companyId);
                 }
                 // Include deleted IDs for incremental sync
                 if ($since > 0 && (count($deletedProducts) > 0 || count($deletedUsers) > 0)) {
@@ -1696,6 +1716,8 @@ try {
                 // reload. Prune stock_categories rows only for companies whose full set
                 // is present in the merged array (identical rule to tcMirrorCategories),
                 // so a stale/partial flush can never wipe another company's categories.
+                // SAFETY: Only reconcile if the incoming data appears to be a complete
+                // cross-company set (has categories for 2+ companies OR matches DB count)
                 if (is_array($toPersist['categories'] ?? null)) {
                     try {
                         $catByCid = [];
@@ -1707,15 +1729,32 @@ try {
                             if (!isset($catByCid[$cid])) $catByCid[$cid] = [];
                             $catByCid[$cid][$name] = true;
                         }
-                        foreach ($catByCid as $ccid => $nameSet) {
-                            $st = $pdo->prepare("SELECT id, name FROM stock_categories WHERE company_id=? AND deleted_at IS NULL");
-                            $st->execute([(string)$ccid]);
-                            foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $crow) {
-                                $crowName = trim((string)($crow['name'] ?? ''));
-                                if ($crowName === '' || !isset($nameSet[$crowName])) {
-                                    try { $pdo->prepare("UPDATE stock_categories SET deleted_at=?, is_active=0, updated_at=? WHERE id=?")->execute([$now, $now, $crow['id']]); } catch (Throwable $e3) {}
+                        // SAFETY GUARD: Count total categories in DB across all companies
+                        $dbCatCount = 0;
+                        try {
+                            $dbCatStmt = $pdo->query("SELECT COUNT(*) as cnt FROM stock_categories WHERE deleted_at IS NULL");
+                            $dbCatRow = $dbCatStmt->fetch(PDO::FETCH_ASSOC);
+                            $dbCatCount = (int)($dbCatRow['cnt'] ?? 0);
+                        } catch (Throwable $eDbCat) {}
+                        $incomingCatCount = count($toPersist['categories']);
+                        // Only reconcile if incoming set is complete:
+                        // - Has categories for 2+ companies (multi-company flush), OR
+                        // - Incoming count matches or exceeds DB count (no data loss), OR
+                        // - DB is empty (first-time setup)
+                        $isCompleteSet = (count($catByCid) >= 2) || ($incomingCatCount >= $dbCatCount) || ($dbCatCount === 0);
+                        if ($isCompleteSet) {
+                            foreach ($catByCid as $ccid => $nameSet) {
+                                $st = $pdo->prepare("SELECT id, name FROM stock_categories WHERE company_id=? AND deleted_at IS NULL");
+                                $st->execute([(string)$ccid]);
+                                foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $crow) {
+                                    $crowName = trim((string)($crow['name'] ?? ''));
+                                    if ($crowName === '' || !isset($nameSet[$crowName])) {
+                                        try { $pdo->prepare("UPDATE stock_categories SET deleted_at=?, is_active=0, updated_at=? WHERE id=?")->execute([$now, $now, $crow['id']]); } catch (Throwable $e3) {}
+                                    }
                                 }
                             }
+                        } else {
+                            error_log('[TradeCore API] category reconcile SKIPPED: incomplete set (incoming=' . $incomingCatCount . ', db=' . $dbCatCount . ', companies=' . count($catByCid) . ')');
                         }
                     } catch (Throwable $eCatR) { error_log('[TradeCore API] category reconcile failed: ' . $eCatR->getMessage()); }
                 }
@@ -1838,6 +1877,9 @@ try {
         $j = json_encode($product, JSON_UNESCAPED_UNICODE);
         $ts = isset($product['updated_at']) && is_numeric($product['updated_at']) ? (int)$product['updated_at'] : $now;
         try {
+            // NORMALIZED TABLE WRITE: Also write to products for fast queries
+            $ok = tcUpsertProductRow($pdo, $product, $now);
+            // Legacy atomic mirror
             $stmt = $pdo->prepare("REPLACE INTO tradecore_products (id, company_id, data, updated_at, deleted_at) VALUES (?,?,?, ?,NULL)");
             $stmt->execute([$id, $companyId, $j, $ts]);
             // Bump meta timestamp
@@ -1915,6 +1957,9 @@ try {
         $j = json_encode($user, JSON_UNESCAPED_UNICODE);
         $ts = isset($user['updated_at']) && is_numeric($user['updated_at']) ? (int)$user['updated_at'] : $now;
         try {
+            // NORMALIZED TABLE WRITE: Also write to user_accounts for fast login/auth queries
+            $ok = tcUpsertUserRow($pdo, $user, $now);
+            // Legacy atomic mirror
             $stmt = $pdo->prepare("REPLACE INTO tradecore_users (id, company_id, phone, data, updated_at, deleted_at) VALUES (?,?,?,?,?, NULL)");
             $stmt->execute([$id, $companyId, $phone, $j, $ts]);
             try { $pdo->prepare("UPDATE tradecore_meta SET updated_at=? WHERE id=1")->execute([$now]); } catch (Throwable $e) {}

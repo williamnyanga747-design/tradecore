@@ -2103,75 +2103,74 @@ export default function App() {
 
     const updatedState = {
       companies: rated.companies,
-      branches: parsed.branches || defaultBranches,
-      stores: parsed.stores || defaultStores,
+      branches: parsed.branches ?? (dbStateRef.current.branches || []),
+      stores: parsed.stores ?? (dbStateRef.current.stores || []),
       users: rawUsers,
-      categories: parsed.categories || defaultCategories,
-      taxes: parsed.taxes || defaultTaxes,
-      suppliers: parsed.suppliers || defaultSuppliers,
-      customers: parsed.customers || defaultCustomers,
-      stockItems: parsed.stockItems || defaultStockItems,
-      purchaseOrders: parsed.purchaseOrders || defaultPurchaseOrders,
-      salesOrders: parsed.salesOrders || defaultSalesOrders,
-      expenses: parsed.expenses || defaultExpenses,
+      categories: parsed.categories ?? (dbStateRef.current.categories || []),
+      taxes: parsed.taxes ?? (dbStateRef.current.taxes || []),
+      suppliers: parsed.suppliers ?? (dbStateRef.current.suppliers || []),
+      customers: parsed.customers ?? (dbStateRef.current.customers || []),
+      stockItems: parsed.stockItems ?? (dbStateRef.current.stockItems || []),
+      purchaseOrders: parsed.purchaseOrders ?? (dbStateRef.current.purchaseOrders || []),
+      salesOrders: parsed.salesOrders ?? (dbStateRef.current.salesOrders || []),
+      expenses: parsed.expenses ?? (dbStateRef.current.expenses || []),
       auditTrails: parsed.auditTrails || defaultAuditTrails,
       securityLogs: parsed.securityLogs || defaultSecurityLogs,
       settings: parsedSettings,
-      rolePermissions: parsed.rolePermissions || defaultRolePermissions,
-      posShifts: parsed.posShifts || [],
-      stockTransfers: parsed.stockTransfers || [],
-      contactMessages: parsed.contactMessages || [],
+      rolePermissions: parsed.rolePermissions ?? (dbStateRef.current.rolePermissions || defaultRolePermissions),
+      posShifts: parsed.posShifts ?? (dbStateRef.current.posShifts || []),
+      stockTransfers: parsed.stockTransfers ?? (dbStateRef.current.stockTransfers || []),
+      contactMessages: parsed.contactMessages ?? (dbStateRef.current.contactMessages || []),
       marketplaceProducts: rated.products,
-      marketplaceCustomers: parsed.marketplaceCustomers || defaultMarketplaceCustomers,
-      marketplaceOrders: parsed.marketplaceOrders || defaultMarketplaceOrders,
-      marketplaceClicks: parsed.marketplaceClicks || [],
+      marketplaceCustomers: parsed.marketplaceCustomers ?? (dbStateRef.current.marketplaceCustomers || []),
+      marketplaceOrders: parsed.marketplaceOrders ?? (dbStateRef.current.marketplaceOrders || []),
+      marketplaceClicks: parsed.marketplaceClicks ?? (dbStateRef.current.marketplaceClicks || []),
       reviews: loadedReviews,
       productViews: loadedProductViews,
-      wallets: parsed.wallets || [],
-      walletTransactions: parsed.walletTransactions || [],
-      withdrawals: parsed.withdrawals || [],
-      affiliates: parsed.affiliates || [],
-      affiliateClicks: parsed.affiliateClicks || [],
-      affiliateSales: parsed.affiliateSales || [],
-      affiliateWithdrawals: parsed.affiliateWithdrawals || [],
-      searchSynonyms: parsed.searchSynonyms || defaultSearchSynonyms,
-      pushSubscriptions: parsed.pushSubscriptions || [],
-      collections: parsed.collections || [],
-      webhookLogs: parsed.webhookLogs || [],
-      adminEarnings: parsed.adminEarnings || [],
-      offers: parsed.offers || defaultOffers,
-      offerMessages: parsed.offerMessages || defaultOfferMessages,
-      groupDeals: parsed.groupDeals || defaultGroupDeals,
-      groupDealParticipants: parsed.groupDealParticipants || defaultGroupDealParticipants,
-      whatsappConversations: parsed.whatsappConversations || defaultWhatsappConversations,
-      notificationLogs: parsed.notificationLogs || defaultNotificationLogs,
-      deliveries: parsed.deliveries || defaultDeliveries,
-      deliveryUpdates: parsed.deliveryUpdates || defaultDeliveryUpdates,
-      installmentPlans: parsed.installmentPlans || defaultInstallmentPlans,
-      installmentOrders: parsed.installmentOrders || defaultInstallmentOrders,
-      installmentPayments: parsed.installmentPayments || defaultInstallmentPayments,
-      liveStreams: parsed.liveStreams || defaultLiveStreams,
-      liveComments: parsed.liveComments || defaultLiveComments,
-      loyaltyCustomers: parsed.loyaltyCustomers || defaultLoyaltyCustomers,
-      loyaltyTransactions: parsed.loyaltyTransactions || defaultLoyaltyTransactions,
-      loyaltyRedeemCodes: parsed.loyaltyRedeemCodes || defaultLoyaltyRedeemCodes,
-      voiceSearches: parsed.voiceSearches || [],
-      qrScans: parsed.qrScans || [],
-      traReceipts: parsed.traReceipts || [],
-      // --- MEGA BUILD: 7 ultimate features ---
-      escrowTransactions: parsed.escrowTransactions || [],
-      chatConversations: parsed.chatConversations || [],
-      chatMessages: parsed.chatMessages || [],
-      visualSearches: parsed.visualSearches || [],
-      productReturns: parsed.productReturns || [],
-      disputes: parsed.disputes || [],
-      disputeMessages: parsed.disputeMessages || [],
-      flashSales: parsed.flashSales || [],
-      appNotifications: parsed.appNotifications || [],
-      bulkUploads: parsed.bulkUploads || [],
-      stories: parsed.stories || [],
-      storyViews: parsed.storyViews || [],
-      shippingZones: parsed.shippingZones || [],
+      wallets: parsed.wallets ?? (dbStateRef.current.wallets || []),
+      walletTransactions: parsed.walletTransactions ?? (dbStateRef.current.walletTransactions || []),
+      withdrawals: parsed.withdrawals ?? (dbStateRef.current.withdrawals || []),
+      affiliates: parsed.affiliates ?? (dbStateRef.current.affiliates || []),
+      affiliateClicks: parsed.affiliateClicks ?? (dbStateRef.current.affiliateClicks || []),
+      affiliateSales: parsed.affiliateSales ?? (dbStateRef.current.affiliateSales || []),
+      affiliateWithdrawals: parsed.affiliateWithdrawals ?? (dbStateRef.current.affiliateWithdrawals || []),
+      searchSynonyms: parsed.searchSynonyms ?? (dbStateRef.current.searchSynonyms || []),
+      pushSubscriptions: parsed.pushSubscriptions ?? (dbStateRef.current.pushSubscriptions || []),
+      collections: parsed.collections ?? (dbStateRef.current.collections || []),
+      webhookLogs: parsed.webhookLogs ?? (dbStateRef.current.webhookLogs || []),
+      adminEarnings: parsed.adminEarnings ?? (dbStateRef.current.adminEarnings || []),
+      offers: parsed.offers ?? (dbStateRef.current.offers || []),
+      offerMessages: parsed.offerMessages ?? (dbStateRef.current.offerMessages || []),
+      groupDeals: parsed.groupDeals ?? (dbStateRef.current.groupDeals || []),
+      groupDealParticipants: parsed.groupDealParticipants ?? (dbStateRef.current.groupDealParticipants || []),
+      whatsappConversations: parsed.whatsappConversations ?? (dbStateRef.current.whatsappConversations || []),
+      notificationLogs: parsed.notificationLogs ?? (dbStateRef.current.notificationLogs || []),
+      deliveries: parsed.deliveries ?? (dbStateRef.current.deliveries || []),
+      deliveryUpdates: parsed.deliveryUpdates ?? (dbStateRef.current.deliveryUpdates || []),
+      installmentPlans: parsed.installmentPlans ?? (dbStateRef.current.installmentPlans || []),
+      installmentOrders: parsed.installmentOrders ?? (dbStateRef.current.installmentOrders || []),
+      installmentPayments: parsed.installmentPayments ?? (dbStateRef.current.installmentPayments || []),
+      liveStreams: parsed.liveStreams ?? (dbStateRef.current.liveStreams || []),
+      liveComments: parsed.liveComments ?? (dbStateRef.current.liveComments || []),
+      loyaltyCustomers: parsed.loyaltyCustomers ?? (dbStateRef.current.loyaltyCustomers || []),
+      loyaltyTransactions: parsed.loyaltyTransactions ?? (dbStateRef.current.loyaltyTransactions || []),
+      loyaltyRedeemCodes: parsed.loyaltyRedeemCodes ?? (dbStateRef.current.loyaltyRedeemCodes || []),
+      voiceSearches: parsed.voiceSearches ?? (dbStateRef.current.voiceSearches || []),
+      qrScans: parsed.qrScans ?? (dbStateRef.current.qrScans || []),
+      traReceipts: parsed.traReceipts ?? (dbStateRef.current.traReceipts || []),
+      escrowTransactions: parsed.escrowTransactions ?? (dbStateRef.current.escrowTransactions || []),
+      chatConversations: parsed.chatConversations ?? (dbStateRef.current.chatConversations || []),
+      chatMessages: parsed.chatMessages ?? (dbStateRef.current.chatMessages || []),
+      visualSearches: parsed.visualSearches ?? (dbStateRef.current.visualSearches || []),
+      productReturns: parsed.productReturns ?? (dbStateRef.current.productReturns || []),
+      disputes: parsed.disputes ?? (dbStateRef.current.disputes || []),
+      disputeMessages: parsed.disputeMessages ?? (dbStateRef.current.disputeMessages || []),
+      flashSales: parsed.flashSales ?? (dbStateRef.current.flashSales || []),
+      appNotifications: parsed.appNotifications ?? (dbStateRef.current.appNotifications || []),
+      bulkUploads: parsed.bulkUploads ?? (dbStateRef.current.bulkUploads || []),
+      stories: parsed.stories ?? (dbStateRef.current.stories || []),
+      storyViews: parsed.storyViews ?? (dbStateRef.current.storyViews || []),
+      shippingZones: parsed.shippingZones ?? (dbStateRef.current.shippingZones || []),
     };
 
     // --- REMOTE APPLY: PRESERVE LOCAL DATA WHEN SERVER BLOB OMITS KEYS ---
@@ -2199,7 +2198,13 @@ export default function App() {
     // sync blob. When server returns 0, we ACCEPT it and clear dirty tracking to break the
     // infinite 78->0 loop.
     if (isRemoteApply) {
-      const STALE_GUARD = ['stockItems', 'users', 'companies', 'branches', 'stores', 'salesOrders', 'expenses', 'purchaseOrders', 'categories'] as const;
+      const STALE_GUARD = [
+        'stockItems', 'users', 'companies', 'branches', 'stores', 'categories',
+        'salesOrders', 'expenses', 'purchaseOrders', 'suppliers', 'customers',
+        'taxes', 'wallets', 'affiliates', 'reviews', 'flashSales', 'stories',
+        'disputes', 'deliveries', 'installmentPlans', 'chatConversations',
+        'escrowTransactions', 'loyaltyCustomers', 'productReturns', 'marketplaceOrders'
+      ] as const;
       for (const key of STALE_GUARD) {
         const incoming = (updatedState as any)[key];
         const current = (dbStateRef.current as any)[key];
@@ -3150,6 +3155,23 @@ export default function App() {
             const persistedActive = localStorage.getItem('active_company_id') || localStorage.getItem('company_id') || '';
             if (persistedActive !== '' && persistedActive !== 'none' && persistedActive !== targetCid) return;
             if (snap && typeof snap === 'object') {
+              // MERGE FIX: Preserve cross-company data when switching companies
+              // Categories, settings, and other cross-company collections should be MERGED,
+              // not replaced, to prevent data loss for other companies
+              const existingState = dbStateRef.current;
+              if (existingState && snap.categories && Array.isArray(snap.categories)) {
+                // Merge categories: keep existing + add new from snapshot
+                const existingCats = existingState.categories || [];
+                const snapCats = snap.categories;
+                const mergedCats = [...new Set([...existingCats, ...snapCats])];
+                snap.categories = mergedCats;
+              }
+              if (existingState && snap.taxes && Array.isArray(snap.taxes)) {
+                const existingTaxes = existingState.taxes || [];
+                const snapTaxes = snap.taxes;
+                const mergedTaxes = [...new Set([...existingTaxes, ...snapTaxes])];
+                snap.taxes = mergedTaxes;
+              }
               applyData(snap, true);
               snapVer = Number(snap._version ?? snap.version ?? 0);
               if (Number.isNaN(snapVer)) snapVer = 0;
@@ -6595,6 +6617,47 @@ try {
       users: [...users, newUser],
       settings: { ...settings, subscriptionMeta: nextMeta, companySubscriptions: [...activeCompanySubscriptions, newSubscription] }
     });
+
+    // SEED DEFAULT DATA: Initialize company-scoped defaults so the new company
+    // has categories, taxes, and branches when the user first logs in
+    const coPrefix = `co_${newCompanyId}:`;
+    const defaultCoCategories = [
+      ...defaultCategories.map(c => `${coPrefix}${c}`),
+      `${coPrefix}General Merchandise`,
+      `${coPrefix}Electronics`,
+      `${coPrefix}Fashion & Apparel`,
+      `${coPrefix}Home & Kitchen`,
+      `${coPrefix}Health & Beauty`,
+      `${coPrefix}Food & Beverages`,
+      `${coPrefix}Office Supplies`,
+      `${coPrefix}Services`,
+      `${coPrefix}Digital Products`,
+    ];
+    const defaultCoTaxes = [
+      { id: `tax_vat_${newCompanyId}`, name: 'VAT (18%)', rate: 18, company_id: newCompanyId, is_active: true, created_at: nowIso, updated_at: nowIso },
+      { id: `tax_excise_${newCompanyId}`, name: 'Excise Duty (10%)', rate: 10, company_id: newCompanyId, is_active: false, created_at: nowIso, updated_at: nowIso },
+      { id: `tax_zero_${newCompanyId}`, name: 'Zero Rated (0%)', rate: 0, company_id: newCompanyId, is_active: false, created_at: nowIso, updated_at: nowIso },
+    ];
+    const defaultCoBranches = [
+      { id: `br_main_${newCompanyId}`, name: 'Main Branch', company_id: newCompanyId, address: '', phone: '', is_active: true, created_at: nowIso, updated_at: nowIso },
+    ];
+    const defaultCoStores = [
+      { id: `st_main_${newCompanyId}`, name: 'Main Store', branch_id: `br_main_${newCompanyId}`, company_id: newCompanyId, is_active: true, created_at: nowIso, updated_at: nowIso },
+    ];
+
+    // IMMEDIATE DB ASSIGNMENT (defaults): seed the new company's normalized tables
+    for (const cat of defaultCoCategories) {
+      void mutateCollectionRecordToPhp('categories', 'upsert', cat, cat, lastServerVersionRef.current).catch(() => {});
+    }
+    for (const tax of defaultCoTaxes) {
+      void mutateCollectionRecordToPhp('taxes', 'upsert', tax.id, tax, lastServerVersionRef.current).catch(() => {});
+    }
+    for (const branch of defaultCoBranches) {
+      void mutateCollectionRecordToPhp('branches', 'upsert', branch.id, branch, lastServerVersionRef.current).catch(() => {});
+    }
+    for (const store of defaultCoStores) {
+      void mutateCollectionRecordToPhp('stores', 'upsert', store.id, store, lastServerVersionRef.current).catch(() => {});
+    }
 
     // IMMEDIATE DB ASSIGNMENT: the new user row is written straight to MySQL via
     // the atomic upsert_user endpoint (REPLACE INTO tradecore_users + blob dual-write)
