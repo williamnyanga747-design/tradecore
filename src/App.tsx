@@ -6143,8 +6143,10 @@ try {
       return;
     }
 
-    // SECURITY: Send raw password to server — server hashes with bcrypt
-    const updatedUser = { ...currentUser!, password: '', firstLogin: false, mustChangePassword: false, reset_password: false, updated_at: Date.now() };
+    // SECURITY: Send raw password to server — server hashes with bcrypt. But keep
+    // the client-side sha256 hash in ALL downstream writes (apiUpsertUser, flushToPhp,
+    // localStorage) so the stored password can never be clobbered with an empty string.
+    const updatedUser = { ...currentUser!, password: hashPassword(forceNewPass), firstLogin: false, mustChangePassword: false, reset_password: false, updated_at: Date.now() };
 
     // CRITICAL: Persist the new password to the server FIRST so the new hash is
     // guaranteed on every device. Try the tiny atomic change_password request first;
@@ -6221,8 +6223,11 @@ try {
       toast.error(t('Current password incorrect!'));
       return false;
     }
-    // SECURITY: Send raw password to server — server hashes with bcrypt
-    const updatedUser = { ...currentUser, password: '', mustChangePassword: false, updated_at: Date.now() };
+    // SECURITY: Send raw password to server — server hashes with bcrypt. Keep the
+    // client-side sha256 hash in all downstream writes (apiUpsertUser, flushToPhp,
+    // localStorage) so the stored password can never be clobbered with an empty string.
+    const hashedNewPass = hashPassword(newPassword);
+    const updatedUser = { ...currentUser, password: hashedNewPass, mustChangePassword: false, updated_at: Date.now() };
     const companyId = String((updatedUser as any).company_id ?? (updatedUser as any).companyId ?? '');
     let serverOk = false;
     try {

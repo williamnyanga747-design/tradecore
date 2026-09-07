@@ -6,6 +6,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.1] - 2026-09-08
+
+### Password Change Fixes (Root Mandate forced change + Profile change)
+- **FIXED**: Password change no longer blanks the stored password. `apiUpsertUser` was re-sending the user with `password: ''`, overwriting the bcrypt hash just written by `change_password` in all three storage layers (`tradecore_users`, `user_accounts`, blob). After logout the NEW password failed while the old/default password still worked (via the master-default fallback for core super admins).
+- **FIXED**: `change_password` now also syncs the normalized `user_accounts` table (previously only `tradecore_users` + blob got the new hash, so the user list served by `get_state` stayed stale).
+- **FIXED**: `tcUpsertUserRow` treats an empty-string password the same as NULL — an existing hash is preserved on re-sync, so no future client bug can clobber a password with `password: ''`.
+- **FIXED**: `handleProfilePasswordChange` referenced an undefined `hashedNewPass` variable (silent `ReferenceError`); it is now computed and used in all downstream writes.
+- **FIXED**: Deployable bundle (`cpanel_extracted/cpanel/api.php`) re-synced from `public/cpanel/api.php` — it was missing the entire data-integrity commit `0f998ba`, which is why production still exhibited old dual-storage bugs.
+
+### Build Fixes
+- **FIXED**: Duplicate `appVersion` useState in `RootMandatePanel` (would have been a parse-time SyntaxError for the deployed bundle).
+- **FIXED**: Receipt branding referenced non-existent `Store.address` property (now uses `location` only) in `Receipts.tsx` and `POSModal.tsx`.
+
+---
+
 ## [1.0.0] - 2026-09-08
 
 ### Security Fixes

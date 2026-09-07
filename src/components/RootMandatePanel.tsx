@@ -203,7 +203,6 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
   const [loadingStats, setLoadingStats] = useState(false);
   const [confirmTarget, setConfirmTarget] = useState<{ type: string; id: number; label: string } | null>(null);
   const [appVersion, setAppVersion] = useState<{ version: string; name: string; date: string; description: string } | null>(null);
-  const [appVersion, setAppVersion] = useState<{ version: string; name: string; date: string; description: string } | null>(null);
 
   // Hoisted form states (Rules of Hooks — never declare hooks inside render functions)
   const [newCat, setNewCat] = useState('');

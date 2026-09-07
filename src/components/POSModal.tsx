@@ -1127,7 +1127,7 @@ export default function POSModal({
 
     // Use store data directly (receipt branding from server)
     const companyName = storeObj?.name || 'Store';
-    const companyBranch = storeObj?.location || storeObj?.address || '';
+    const companyBranch = storeObj?.location || '';
     const companyPhone = storeObj?.phone || '';
     const customLogo = localStorage.getItem('tradecore_receipt_custom_logo');
 

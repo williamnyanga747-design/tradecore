@@ -92,7 +92,7 @@ export default function Receipts({
   const [customLogo, setCustomLogo] = useState<string | null>(null);
   const currentStore = stores.find(s => s.id === currentStoreId);
   const [companyName, setCompanyName] = useState(() => currentStore?.name || '');
-  const [companyBranch, setCompanyBranch] = useState(() => currentStore?.location || currentStore?.address || '');
+  const [companyBranch, setCompanyBranch] = useState(() => currentStore?.location || '');
   const [companyPhone, setCompanyPhone] = useState(() => currentStore?.phone || '');
   const [companyEmail, setCompanyEmail] = useState(() => '');
   const [showBrandingConfig, setShowBrandingConfig] = useState(false);

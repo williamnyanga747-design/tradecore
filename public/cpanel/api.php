@@ -389,10 +389,11 @@ function tcUpsertUserRow($pdo, $u, $now) {
     ];
     try {
         // IF(VALUES(password_hash) IS NULL, password_hash, VALUES(password_hash)) keeps an
-        // existing hash when the incoming payload carries none (safe re-syncs).
+        // existing hash when the incoming payload carries none (safe re-syncs). Empty-string
+        // is treated the same as NULL so a password-change client bug can never blank the hash.
         $pdo->prepare("INSERT INTO user_accounts (id, company_id, branch_id, store_id, full_name, username, phone, email, role, password_hash, is_active, status, locale, permissions_json, created_at, updated_at, deleted_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
-            ON DUPLICATE KEY UPDATE company_id=VALUES(company_id), branch_id=VALUES(branch_id), store_id=VALUES(store_id), full_name=VALUES(full_name), username=VALUES(username), phone=VALUES(phone), email=VALUES(email), role=VALUES(role), password_hash=IF(VALUES(password_hash) IS NULL, password_hash, VALUES(password_hash)), is_active=VALUES(is_active), status=VALUES(status), locale=VALUES(locale), permissions_json=VALUES(permissions_json), updated_at=VALUES(updated_at), deleted_at=NULL")
+            ON DUPLICATE KEY UPDATE company_id=VALUES(company_id), branch_id=VALUES(branch_id), store_id=VALUES(store_id), full_name=VALUES(full_name), username=VALUES(username), phone=VALUES(phone), email=VALUES(email), role=VALUES(role), password_hash=IF(VALUES(password_hash) IS NULL OR VALUES(password_hash) = '', password_hash, VALUES(password_hash)), is_active=VALUES(is_active), status=VALUES(status), locale=VALUES(locale), permissions_json=VALUES(permissions_json), updated_at=VALUES(updated_at), deleted_at=NULL")
             ->execute([$id, $data['company_id'], $data['branch_id'], $data['store_id'], $data['full_name'], $data['username'], $data['phone'], $data['email'], $data['role'], $data['password_hash'], $data['is_active'], $data['status'], $data['locale'], $data['permissions_json'], $now, $now]);
     } catch (Throwable $e) { error_log('[TradeCore API] upsert user_account failed: ' . $e->getMessage()); return false; }
     // Legacy atomic mirror so existing login/auth keeps working during transition.
@@ -2131,6 +2132,11 @@ try {
                 $up->execute([$userId, $cid, $phone, $j, $ts]);
             }
             $updated = true;
+            // Also sync the normalized user_accounts table — get_state reads the user list
+            // from user_accounts, so without this write the logged-in user's password hash
+            // would stay stale there and inconsistent with tradecore_users / blob.
+            $u['company_id'] = $companyId !== '' ? $companyId : (string)($u['company_id'] ?? $u['companyId'] ?? '');
+            try { tcUpsertUserRow($pdo, $u, $now); } catch (Throwable $eU) { error_log('[TradeCore API] change_password user_accounts sync failed: ' . $eU->getMessage()); }
             try { $pdo->prepare("UPDATE tradecore_meta SET updated_at=? WHERE id=1")->execute([$now]); } catch (Throwable $e) {}
             // Dual-write to blob so legacy blob-login also sees the new sha256 password
             try {
