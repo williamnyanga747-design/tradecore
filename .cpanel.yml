@@ -1,0 +1,6 @@
+---
+deployment:
+  tasks:
+    - export DEPLOYPATH=/home/tanzatrade/tanzaniatradecore.co.tz/
+    - /bin/cp -R cpanel_extracted/* $DEPLOYPATH
+    - /bin/cp cpanel_extracted/.htaccess $DEPLOYPATH
