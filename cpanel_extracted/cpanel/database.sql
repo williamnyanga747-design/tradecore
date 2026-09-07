@@ -4,12 +4,82 @@
 CREATE DATABASE IF NOT EXISTS `tanzatrade_tradecore_erp` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `tanzatrade_tradecore_erp`;
 
--- Core System State Table
+-- Core System State Table — version is the monotonic change counter (primary cross-device detector)
+-- updated_at is kept for human display; version is authoritative (no same-second collisions).
 CREATE TABLE IF NOT EXISTS `tradecore_system_state` (
     `id` INT PRIMARY KEY AUTO_INCREMENT,
     `doc_key` VARCHAR(100) UNIQUE NOT NULL,
     `json_data` LONGTEXT NOT NULL,
-    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    `version` BIGINT NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Atomic tables for PWA stability — one row per entity, no 5 MB blob race
+-- If your cPanel cannot run these, the fallback in api.php keeps the blob with row-lock + merge.
+CREATE TABLE IF NOT EXISTS `tradecore_products` (
+  `id` VARCHAR(50) PRIMARY KEY,
+  `company_id` VARCHAR(50) NOT NULL,
+  `data` JSON NOT NULL,
+  `updated_at` BIGINT NOT NULL,
+  `deleted_at` BIGINT DEFAULT NULL,
+  INDEX `idx_company` (`company_id`, `updated_at`),
+  INDEX `idx_deleted` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `tradecore_users` (
+  `id` VARCHAR(50) PRIMARY KEY,
+  `company_id` VARCHAR(50) NOT NULL,
+  `phone` VARCHAR(20) NOT NULL,
+  `data` JSON NOT NULL,
+  `updated_at` BIGINT NOT NULL,
+  `deleted_at` BIGINT DEFAULT NULL,
+  UNIQUE KEY `uniq_phone_company` (`phone`,`company_id`),
+  INDEX `idx_company` (`company_id`),
+  INDEX `idx_updated` (`updated_at`),
+  INDEX `idx_deleted` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `tradecore_sales` (
+  `id` VARCHAR(50) PRIMARY KEY,
+  `company_id` VARCHAR(50) NOT NULL,
+  `data` JSON NOT NULL,
+  `updated_at` BIGINT NOT NULL,
+  `deleted_at` BIGINT DEFAULT NULL,
+  INDEX `idx_company` (`company_id`, `updated_at`),
+  INDEX `idx_deleted` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `tradecore_marketplace_orders` (
+  `id` VARCHAR(50) PRIMARY KEY,
+  `company_id` VARCHAR(50) NOT NULL,
+  `data` JSON NOT NULL,
+  `updated_at` BIGINT NOT NULL,
+  `deleted_at` BIGINT DEFAULT NULL,
+  INDEX `idx_company` (`company_id`, `updated_at`),
+  INDEX `idx_deleted` (`deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `tradecore_meta` (
+  `id` INT PRIMARY KEY,
+  `app_version` VARCHAR(20) NOT NULL DEFAULT '1.0.9',
+  `updated_at` BIGINT NOT NULL,
+  INDEX `idx_updated` (`updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO `tradecore_meta` (`id`,`app_version`,`updated_at`) VALUES (1,'1.0.9', UNIX_TIMESTAMP());
+
+-- Per-company Stock Categories -- every row captures company_id, category_name and the
+-- created_at/updated_at timestamps. This table is the source of truth for category
+-- fetches (api.php mirrors it from every save_state and rebuilds the blob from it on GET),
+-- so Stock Categories survive blob clobbering, refresh and company switches.
+CREATE TABLE IF NOT EXISTS `tradecore_categories` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `company_id` VARCHAR(50) NOT NULL,
+  `category_name` VARCHAR(255) NOT NULL,
+  `created_at` BIGINT NOT NULL,
+  `updated_at` BIGINT NOT NULL,
+  `deleted_at` BIGINT DEFAULT NULL,
+  UNIQUE KEY `uniq_cat_company` (`company_id`,`category_name`),
+  INDEX `idx_cat_company` (`company_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- User Sessions Table for JWT / Idle Management
@@ -714,3 +784,197 @@ CREATE TABLE IF NOT EXISTS `tra_monthly_reports` (
     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `uk_tra_company_month` (`company_id`, `month`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================================
+-- NORMALIZED PERSISTENT BACKEND STORAGE (PBS) — see migrations/003 parallel.
+-- These six tables are the authoritative, normalized schema that replaces the
+-- monolithic tradecore_system_state JSON blob. api.php self-heals the tables at
+-- runtime (tcEnsureNormalizedTables) and backfills rows from every save_state /
+-- snapshot (tcMirrorNormalized). FKs are provided at the END, apply after the
+-- first sync has populated parent rows on existing installs.
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS `companies` (
+  `id`              VARCHAR(64)  PRIMARY KEY,
+  `owner_user_id`   VARCHAR(64)  DEFAULT NULL,
+  `name`            VARCHAR(255) NOT NULL,
+  `code`            VARCHAR(64)  DEFAULT NULL,
+  `currency_code`   VARCHAR(8)   NOT NULL DEFAULT 'TZS',
+  `country`         VARCHAR(64)  NOT NULL DEFAULT 'Tanzania',
+  `phone`           VARCHAR(32)  DEFAULT NULL,
+  `email`           VARCHAR(190) DEFAULT NULL,
+  `tin_number`      VARCHAR(32)  DEFAULT NULL,
+  `address`         VARCHAR(255) DEFAULT NULL,
+  `latitude`        DECIMAL(10,7) DEFAULT NULL,
+  `longitude`       DECIMAL(10,7) DEFAULT NULL,
+  `is_verified`     TINYINT(1)   NOT NULL DEFAULT 0,
+  `is_active`       TINYINT(1)   NOT NULL DEFAULT 1,
+  `status`          VARCHAR(20)  NOT NULL DEFAULT 'active',
+  `locale`          VARCHAR(5)   NOT NULL DEFAULT 'en',
+  `settings_json`   TEXT         DEFAULT NULL,
+  `created_at`      BIGINT       NOT NULL,
+  `updated_at`      BIGINT       NOT NULL,
+  `deleted_at`      BIGINT       DEFAULT NULL,
+  INDEX `idx_comp_active` (`is_active`, `deleted_at`),
+  INDEX `idx_comp_code`   (`code`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `stores` (
+  `id`              VARCHAR(64)  PRIMARY KEY,
+  `company_id`      VARCHAR(64)  NOT NULL,
+  `branch_id`       VARCHAR(64)  DEFAULT NULL,
+  `name`            VARCHAR(255) NOT NULL,
+  `code`            VARCHAR(64)  DEFAULT NULL,
+  `phone`           VARCHAR(32)  DEFAULT NULL,
+  `email`           VARCHAR(190) DEFAULT NULL,
+  `address`         VARCHAR(255) DEFAULT NULL,
+  `city`            VARCHAR(100) DEFAULT NULL,
+  `is_active`       TINYINT(1)   NOT NULL DEFAULT 1,
+  `settings_json`   TEXT         DEFAULT NULL,
+  `created_at`      BIGINT       NOT NULL,
+  `updated_at`      BIGINT       NOT NULL,
+  `deleted_at`      BIGINT       DEFAULT NULL,
+  INDEX `idx_store_company`   (`company_id`, `deleted_at`),
+  INDEX `idx_store_active`    (`is_active`, `deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `stock_categories` (
+  `id`              VARCHAR(64)  PRIMARY KEY,
+  `company_id`      VARCHAR(64)  NOT NULL,
+  `name`            VARCHAR(255) NOT NULL,
+  `parent_id`       VARCHAR(64)  DEFAULT NULL,
+  `color`           VARCHAR(16)  DEFAULT NULL,
+  `is_active`       TINYINT(1)   NOT NULL DEFAULT 1,
+  `created_at`      BIGINT       NOT NULL,
+  `updated_at`      BIGINT       NOT NULL,
+  `deleted_at`      BIGINT       DEFAULT NULL,
+  UNIQUE KEY `uniq_sc_cat_company` (`company_id`, `name`),
+  INDEX `idx_sc_company` (`company_id`, `deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `products` (
+  `id`                  VARCHAR(64)  PRIMARY KEY,
+  `company_id`          VARCHAR(64)  NOT NULL,
+  `store_id`            VARCHAR(64)  DEFAULT NULL,
+  `category_id`         VARCHAR(64)  DEFAULT NULL,
+  `sku`                 VARCHAR(128) DEFAULT NULL,
+  `name`                VARCHAR(255) NOT NULL,
+  `barcode`             VARCHAR(128) DEFAULT NULL,
+  `unit_price`          DECIMAL(18,2) NOT NULL DEFAULT 0,
+  `cost_price`          DECIMAL(18,2) NOT NULL DEFAULT 0,
+  `stock_qty`           DECIMAL(18,3) NOT NULL DEFAULT 0,
+  `low_stock_threshold` DECIMAL(18,3) DEFAULT NULL,
+  `tax_rate`            DECIMAL(5,2)  NOT NULL DEFAULT 0,
+  `unit`                VARCHAR(32)  DEFAULT NULL,
+  `image_url`           VARCHAR(500) DEFAULT NULL,
+  `description`         TEXT         DEFAULT NULL,
+  `tags_json`           TEXT         DEFAULT NULL,
+  `extra_json`          TEXT         DEFAULT NULL,
+  `is_active`           TINYINT(1)   NOT NULL DEFAULT 1,
+  `created_at`          BIGINT       NOT NULL,
+  `updated_at`          BIGINT       NOT NULL,
+  `deleted_at`          BIGINT       DEFAULT NULL,
+  INDEX `idx_prod_company` (`company_id`, `deleted_at`),
+  INDEX `idx_prod_store`   (`store_id`, `deleted_at`),
+  INDEX `idx_prod_cat`     (`category_id`, `deleted_at`),
+  INDEX `idx_prod_updated` (`company_id`, `updated_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `user_accounts` (
+  `id`               VARCHAR(64)  PRIMARY KEY,
+  `company_id`       VARCHAR(64)  DEFAULT NULL,
+  `full_name`        VARCHAR(255) DEFAULT NULL,
+  `username`         VARCHAR(100) DEFAULT NULL,
+  `phone`            VARCHAR(24)  NOT NULL,
+  `email`            VARCHAR(190) DEFAULT NULL,
+  `role`             VARCHAR(50)  NOT NULL DEFAULT 'Cashier',
+  `password_hash`    VARCHAR(255) DEFAULT NULL,
+  `is_active`        TINYINT(1)   NOT NULL DEFAULT 1,
+  `status`           VARCHAR(20)  NOT NULL DEFAULT 'active',
+  `locale`           VARCHAR(5)   NOT NULL DEFAULT 'en',
+  `permissions_json` TEXT         DEFAULT NULL,
+  `created_at`       BIGINT       NOT NULL,
+  `updated_at`       BIGINT       NOT NULL,
+  `deleted_at`       BIGINT       DEFAULT NULL,
+  UNIQUE KEY `uniq_ua_phone_company` (`phone`, `company_id`),
+  UNIQUE KEY `uniq_ua_username`  (`username`),
+  INDEX `idx_ua_company` (`company_id`, `deleted_at`),
+  INDEX `idx_ua_active`  (`is_active`, `deleted_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `audit_trails` (
+  `id`            VARCHAR(64)  PRIMARY KEY,
+  `company_id`    VARCHAR(64)  NOT NULL,
+  `store_id`      VARCHAR(64)  DEFAULT NULL,
+  `user_id`       VARCHAR(64)  DEFAULT NULL,
+  `user_name`     VARCHAR(255) DEFAULT NULL,
+  `action`        VARCHAR(100) NOT NULL,
+  `entity_type`   VARCHAR(100) DEFAULT NULL,
+  `entity_id`     VARCHAR(64)  DEFAULT NULL,
+  `entity_name`   VARCHAR(255) DEFAULT NULL,
+  `details`       TEXT         DEFAULT NULL,
+  `details_json`  TEXT         DEFAULT NULL,
+  `ip_address`    VARCHAR(45)  DEFAULT NULL,
+  `created_at`    BIGINT       NOT NULL,
+  INDEX `idx_at_company_action` (`company_id`, `action`),
+  INDEX `idx_at_created`    (`created_at`),
+  INDEX `idx_at_entity`     (`entity_type`, `entity_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO `products`
+  (`id`, `company_id`, `store_id`, `category_id`, `sku`, `name`, `barcode`,
+   `unit_price`, `cost_price`, `stock_qty`, `tax_rate`, `unit`, `image_url`,
+   `description`, `is_active`, `created_at`, `updated_at`, `deleted_at`)
+SELECT
+  d.`id`,
+  d.`company_id`,
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.storeId')),
+  NULL,
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.sku')),
+  COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.name')), JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.productName')), d.`id`),
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.barcode')),
+  COALESCE(JSON_EXTRACT(d.`data`, '$.price'), 0),
+  COALESCE(JSON_EXTRACT(d.`data`, '$.costPrice'), JSON_EXTRACT(d.`data`, '$.unitCost'), 0),
+  COALESCE(JSON_EXTRACT(d.`data`, '$.stockQty'), JSON_EXTRACT(d.`data`, '$.quantity'), 0),
+  COALESCE(JSON_EXTRACT(d.`data`, '$.taxRate'), 0),
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.unit')),
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.image')),
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.description')),
+  1,
+  COALESCE(JSON_EXTRACT(d.`data`, '$.created_at'), UNIX_TIMESTAMP()),
+  COALESCE(JSON_EXTRACT(d.`data`, '$.updated_at'), d.`updated_at`),
+  d.`deleted_at`
+FROM `tradecore_products` d ON DUPLICATE KEY UPDATE `updated_at` = VALUES(`updated_at`);
+
+INSERT IGNORE INTO `user_accounts`
+  (`id`, `company_id`, `full_name`, `username`, `phone`, `email`, `role`,
+   `password_hash`, `is_active`, `status`, `locale`, `created_at`, `updated_at`,
+   `deleted_at`)
+SELECT
+  d.`id`,
+  d.`company_id`,
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.fullName')),
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.username')),
+  COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.phone')), d.`phone`),
+  JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.email')),
+  COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.role')), 'Cashier'),
+  COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.password')), JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.passwordHash'))),
+  COALESCE(JSON_EXTRACT(d.`data`, '$.is_active'), 1),
+  COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.status')), 'active'),
+  COALESCE(JSON_UNQUOTE(JSON_EXTRACT(d.`data`, '$.locale')), 'en'),
+  COALESCE(JSON_EXTRACT(d.`data`, '$.created_at'), UNIX_TIMESTAMP()),
+  COALESCE(JSON_EXTRACT(d.`data`, '$.updated_at'), d.`updated_at`),
+  d.`deleted_at`
+FROM `tradecore_users` d ON DUPLICATE KEY UPDATE `updated_at` = VALUES(`updated_at`);
+
+INSERT IGNORE INTO `stock_categories`
+  (`id`, `company_id`, `name`, `color`, `created_at`, `updated_at`, `deleted_at`)
+SELECT
+  CONCAT('c', c.`id`),
+  c.`company_id`,
+  c.`category_name`,
+  '#f59e0b',
+  c.`created_at`,
+  c.`updated_at`,
+  c.`deleted_at`
+FROM `tradecore_categories` c ON DUPLICATE KEY UPDATE `updated_at` = VALUES(`updated_at`);

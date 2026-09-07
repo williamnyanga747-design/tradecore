@@ -94,6 +94,26 @@ import { jsPDF } from 'jspdf';
 import { getFIFOInventoryValuation, cleanupEmptyBatches } from './utils/fifo';
 import { saveSystemDataToPhp, fetchSystemDataFromPhp, connectPhpRealtimeSync, getPhpConfig, savePhpConfig, apiCollectionInitiate, apiCollectionStatus, fetchCheckTimestamp, getLastServerVersion, setLastServerVersion, apiDeleteProduct, apiAssignUser, discoverApiUrl, apiLoginAtomic, apiUpsertProduct, apiUpsertUser, apiUpsertSale, apiUpsertOrder, apiDeleteUser, apiChangePassword, consumeConflictData, mutateCollectionRecordToPhp, getAuditLogsFromPhp, fetchCompanySnapshot, purgeCompanyFromPhp, softDeleteCompanyFromPhp, getOperatorHeaders, buildSessionToken } from './utils/api';
 import { replaceQueue, queueMutations, getQueueSnapshot, clearQueue, drainSyncQueue, registerOnlineSync, cacheSystemState, getCachedSystemState, flushQueueNow } from './utils/offlinePersistence';
+import {
+  listExpenses, upsertExpense, deleteExpense,
+  listSuppliers, upsertSupplier, deleteSupplier,
+  listPurchaseOrders, upsertPurchaseOrder, deletePurchaseOrder,
+  listCustomers, upsertCustomer, deleteCustomer,
+  getCompanySettings, upsertCompanySettings,
+  listTaxRules, upsertTaxRule, deleteTaxRule,
+  listFlashSales, upsertFlashSale, deleteFlashSale,
+  listStories, upsertStory, deleteStory,
+  listDisputes, upsertDispute, deleteDispute,
+  listDisputeMessages, upsertDisputeMessage,
+  listProductReturns, upsertProductReturn, deleteProductReturn,
+  listChatConversations, upsertChatConversation, deleteChatConversation,
+  listChatMessages, upsertChatMessage,
+  listEscrowTransactions, upsertEscrowTransaction,
+  listVisualSearches, upsertVisualSearch,
+  listInstallmentPlans, upsertInstallmentPlan, deleteInstallmentPlan,
+  listInstallmentOrders, upsertInstallmentOrder,
+  listInstallmentPayments, upsertInstallmentPayment
+} from './utils/entityPersistence';
 // @ts-ignore - virtual module provided by vite-plugin-pwa
 import { registerSW } from 'virtual:pwa-register';
 import { toast, Toast } from './utils/toast';
@@ -3615,34 +3635,137 @@ export default function App() {
     // 1. Update React states instantly for 100% snappy UI response
     applyCollectionState(updatedFields as unknown as Record<string, any>);
 
-    // 2. Compute local state with optimistic changes
-    const freshDataLocal = {
-      ...nextState,
-      lastUpdated: nowIso
-    };
+    // 2. NO localStorage write — source of truth is MySQL database.
+    //    Every write goes through atomic API endpoints directly to the server.
 
-    // 3. Write optimistic cache to localStorage — deferred one tick + coalesced so the
-    //    JSON.stringify of a large state never blocks the action's return to the user.
-    //    The server flush reads dbStateRef (already updated above), so ordering is safe.
-    localCachePayloadRef.current = freshDataLocal;
-    if (localCacheTimerRef.current === null) {
-      localCacheTimerRef.current = window.setTimeout(() => {
-        localCacheTimerRef.current = null;
-        const payload = localCachePayloadRef.current;
-        localCachePayloadRef.current = null;
-        if (payload) {
-          try {
-            localStorage.setItem('tradecore_data', JSON.stringify(payload));
-          } catch (err) {
-            console.warn('[localStorage] Quota exceeded while caching state (large media may not persist locally).', err);
-          }
+    // 3. Atomic API flush: for each changed collection, call the appropriate
+    //    atomic endpoint immediately (no debounce, no localStorage caching).
+    //    This ensures every save goes straight to the MySQL database.
+    try {
+      const companyId = dbStateRef.current?.companies?.[0]?.id || (dbStateRef.current as any)?.companies?.[0]?.id || '';
+      const changedKeys = Object.keys(updatedFields || {}).filter(k => !NON_SYNCED_KEYS.has(k));
+      for (const key of changedKeys) {
+        const val = (updatedFields as any)[key];
+        if (!val) continue;
+
+        // Route each collection to its atomic API endpoint
+        switch (key) {
+          case 'expenses':
+            if (Array.isArray(val)) {
+              // For array replacements, upsert each expense that has an id
+              for (const e of val) { if (e?.id) upsertExpense(e, companyId).catch(() => {}); }
+            }
+            break;
+          case 'suppliers':
+            if (Array.isArray(val)) {
+              for (const s of val) { if (s?.id) upsertSupplier(s, companyId).catch(() => {}); }
+            }
+            break;
+          case 'purchaseOrders':
+            if (Array.isArray(val)) {
+              for (const po of val) { if (po?.id) upsertPurchaseOrder(po, companyId).catch(() => {}); }
+            }
+            break;
+          case 'customers':
+            if (Array.isArray(val)) {
+              for (const c of val) { if (c?.id) upsertCustomer(c, companyId).catch(() => {}); }
+            }
+            break;
+          case 'settings':
+            if (val && typeof val === 'object') {
+              upsertCompanySettings({ ...val, company_id: companyId } as any, companyId).catch(() => {});
+            }
+            break;
+          case 'taxes':
+            if (Array.isArray(val)) {
+              for (const t of val) { if (t?.id) upsertTaxRule(t, companyId).catch(() => {}); }
+            }
+            break;
+          case 'flashSales':
+            if (Array.isArray(val)) {
+              for (const fs of val) { if (fs?.id) upsertFlashSale(fs, companyId).catch(() => {}); }
+            }
+            break;
+          case 'stories':
+            if (Array.isArray(val)) {
+              for (const s of val) { if (s?.id) upsertStory(s, companyId).catch(() => {}); }
+            }
+            break;
+          case 'disputes':
+            if (Array.isArray(val)) {
+              for (const d of val) { if (d?.id) upsertDispute(d, companyId).catch(() => {}); }
+            }
+            break;
+          case 'disputeMessages':
+            if (Array.isArray(val)) {
+              for (const m of val) { if (m?.id) upsertDisputeMessage(m).catch(() => {}); }
+            }
+            break;
+          case 'productReturns':
+            if (Array.isArray(val)) {
+              for (const r of val) { if (r?.id) upsertProductReturn(r, companyId).catch(() => {}); }
+            }
+            break;
+          case 'chatConversations':
+            if (Array.isArray(val)) {
+              for (const c of val) { if (c?.id) upsertChatConversation(c, companyId).catch(() => {}); }
+            }
+            break;
+          case 'chatMessages':
+            if (Array.isArray(val)) {
+              for (const m of val) { if (m?.id) upsertChatMessage(m).catch(() => {}); }
+            }
+            break;
+          case 'escrowTransactions':
+            if (Array.isArray(val)) {
+              for (const e of val) { if (e?.id) upsertEscrowTransaction(e, companyId).catch(() => {}); }
+            }
+            break;
+          case 'visualSearches':
+            if (Array.isArray(val)) {
+              for (const v of val) { if (v?.id) upsertVisualSearch(v, companyId).catch(() => {}); }
+            }
+            break;
+          case 'installmentPlans':
+            if (Array.isArray(val)) {
+              for (const p of val) { if (p?.id) upsertInstallmentPlan(p, companyId).catch(() => {}); }
+            }
+            break;
+          case 'installmentOrders':
+            if (Array.isArray(val)) {
+              for (const o of val) { if (o?.id) upsertInstallmentOrder(o, companyId).catch(() => {}); }
+            }
+            break;
+          case 'installmentPayments':
+            if (Array.isArray(val)) {
+              for (const p of val) { if (p?.id) upsertInstallmentPayment(p).catch(() => {}); }
+            }
+            break;
+          // These collections already have atomic endpoints via api.ts
+          case 'stockItems':
+          case 'companies':
+          case 'branches':
+          case 'stores':
+          case 'users':
+          case 'marketplaceProducts':
+          case 'marketplaceOrders':
+          case 'salesOrders':
+            // Handled by existing mutateCollectionRecord / apiUpsert* functions
+            // Schedule the existing PHP flush for these
+            schedulePhpFlush();
+            break;
+          default:
+            // For collections without dedicated atomic endpoints, use the existing
+            // save_state blob flush as fallback (keeps backward compatibility)
+            schedulePhpFlush();
+            break;
         }
-      }, 0);
+      }
+    } catch (err) {
+      console.warn('[saveAllData] Atomic API dispatch error:', err);
+      // Fallback: schedule the blob flush if atomic dispatch fails
+      schedulePhpFlush();
     }
-
-    // 4. Schedule a debounced background flush to the PHP server (non-blocking).
-    //    The UI is already updated + cached locally, so nothing here blocks the user.
-    schedulePhpFlush();
   };
 
   // Coalesce rapid saves into a single server round-trip. Background edits use a long
@@ -3746,7 +3869,8 @@ export default function App() {
         (dirtyValuesRef.current as any)[collection] = nextArray;
       }
       try {
-        localStorage.setItem('tradecore_data', JSON.stringify({ ...dbStateRef.current, lastUpdated: new Date().toISOString() }));
+        // localStorage.write REMOVED — source of truth is MySQL database.
+        // The atomic API call below persists directly to the server.
       } catch {}
 
       // --- 3. Isolated micro-update with explicit ack ---

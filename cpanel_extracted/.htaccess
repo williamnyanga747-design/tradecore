@@ -14,24 +14,33 @@
   RewriteCond %{REQUEST_FILENAME} -d
   RewriteRule ^ - [L]
 
-  # Route API requests directly to api/api.php if needed
-  RewriteRule ^api/php_sync\.php$ api/api.php [L]
-  RewriteRule ^api/api\.php$ api/api.php [L]
-  RewriteRule ^api/ai-assist$ api/api.php [L]
-  RewriteRule ^api/copilot-analysis$ api/api.php [L]
-  RewriteRule ^api/forgot-password$ api/api.php [L]
-  RewriteRule ^api/reset-password$ api/api.php [L]
-  RewriteRule ^api/register$ api/api.php [L]
+  # Route API requests directly to cpanel/api.php (the real backend)
+  RewriteRule ^api/php_sync\.php$ cpanel/api.php [L]
+  RewriteRule ^api/api\.php$ cpanel/api.php [L]
+  RewriteRule ^api/ai-assist$ cpanel/api.php [L]
+  RewriteRule ^api/copilot-analysis$ cpanel/api.php [L]
+  RewriteRule ^api/forgot-password$ cpanel/api.php [L]
+  RewriteRule ^api/reset-password$ cpanel/api.php [L]
+  RewriteRule ^api/register$ cpanel/api.php [L]
 
   # AI endpoints requested at the document root
-  RewriteRule ^ai-assist$ api.php [L]
-  RewriteRule ^copilot-analysis$ api.php [L]
-  RewriteRule ^register$ api/api.php [L]
+  RewriteRule ^ai-assist$ cpanel/api.php [L]
+  RewriteRule ^copilot-analysis$ cpanel/api.php [L]
+  RewriteRule ^register$ cpanel/api.php [L]
 
   # SEO sitemaps (served dynamically by sitemap.php)
   RewriteRule ^sitemap\.xml$ sitemap.php [L]
   RewriteRule ^sitemap-products\.xml$ sitemap.php [L]
   RewriteRule ^sitemap-companies\.xml$ sitemap.php [L]
+
+  # API / cPanel backend paths MUST never fall through to the SPA index.html — a
+  # partial/overwritten extract would otherwise return HTML (200) for e.g.
+  # /api/php_sync.php, which the frontend cannot parse as JSON. Match on REQUEST_URI
+  # (leading slash) so no RewriteBase/subdir quirk can defeat the guard; if the real
+  # file is missing (or was written away) we stop rewriting so Apache returns a 404.
+  RewriteCond %{REQUEST_URI} ^/api/ [OR]
+  RewriteCond %{REQUEST_URI} ^/cpanel/
+  RewriteRule ^ - [L]
 
   # SPA Fallback: Route all other web routes to index.html
   RewriteRule ^ index.html [L]
@@ -43,9 +52,26 @@
   Header set X-Frame-Options "SAMEORIGIN"
   Header set X-XSS-Protection "1; mode=block"
   Header set Referrer-Policy "strict-origin-when-cross-origin"
+  # Force correct MIME type for ServiceWorker (prevents text/html 404 pages)
+  <Files "sw.js">
+    Header set Content-Type "application/javascript; charset=utf-8"
+    Header set Service-Worker-Allowed "/"
+  </Files>
 </IfModule>
 
 # Compression
 <IfModule mod_deflate.c>
   AddOutputFilterByType DEFLATE text/html text/plain text/xml text/css text/javascript application/javascript application/json
+</IfModule>
+
+# Cache busting — Vite hashed assets are immutable; HTML/SW must never be cached or browsers stick on old build
+<IfModule mod_headers.c>
+  <FilesMatch "\.(js|css)$">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "^(index\.html|sw\.js|manifest\.json)$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires "0"
+  </FilesMatch>
 </IfModule>

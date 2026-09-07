@@ -2810,6 +2810,14 @@ try {
             exit();
         }
 
+        // ---- v2 entity endpoints (expenses, suppliers, customers, etc.) --------
+        $entitiesFile = __DIR__ . '/api_entities.php';
+        if (is_file($entitiesFile)) {
+            try { require $entitiesFile; } catch (Throwable $eEnt) {
+                error_log('[TradeCore API] api_entities.php failed: ' . $eEnt->getMessage());
+            }
+        }
+
         // ---- unknown v2_ action ------------------------------------------------
         echo json_encode(["success" => false, "error" => "Unknown v2 action: " . $action, "server_ts" => $now]);
         exit();

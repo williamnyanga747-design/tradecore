@@ -18,9 +18,20 @@ STEP 1: IMPORT THE MYSQL DATABASE SCHEMA IN CPANEL
 4. Make sure user `tanzatrade_tanzatrade` has "ALL PRIVILEGES" assigned on database `tanzatrade_tradecore_erp`.
 5. Open "phpMyAdmin" in cPanel.
 6. Select database `tanzatrade_tradecore_erp` on the left sidebar.
-7. Click the "Import" tab at the top.
-8. Choose `database.sql` from this package and click "Go".
-   (This creates `tradecore_system_state`, `user_sessions`, and `audit_trails` tables).
+
+   *** IF THIS IS A FRESH INSTALL (no existing data): ***
+   a. Click "Import" tab
+   b. Choose `database.sql` and click "Go"
+   c. Then import `cpanel/migrations/004_additive_entities.sql`
+
+   *** IF YOU ALREADY HAVE DATA IN THE DATABASE: ***
+   a. Click "Import" tab
+   b. Choose `cpanel/migrations/004_additive_entities.sql` and click "Go"
+   c. This ONLY adds new tables (expenses, suppliers, purchase_orders, customers,
+      company_settings, tax_rules, flash_sales, stories, disputes, dispute_messages,
+      product_returns, chat_conversations, chat_messages, escrow_transactions,
+      visual_searches, installment_plans, installment_orders, installment_payments).
+      Your existing data is COMPLETELY SAFE — no tables are dropped or modified.
 
 --------------------------------------------------------------------------------
 STEP 2: UPLOAD & EXTRACT FILES IN CPANEL FILE MANAGER
@@ -145,10 +156,22 @@ FILE STRUCTURE IN PUBLIC_HTML
 public_html/
  ├── index.html                  (React Single Page App)
  ├── .htaccess                   (Apache URL rewrite rule for SPA routes & API routing)
- ├── api.php                     (REST API + JWT/Session helper & MySQL backend)
- ├── database.sql                (MySQL Schema file for phpMyAdmin)
+ ├── api.php                     (REST API — backward-compatible root alias)
+ ├── database.sql                (Full MySQL schema for phpMyAdmin import)
+ ├── cpanel/
+ │   ├── api.php                 (Main REST API backend)
+ │   ├── api_entities.php        (Atomic CRUD for all entity tables)
+ │   ├── api_backup_500.php      (Extended API — AI, payments, webhooks)
+ │   ├── database.sql            (Schema copy)
+ │   ├── config/
+ │   │   └── db.php              (Production DB credentials)
+ │   └── migrations/
+ │       ├── 001_multi_store_location.sql
+ │       ├── 002_atomic_tables.sql     (NEW: expenses, suppliers, customers, etc.)
+ │       ├── 002_category_persistence.sql
+ │       └── 003_normalized_persistence.sql
  ├── api/
- │   ├── api.php                 (REST API endpoint)
+ │   ├── api.php                 (REST API endpoint — alias to cpanel/api.php)
  │   └── php_sync.php            (Compatibility REST API endpoint)
  └── assets/                     (Compiled JavaScript, CSS, & Web Assets)
 
