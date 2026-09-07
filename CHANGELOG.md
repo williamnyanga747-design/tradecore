@@ -6,6 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.2] - 2026-09-08
+
+### Clear Authentication Messages (Login / Register / Forgot Password)
+- **ADDED**: Inline error box on the login form — failed logins now show the exact reason directly on the page (wrong password with attempt count, blocked/revoked account, account not found) instead of only a transient toast.
+- **ADDED**: Forgot-password / reset-password is now fully functional end-to-end. `api.php` previously had NO `forgot-password`/`reset-password` handlers, so the UI always fell through to a generic "backend not found" error:
+  - New `password_reset_tokens` table (sha256 token hash, single-use, 10-minute expiry).
+  - `forgot-password`: looks up the account by email (within `tradecore_users` blob data + `user_accounts`), mints a one-time token, and emails a reset link via `mail()`; when mail is unavailable the UI receives a visible fallback link. Never reveals whether an account exists (generic success message for unknown emails).
+  - `reset-password`: validates the token + expiry, sets a new bcrypt password, and syncs it across all three layers (`tradecore_users`, `user_accounts` via `tcUpsertUserRow`, blob), also clearing `mustChangePassword`/first-login flags.
+- **FIXED**: Registration duplicate checks (username/email/company) and submission errors now return a message string that `RegisterCompany` displays inline, instead of toast-only.
+
+### Build
+- **FIXED**: `handleRegister` in App.tsx now returns error strings and the `onRegister` prop type accepts `string | void`.
+- **ADDED**: Sidebar footer now shows the running app version (`TradeCore v1.0.2` expanded / `v1.0.2` collapsed).
+
+---
+
 ## [1.0.1] - 2026-09-08
 
 ### Password Change Fixes (Root Mandate forced change + Profile change)

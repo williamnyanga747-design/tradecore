@@ -96,6 +96,9 @@ function SidebarInner({
   const [showReports, setShowReports] = useState(isReportActive);
   const [showUsers, setShowUsers] = useState(isUserActive);
 
+  // App version (from version.json emitted at deploy time) shown in the sidebar footer
+  const [appVersion, setAppVersion] = useState<{ version: string; name?: string; date?: string; description?: string } | null>(null);
+
   // Sync accordion state on currentPage change so only the relevant submenu is expanded
   useEffect(() => {
     if (isMasterActive) {
@@ -125,6 +128,16 @@ function SidebarInner({
       setShowUsers(false);
     }
   }, [currentPage]);
+
+  // Fetch app version once on mount for the sidebar footer
+  useEffect(() => {
+    let mounted = true;
+    fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => { if (mounted && d?.version) setAppVersion(d); })
+      .catch(() => {});
+    return () => { mounted = false; };
+  }, []);
 
   const toggleMasters = () => {
     if (isCollapsed && onToggleCollapse) {
@@ -892,6 +905,18 @@ function SidebarInner({
           {!isCollapsed && <span>{t('Logout')}</span>}
         </button>
       </div>
+
+      {/* App version footer */}
+      {appVersion?.version && (
+        <div className="px-3 pb-3 flex-shrink-0">
+          <p
+            className={`text-center text-[9px] font-semibold text-gray-500 ${isCollapsed ? 'truncate' : ''}`}
+            title={`${appVersion.name || 'TradeCore'} v${appVersion.version}`}
+          >
+            {isCollapsed ? `v${appVersion.version}` : `${appVersion.name || 'TradeCore'} v${appVersion.version}`}
+          </p>
+        </div>
+      )}
     </aside>
   );
 }

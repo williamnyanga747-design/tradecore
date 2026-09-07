@@ -180,6 +180,8 @@ function tcEnsureNormalizedTables($pdo) {
         try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN branch_id VARCHAR(64) DEFAULT NULL AFTER company_id"); } catch (Throwable $eMig) {}
         try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN store_id VARCHAR(64) DEFAULT NULL AFTER branch_id"); } catch (Throwable $eMig2) {}
         $pdo->exec("CREATE TABLE IF NOT EXISTS audit_trails (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, store_id VARCHAR(64) DEFAULT NULL, user_id VARCHAR(64) DEFAULT NULL, user_name VARCHAR(255) DEFAULT NULL, action VARCHAR(100) NOT NULL, entity_type VARCHAR(100) DEFAULT NULL, entity_id VARCHAR(64) DEFAULT NULL, entity_name VARCHAR(255) DEFAULT NULL, details TEXT DEFAULT NULL, details_json TEXT DEFAULT NULL, ip_address VARCHAR(45) DEFAULT NULL, created_at BIGINT NOT NULL, INDEX idx_at_company_action (company_id, action), INDEX idx_at_created (created_at), INDEX idx_at_entity (entity_type, entity_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        // Password reset tokens (forgot-password / reset-password): single-use, 10-minute expiry.
+        $pdo->exec("CREATE TABLE IF NOT EXISTS password_reset_tokens (id VARCHAR(64) PRIMARY KEY, token_hash CHAR(64) NOT NULL, user_id VARCHAR(64) NOT NULL, company_id VARCHAR(64) DEFAULT NULL, email VARCHAR(190) NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, consumed TINYINT(1) NOT NULL DEFAULT 0, UNIQUE KEY uniq_prt_hash (token_hash), INDEX idx_prt_hash_consumed (token_hash, consumed)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $done = true;
     } catch (Throwable $e) {
         error_log('[TradeCore API] tcEnsureNormalizedTables failed: ' . $e->getMessage());
@@ -2328,6 +2330,163 @@ try {
     // INLINE FAST-TRACK: login (reads from tradecore_users atomic table directly,
     // never depends on blob state — immune to empty-blob corruption)
     // ============================================================================
+    // ============================================================================
+    // forgot-password: email a single-use reset link (or return it when mail() is
+    // unavailable so the UI can show it). Never reveals whether the account exists.
+    // ============================================================================
+    if ($action === 'forgot-password') {
+        if (!$pdo) { echo json_encode(["success" => false, "error" => "Database unavailable", "server_ts" => $now]); exit(); }
+        $input = json_decode($rawInput, true);
+        $email = strtolower(trim((string)($_POST['email'] ?? $input['email'] ?? '')));
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            echo json_encode(["success" => false, "error" => "Please enter a valid email address.", "server_ts" => $now]);
+            exit();
+        }
+        $foundId = ''; $foundCompany = ''; $foundUser = null;
+        try {
+            // tradecore_users has no email column — email lives inside the data JSON, so scan it.
+            $like = '%' . $email . '%';
+            $stmt = $pdo->prepare("SELECT id, company_id, data FROM tradecore_users WHERE data LIKE ? AND deleted_at IS NULL LIMIT 50");
+            $stmt->execute([$like]);
+            foreach ($stmt->fetchAll() as $r) {
+                if (!$r['data']) continue;
+                $dec = json_decode($r['data'], true);
+                if (!is_array($dec)) continue;
+                if (strtolower(trim((string)($dec['email'] ?? ''))) === $email) {
+                    $foundUser = $dec; $foundId = (string)$r['id']; $foundCompany = (string)($r['company_id'] ?? '');
+                    break;
+                }
+            }
+        } catch (Throwable $eFe) { error_log('[TradeCore API] forgot-password lookup failed: ' . $eFe->getMessage()); }
+        if (!$foundUser) {
+            try {
+                $stmt = $pdo->prepare("SELECT id, company_id, username FROM user_accounts WHERE lower(email) = lower(?) AND deleted_at IS NULL LIMIT 1");
+                $stmt->execute([$email]);
+                $row = $stmt->fetch();
+                if ($row) { $foundId = (string)$row['id']; $foundCompany = (string)($row['company_id'] ?? ''); $foundUser = ['id' => $foundId, 'username' => (string)($row['username'] ?? $foundId)]; }
+            } catch (Throwable $eFe2) { error_log('[TradeCore API] forgot-password user_accounts lookup failed: ' . $eFe2->getMessage()); }
+        }
+        $token = bin2hex(random_bytes(24));
+        $resetUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'tanzaniatradecore.co.tz') . '/reset-password?token=' . urlencode($token);
+        if ($foundId !== '' && $foundUser) {
+            try {
+                tcEnsureNormalizedTables($pdo);
+                $pdo->prepare("INSERT INTO password_reset_tokens (id, token_hash, user_id, company_id, email, created_at, expires_at, consumed) VALUES (?,?,?,?,?,?,?,0)")
+                    ->execute([bin2hex(random_bytes(8)), hash('sha256', $token), $foundId, $foundCompany, $email, $now, $now + 600]);
+            } catch (Throwable $eTok) { error_log('[TradeCore API] forgot-password token insert failed: ' . $eTok->getMessage()); }
+        }
+        $mailSent = false;
+        if (function_exists('mail') && getenv('DISABLE_RESET_MAIL') !== '1') {
+            $subject = 'TradeCore ERP - Password Reset Link';
+            $body = "Hello,\n\nUse the link below to reset your TradeCore ERP password. It works once and expires in 10 minutes.\n\n" . $resetUrl . "\n\nIf you did not request this, you can safely ignore this email.\n\n- TradeCore ERP Support";
+            $headers = "From: TradeCore ERP <no-reply@tanzaniatradecore.co.tz>\r\nReply-To: globaltradecore@gmail.com\r\nContent-Type: text/plain; charset=UTF-8\r\n";
+            try { $mailSent = @mail($email, $subject, $body, $headers); } catch (Throwable $eMail) { $mailSent = false; }
+        }
+        if ($foundId === '' || !$foundUser) {
+            echo json_encode(["success" => true, "message" => "If an account exists for that email, a password reset link has been sent to it.", "sent" => $mailSent, "server_ts" => $now]);
+        } elseif ($mailSent) {
+            echo json_encode(["success" => true, "message" => "A password reset link has been sent to your email. It expires in 10 minutes.", "sent" => true, "server_ts" => $now]);
+        } else {
+            echo json_encode(["success" => true, "sent" => false, "token" => $token, "resetUrl" => $resetUrl, "message" => "We could not send the email automatically, so use this one-time secure reset link (valid for 10 minutes).", "server_ts" => $now]);
+        }
+        exit();
+    }
+
+    // ============================================================================
+    // reset-password: redeem a single-use token and set a new password (bcrypt),
+    // synced to tradecore_users + user_accounts + blob, with mustChangePassword cleared.
+    // ============================================================================
+    if ($action === 'reset-password') {
+        if (!$pdo) { echo json_encode(["success" => false, "error" => "Database unavailable", "server_ts" => $now]); exit(); }
+        $input = json_decode($rawInput, true);
+        $token = (string)($input['token'] ?? '');
+        $newPassword = (string)($input['password'] ?? '');
+        if ($token === '' || $newPassword === '') {
+            echo json_encode(["success" => false, "error" => "Missing reset token or new password.", "server_ts" => $now]);
+            exit();
+        }
+        if (strlen($newPassword) < 6) {
+            echo json_encode(["success" => false, "error" => "New password must be at least 6 characters long.", "server_ts" => $now]);
+            exit();
+        }
+        $tokRow = null;
+        try {
+            tcEnsureNormalizedTables($pdo);
+            $stmt = $pdo->prepare("SELECT * FROM password_reset_tokens WHERE token_hash=? AND consumed=0 AND expires_at > ? LIMIT 1");
+            $stmt->execute([hash('sha256', $token), $now]);
+            $tokRow = $stmt->fetch();
+        } catch (Throwable $eTok2) { $tokRow = null; }
+        if (!$tokRow) {
+            echo json_encode(["success" => false, "error" => "This reset link is invalid or has expired. Please request a new one.", "server_ts" => $now]);
+            exit();
+        }
+        $userId = (string)$tokRow['user_id'];
+        $companyId = (string)($tokRow['company_id'] ?? '');
+        $u = null; $phone = '';
+        try {
+            if ($companyId !== '') {
+                $stmt = $pdo->prepare("SELECT data FROM tradecore_users WHERE id=? AND company_id=? LIMIT 1"); $stmt->execute([$userId, $companyId]);
+            } else {
+                $stmt = $pdo->prepare("SELECT data FROM tradecore_users WHERE id=? LIMIT 1"); $stmt->execute([$userId]);
+            }
+            $row = $stmt->fetch();
+            if ($row && $row['data']) { $dec = json_decode($row['data'], true); if (is_array($dec)) $u = $dec; }
+        } catch (Throwable $eLd) { error_log('[TradeCore API] reset-password load failed: ' . $eLd->getMessage()); }
+        if (!$u) {
+            try {
+                $preRow = $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch();
+                if ($preRow && $preRow['json_data']) {
+                    $pd = normalizeBlobData(json_decode($preRow['json_data'], true));
+                    if (is_array($pd) && isset($pd['users'])) foreach ($pd['users'] as $bu) {
+                        if (isset($bu['id']) && (string)$bu['id'] === $userId) { $u = $bu; if (isset($bu['phone'])) $phone = (string)$bu['phone']; break; }
+                    }
+                }
+            } catch (Throwable $eLd2) {}
+        }
+        if ($companyId === '') $companyId = (string)($u['company_id'] ?? $u['companyId'] ?? '');
+        if ($phone === '') $phone = (string)($u['phone'] ?? $u['phoneNumber'] ?? '');
+        if (!$u || !isset($u['id'])) {
+            echo json_encode(["success" => false, "error" => "We could not find the account for this reset link. Please request a new one.", "server_ts" => $now]);
+            exit();
+        }
+        $newHash = password_hash($newPassword, PASSWORD_BCRYPT);
+        $u['password'] = $newHash;
+        $u['mustChangePassword'] = false;
+        $u['firstLogin'] = false;
+        $u['first_time_login'] = false;
+        $u['reset_password'] = false;
+        $u['updated_at'] = $now;
+        unset($u['password_hash']);
+        try {
+            $pdo->prepare("REPLACE INTO tradecore_users (id, company_id, phone, data, updated_at, deleted_at) VALUES (?,?,?,?,?,NULL)")
+                ->execute([$userId, $companyId, $phone, json_encode($u, JSON_UNESCAPED_UNICODE), $now]);
+        } catch (Throwable $eW) { error_log('[TradeCore API] reset-password write failed: ' . $eW->getMessage()); }
+        $u['company_id'] = $companyId;
+        try { tcUpsertUserRow($pdo, $u, $now); } catch (Throwable $eU2) { error_log('[TradeCore API] reset-password user_accounts sync failed: ' . $eU2->getMessage()); }
+        try {
+            $preRow = $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch();
+            if ($preRow && $preRow['json_data']) {
+                $pd = normalizeBlobData(json_decode($preRow['json_data'], true)) ?: [];
+                if (isset($pd['users']) && is_array($pd['users'])) {
+                    foreach ($pd['users'] as &$uu) {
+                        if (isset($uu['id']) && (string)$uu['id'] === $userId) {
+                            $uu['password'] = $newHash; $uu['mustChangePassword'] = false; $uu['firstLogin'] = false; $uu['first_time_login'] = false;
+                            unset($uu['password_hash']); $uu['updated_at'] = $now; break;
+                        }
+                    }
+                    unset($uu);
+                    $pdo->prepare("INSERT INTO tradecore_system_state (doc_key, json_data, updated_at) VALUES ('main_state', ?, NOW()) ON DUPLICATE KEY UPDATE json_data=VALUES(json_data), updated_at=NOW()")
+                        ->execute([json_encode($pd, JSON_UNESCAPED_UNICODE)]);
+                }
+            }
+        } catch (Throwable $eB2) { error_log('[TradeCore API] reset-password blob sync failed: ' . $eB2->getMessage()); }
+        try { $pdo->prepare("UPDATE tradecore_meta SET updated_at=? WHERE id=1")->execute([$now]); } catch (Throwable $eM2) {}
+        try { $pdo->prepare("UPDATE password_reset_tokens SET consumed=1 WHERE id=?")->execute([$tokRow['id']]); } catch (Throwable $eC) {}
+        try { logCoreAction($pdo, (string)($u['username'] ?? $userId), (string)($u['role'] ?? 'User'), 'Password Reset', 'Password reset via email token from ' . tcClientIp()); } catch (Throwable $eLg) {}
+        echo json_encode(["success" => true, "message" => "Your password has been reset successfully. Please sign in with your new password.", "server_ts" => $now]);
+        exit();
+    }
+
     if ($action === 'login') {
         if (!$pdo) { echo json_encode(["success" => false, "error" => "Database unavailable", "server_ts" => $now]); exit(); }
         $input = json_decode($rawInput, true);

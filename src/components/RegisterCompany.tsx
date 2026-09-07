@@ -47,7 +47,7 @@ interface RegisterCompanyProps {
     vrnNumber?: string;
     isVatRegistered?: boolean;
     businessLicense?: string;
-  }) => void;
+  }) => string | void;
   onBackToLogin: () => void;
 }
 
@@ -196,7 +196,7 @@ export default function RegisterCompany({ plans, payNumbers, translate: t, theme
       const converted = selectedCurrency && selectedCurrency.code !== 'TZS'
         ? Math.round(selectedPlan.basePriceTZS / currencyRate)
         : selectedPlan.basePriceTZS;
-      onRegister({
+      const regError = onRegister({
         name: name.trim(),
         username: username.trim().toLowerCase(),
         email: email.trim(),
@@ -224,6 +224,11 @@ export default function RegisterCompany({ plans, payNumbers, translate: t, theme
         isVatRegistered,
         businessLicense: businessLicense || undefined
       });
+      if (typeof regError === 'string' && regError) {
+        setError(regError);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return;
+      }
     } catch (ex) {
       setError(t('Something went wrong while submitting. Please try again.'));
       toast.error(t('Something went wrong while submitting. Please try again.'));

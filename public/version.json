@@ -1,1 +1,1 @@
-﻿{"version":"1.0.1","name":"TradeCore ERP","date":"2026-09-08","description":"Bug fix release: password change no longer clobbers stored hash; deployable bundle fully re-synced"}
+﻿{"version":"1.0.2","name":"TradeCore ERP","date":"2026-09-08","description":"Clear auth messages: inline login errors, working forgot/reset-password flow, inline registration errors"}

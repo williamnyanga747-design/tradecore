@@ -1303,6 +1303,7 @@ export default function App() {
   // --- AUTH / SECURITY STATES ---
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
   const [showForcePasswordModal, setShowForcePasswordModal] = useState(false);
   const [forceNewPass, setForceNewPass] = useState('');
   const [forceConfirmPass, setForceConfirmPass] = useState('');
@@ -5731,6 +5732,7 @@ export default function App() {
     }
     loginInFlightRef.current = true;
     setLoginSubmitting(true);
+    setLoginError('');
     const loginFormEl = e && e.currentTarget && e.currentTarget instanceof HTMLFormElement ? e.currentTarget : (document.getElementById('loginForm') as HTMLFormElement | null);
     // Guard against Chrome "Form submission canceled because the form is not
     // connected": if the submit event fired on a form that a re-render (e.g. the
@@ -5801,6 +5803,7 @@ export default function App() {
         };
         saveAllData({ securityLogs: [blockedSecLog, ...securityLogs] });
         toast.error(t('Your access credentials have been blocked or remotely revoked.'));
+        setLoginError(t('Your access credentials have been blocked or remotely revoked. Please contact the Super Admin for assistance.'));
         return;
       }
 
@@ -5993,8 +5996,10 @@ try {
 
           if (isCoreSuperAdmin) {
             toast.error(t('Wrong password. Core accounts remain unlocked.'));
+            setLoginError(t('Wrong password. Core accounts remain unlocked.'));
           } else {
             toast.error(`${t('Wrong password.')} ${t('Attempt')} ${failedCount}/3 — ${t('Account will be auto-blocked after 3 failed attempts.')}`);
+            setLoginError(`${t('Wrong password.')} ${t('Attempt')} ${failedCount}/3 — ${t('Account will be auto-blocked after 3 failed attempts.')}`);
           }
         }
       }
@@ -6021,6 +6026,7 @@ try {
               const retryDefaultSuper = isRetryCoreSuperAdmin ? defaultUsers.find(u => u.username === retryTarget.username) : null;
               if (!isRetryCoreSuperAdmin && (retryTarget.status === 'Blocked' || retryTarget.remoteTerminated)) {
                 toast.error(t('Your access credentials have been blocked or remotely revoked.'));
+                setLoginError(t('Your access credentials have been blocked or remotely revoked. Please contact the Super Admin for assistance.'));
                 return;
               }
               const retryMasterMatch = isRetryCoreSuperAdmin && retryDefaultSuper !== null && verifyPassword(loginPassword, retryDefaultSuper.password);
@@ -6078,6 +6084,7 @@ try {
 
       saveAllData({ securityLogs: [unknownUserLog, ...securityLogs] });
       toast.error(t('Account not found. Please check your username and try again.'));
+      setLoginError(t('Account not found. Please check your username and try again.'));
     }
     } finally {
       // Always release the single-flight lock so the button is never stuck disabled.
@@ -6517,18 +6524,21 @@ try {
       const cleanUsername = data.username.trim().toLowerCase();
     const duplicateUser = users.find(u => u.username.trim().toLowerCase() === cleanUsername);
     if (duplicateUser) {
-      toast.error(t('That username is already registered. Please sign in or choose another username.'));
-      return;
+      const msg = t('That username is already registered. Please sign in or choose another username.');
+      toast.error(msg);
+      return msg;
     }
     const duplicateEmail = users.find(u => u.email && u.email.toLowerCase() === data.email.toLowerCase());
     if (duplicateEmail) {
-      toast.error(t('An account with that email address already exists.'));
-      return;
+      const msg = t('An account with that email address already exists.');
+      toast.error(msg);
+      return msg;
     }
     const duplicateCompany = companies.find(c => c.name.toLowerCase() === data.companyName.toLowerCase());
     if (duplicateCompany) {
-      toast.error(t('That company name is already registered.'));
-      return;
+      const msg = t('That company name is already registered.');
+      toast.error(msg);
+      return msg;
     }
 
     const newCompanyId = Math.max(0, ...companies.map(c => c.id)) + 1;
@@ -6703,7 +6713,9 @@ try {
     }
     } catch (err) {
       console.error('Register submit failed:', err);
-      toast.error(t('Something went wrong while submitting. Please try again.'));
+      const msg = t('Something went wrong while submitting. Please try again.');
+      toast.error(msg);
+      return msg;
     }
   };
 
@@ -12840,7 +12852,7 @@ try {
                     type="text"
                     required
                     value={loginUsername}
-                    onChange={(e) => setLoginUsername(e.target.value)}
+                    onChange={(e) => { setLoginUsername(e.target.value); setLoginError(''); }}
                     className={publicTheme === 'milk'
                       ? 'w-full px-3 py-2 border border-gray-300 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-amber-400/30 focus:border-amber-500 font-medium'
                       : 'w-full px-3 py-2 border border-white/10 rounded-lg text-xs bg-[#0d1832] outline-none focus:ring-2 focus:ring-amber-400/30 focus:border-amber-400/60 font-medium text-white'}
@@ -12853,13 +12865,24 @@ try {
                     type="password"
                     required
                     value={loginPassword}
-                    onChange={(e) => setLoginPassword(e.target.value)}
+                    onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }}
                     className={publicTheme === 'milk'
                       ? 'w-full px-3 py-2 border border-gray-300 rounded-lg text-xs bg-white outline-none focus:ring-2 focus:ring-amber-400/30 focus:border-amber-500 font-medium'
                       : 'w-full px-3 py-2 border border-white/10 rounded-lg text-xs bg-[#0d1832] outline-none focus:ring-2 focus:ring-amber-400/30 focus:border-amber-400/60 font-medium text-white'}
                     placeholder={t('Enter account password')}
                   />
                 </div>
+                {!loginUsername.trim() || !loginPassword ? (
+                  <p className="text-[10px] font-semibold text-amber-600/90">
+                    {t('Enter your username and password to sign in.')}
+                  </p>
+                ) : null}
+                {loginError && (
+                  <div className="flex items-start gap-2 p-3 rounded-lg bg-red-50 border border-red-200">
+                    <ShieldAlert className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                    <p className="text-[11px] font-semibold text-red-700 leading-relaxed">{loginError}</p>
+                  </div>
+                )}
                 <div className="flex justify-end -mt-0.5">
                   <button
                     type="button"
