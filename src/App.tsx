@@ -5842,15 +5842,12 @@ try {
             sessionGraceUntilRef.current = Date.now() + 5000;
           } catch {}
 
-        // Force the first-time security check if the operator is still using a factory default password
-        // OR if the server flagged mustChangePassword (e.g. admin reset)
-        const usingDefaultPassword = defaultUsers.some(d =>
-          d.username.toLowerCase() === resolvedUser.username.toLowerCase() &&
-          d.password === loginPassword
-        );
+        // SECURITY FIX: Only trust the server's mustChangePassword flag.
+        // Removed client-side `usingDefaultPassword` check which was re-triggering
+        // the force password modal incorrectly. The server is the source of truth.
         const serverRequiresPasswordChange = (resolvedUser as any).mustChangePassword === true;
-        const resolvedUserForCheck = (usingDefaultPassword || serverRequiresPasswordChange) ? { ...resolvedUser, firstLogin: true } : resolvedUser;
-        if (usingDefaultPassword || serverRequiresPasswordChange) {
+        const resolvedUserForCheck = serverRequiresPasswordChange ? { ...resolvedUser, firstLogin: true } : resolvedUser;
+        if (serverRequiresPasswordChange) {
           const refreshedUsers = latestUsers.map(u =>
             u.id === resolvedUser.id ? { ...u, firstLogin: true } : u
           );
@@ -6083,7 +6080,20 @@ try {
       forceFlushNow();
       await settleFlushes(4000);
     } catch {}
-    localStorage.removeItem('tradecore_user');
+    // SECURITY: Clear ALL app state from localStorage to prevent session restoration
+    const keysToRemove = [
+      'tradecore_user',
+      'tradecore_role_cache',
+      'tradecore_data',
+      'tradecore_root_backup',
+      'active_company_id',
+      'active_branch_id',
+      'active_store_id',
+      'tradecore_php_api_key',
+      'company_id',
+      'tradecore_last_server_version'
+    ];
+    keysToRemove.forEach(key => localStorage.removeItem(key));
     setCurrentUser(null);
     setCurrentPage('dashboard');
     setRegistrationResult(null);
@@ -6112,19 +6122,19 @@ try {
       return;
     }
 
-    const hashedNewPass = hashPassword(forceNewPass);
-    const updatedUser = { ...currentUser!, password: hashedNewPass, firstLogin: false, mustChangePassword: false, reset_password: false, updated_at: Date.now() };
+    // SECURITY: Send raw password to server — server hashes with bcrypt
+    const updatedUser = { ...currentUser!, password: '', firstLogin: false, mustChangePassword: false, reset_password: false, updated_at: Date.now() };
 
     // CRITICAL: Persist the new password to the server FIRST so the new hash is
     // guaranteed on every device. Try the tiny atomic change_password request first;
     // if that endpoint is momentarily unavailable, fall back to apiUpsertUser (which
-    // also persists the sha256$ hash to the atomic users table + blob). Only declare
+    // also persists the hash to the atomic users table + blob). Only declare
     // failure if BOTH paths fail, so a transient hiccup never locks the terminal.
     const companyId = String((updatedUser as any).company_id ?? (updatedUser as any).companyId ?? '');
     let serverOk = false;
     let atomicErr: unknown = null;
     try {
-      serverOk = await apiChangePassword(updatedUser.id, hashedNewPass, companyId);
+      serverOk = await apiChangePassword(updatedUser.id, forceNewPass, companyId);
     } catch (err) {
       atomicErr = err;
       console.warn('[PHP API] change_password threw:', err);
@@ -6190,12 +6200,12 @@ try {
       toast.error(t('Current password incorrect!'));
       return false;
     }
-    const hashedNewPass = hashPassword(newPassword);
-    const updatedUser = { ...currentUser, password: hashedNewPass, mustChangePassword: false, updated_at: Date.now() };
+    // SECURITY: Send raw password to server — server hashes with bcrypt
+    const updatedUser = { ...currentUser, password: '', mustChangePassword: false, updated_at: Date.now() };
     const companyId = String((updatedUser as any).company_id ?? (updatedUser as any).companyId ?? '');
     let serverOk = false;
     try {
-      serverOk = await apiChangePassword(updatedUser.id, hashedNewPass, companyId);
+      serverOk = await apiChangePassword(updatedUser.id, newPassword, companyId);
     } catch (err) {
       console.warn('[PHP API] change_password threw:', err);
     }
@@ -12086,9 +12096,9 @@ try {
             logAction={logAction}
             saveAllData={saveAllData}
             onNavigate={(page) => setCurrentPage(page)}
-            onResetPassword={async (target: any, newPasswordHash: string, companyId?: string | number) => {
+            onResetPassword={async (target: any, newPassword: string, companyId?: string | number) => {
               try {
-                return await apiChangePassword(target.id, newPasswordHash, companyId);
+                return await apiChangePassword(target.id, newPassword, companyId);
               } catch (err) {
                 console.warn('[PHP API] change_password threw:', err);
                 return false;

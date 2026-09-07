@@ -2311,8 +2311,27 @@ try {
                 }
             }
             if ($matchedUser) {
+                $sessionToken = bin2hex(random_bytes(16));
+                $sUserId = (string)($matchedUser['id'] ?? '');
+                $sCompanyId = (string)($matchedUser['company_id'] ?? $matchedUser['companyId'] ?? '');
+                if ($sUserId !== '' && $sCompanyId !== '') {
+                    try {
+                        $stmtS = $pdo->prepare('INSERT INTO user_sessions (id, user_id, company_id, token_jti, ip_address, user_agent, expires_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)');
+                        $stmtS->execute([
+                            bin2hex(random_bytes(16)),
+                            $sUserId,
+                            $sCompanyId,
+                            $sessionToken,
+                            tcClientIp(),
+                            (string)($_SERVER['HTTP_USER_AGENT'] ?? 'unknown'),
+                            date('Y-m-d H:i:s', time() + 86400)
+                        ]);
+                    } catch (Throwable $eSess) {
+                        error_log('[TradeCore API] user_sessions insert failed: ' . $eSess->getMessage());
+                    }
+                }
                 logCoreAction($pdo, (string)($matchedUser['username'] ?? $username), (string)($matchedUser['role'] ?? 'User'), 'User Login', 'User Login success from ' . tcClientIp());
-                echo json_encode(["success" => true, "user" => $matchedUser, "token" => bin2hex(random_bytes(16)), "server_ts" => time()]);
+                echo json_encode(["success" => true, "user" => $matchedUser, "token" => $sessionToken, "server_ts" => time()]);
             } else {
                 logCoreAction($pdo, $username !== '' ? $username : $phone, 'Guest', 'Login Failed', 'Login failed for ' . ($username !== '' ? $username : $phone) . ' from ' . tcClientIp());
                 echo json_encode(["success" => false, "error" => "User not found or inactive", "server_ts" => $now], 401);

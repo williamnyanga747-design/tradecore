@@ -17,8 +17,16 @@ header('Pragma: no-cache');
 header('Expires: 0');
 header('X-Content-Type-Options: nosniff');
 
-// 2. CORS — always allow all origins
-header('Access-Control-Allow-Origin: *');
+// 2. CORS — restrict to allowed origins only
+$allowedOrigins = [
+    'https://tanzaniatradecore.co.tz',
+    'http://localhost:5173',  // Vite dev server
+    'http://localhost:3000',  // Local dev
+];
+$requestOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if (in_array($requestOrigin, $allowedOrigins)) {
+    header('Access-Control-Allow-Origin: ' . $requestOrigin);
+}
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS, HEAD');
 header('Access-Control-Allow-Headers: Content-Type, Accept, X-API-Key, X-Requested-With, Authorization');
 header('Access-Control-Max-Age: 86400');
@@ -676,9 +684,7 @@ function tcAuthorizeOperator($pdo, $rawInput) {
         if (!empty($in['user_id'])) { $operatorId = (string)$in['user_id']; $hasHeaders = true; }
     }
     if (!$hasHeaders || ($operator === '' && $operatorId === '')) return true; // Guest/public/system — allowed.
-    // Core super admins always bypass.
-    $op = strtolower(trim($operator));
-    if ($op === 'root_mandate' || $op === 'superadmin' || $op === 'system') { $checked = true; return true; }
+    // REMOVED: hardcoded bypass for root_mandate/superadmin — all operators must be validated against DB
     try {
         $stmt = null;
         if ($operator !== '') {
@@ -738,8 +744,7 @@ function tcAuthorizeOperatorSoft($pdo, $rawInput, $action = '') {
         if (!empty($in['user_id'])) { $operatorId = (string)$in['user_id']; $hasHeaders = true; }
     }
     if (!$hasHeaders || ($operator === '' && $operatorId === '')) { $checkedSoft = true; return 1; } // guest
-    $op = strtolower(trim($operator));
-    if ($op === 'root_mandate' || $op === 'superadmin' || $op === 'system') { $checkedSoft = true; return 1; }
+    // REMOVED: hardcoded bypass for root_mandate/superadmin — all operators must be validated against DB
     try {
         $stmt = null;
         if ($operator !== '') {
@@ -787,7 +792,7 @@ try {
         // Load DB credentials from config file (outside public_html when possible)
         $dbCreds = @include(__DIR__ . '/config/db.php');
         if (!is_array($dbCreds)) $dbCreds = @include(dirname(__DIR__, 2) . '/config/db.php');
-        if (!is_array($dbCreds)) $dbCreds = ['host'=>'localhost','name'=>'tanzatrade_tradecore_erp','user'=>'tanzatrade_tanzatrade','pass'=>'123456789@Tanzatrade'];
+        if (!is_array($dbCreds)) $dbCreds = ['host'=>(getenv('TC_DB_HOST')?:'localhost'),'name'=>(getenv('TC_DB_NAME')?:'tanzatrade_tradecore_erp'),'user'=>(getenv('TC_DB_USER')?:'tanzatrade_tanzatrade'),'pass'=>(getenv('TC_DB_PASS')?:'')];
         $pdo = new PDO(
             "mysql:host=" . $dbCreds['host'] . ";dbname=" . $dbCreds['name'] . ";charset=utf8mb4",
             $dbCreds['user'],
@@ -1988,23 +1993,31 @@ try {
     // ============================================================================
     // INLINE FAST-TRACK: change_password (atomic targeted update — tiny payload,
     // never a 5MB blob, so a password change ALWAYS reaches the server even when
-    // the full-state flush is slow/failing). The client computes the sha256$ hash
-    // (same format as normal user passwords) and sends it here.
+    // the full-state flush is slow/failing). 
+    // SECURITY: Server-side bcrypt hashing — client sends raw password, server hashes with bcrypt.
     // ============================================================================
     if ($action === 'change_password') {
         if (!$pdo) { echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
         $input = json_decode($rawInput, true);
         $userId = (string)($input['user_id'] ?? '');
         $companyId = (string)($input['company_id'] ?? '');
-        $newHash = (string)($input['password_hash'] ?? '');
-        if ($userId === '' || $newHash === '') { echo json_encode(["success" => false, "error" => "Missing user_id / password_hash", "server_ts" => $now]); exit(); }
-        // AUTH FIX (Fix 3): server-side hash normalization — if the client ever sends a
-        // raw/legacy password (not already a `sha256$` hash), hash it here with the app's
-        // exact convention (sha256$ + SALT) so plaintext is never persisted and the stored
-        // format always matches what PHP login (hash('sha256', raw . SALT)) expects.
+        $newPassword = (string)($input['password'] ?? $input['password_hash'] ?? '');
+        if ($userId === '' || $newPassword === '') { echo json_encode(["success" => false, "error" => "Missing user_id / password", "server_ts" => $now]); exit(); }
+        // SECURITY: Hash password with bcrypt on the server side
+        // If client sends a raw password (not already hashed), use bcrypt
+        // If client sends a sha256$ hash (legacy), convert to bcrypt
         $SALT = 'tradecore::secure::2026::v1';
-        if (strpos($newHash, 'sha256$') !== 0) {
-            $newHash = 'sha256$' . hash('sha256', $newHash . $SALT);
+        if (strpos($newPassword, '$2y$') === 0 || strpos($newPassword, '$2a$') === 0) {
+            // Already bcrypt — use as-is
+            $newHash = $newPassword;
+        } elseif (strpos($newPassword, 'sha256$') === 0) {
+            // Legacy sha256$ hash — convert to bcrypt by extracting the raw password
+            // Note: We can't reverse the sha256, so we re-hash with bcrypt using the same input
+            // The client should send the raw password, but if they send sha256, we accept it
+            $newHash = password_hash($newPassword, PASSWORD_BCRYPT);
+        } else {
+            // Raw password — hash with bcrypt
+            $newHash = password_hash($newPassword, PASSWORD_BCRYPT);
         }
         // AUTH FIX (Fix 2): this is a SELF-SERVICE credential change. We deliberately
         // never emit SESSION_REVOKED for it; if the operator guard flagged the session as
@@ -2224,6 +2237,43 @@ try {
     }
 
     // ============================================================================
+    // RATE LIMITING: Prevent brute force attacks on login
+    // Uses file-based tracking (works on shared hosting without extra tables)
+    // ============================================================================
+    function tcCheckRateLimit($identifier, $maxAttempts = 5, $windowSeconds = 900) {
+        $rateFile = sys_get_temp_dir() . '/tc_rate_' . md5($identifier) . '.json';
+        $now = time();
+        $attempts = [];
+        if (file_exists($rateFile)) {
+            $data = @json_decode(file_get_contents($rateFile), true);
+            if (is_array($data)) $attempts = $data;
+        }
+        // Remove old attempts outside the window
+        $attempts = array_filter($attempts, function($t) use ($now, $windowSeconds) {
+            return ($now - $t) < $windowSeconds;
+        });
+        if (count($attempts) >= $maxAttempts) {
+            return false; // Rate limited
+        }
+        return $attempts;
+    }
+    function tcRecordFailedAttempt($identifier) {
+        $rateFile = sys_get_temp_dir() . '/tc_rate_' . md5($identifier) . '.json';
+        $now = time();
+        $attempts = [];
+        if (file_exists($rateFile)) {
+            $data = @json_decode(file_get_contents($rateFile), true);
+            if (is_array($data)) $attempts = $data;
+        }
+        $attempts[] = $now;
+        @file_put_contents($rateFile, json_encode($attempts));
+    }
+    function tcClearRateLimit($identifier) {
+        $rateFile = sys_get_temp_dir() . '/tc_rate_' . md5($identifier) . '.json';
+        if (file_exists($rateFile)) @unlink($rateFile);
+    }
+
+    // ============================================================================
     // INLINE FAST-TRACK: login (reads from tradecore_users atomic table directly,
     // never depends on blob state — immune to empty-blob corruption)
     // ============================================================================
@@ -2236,6 +2286,14 @@ try {
         $companyCode = trim((string)($_POST['company_code'] ?? $input['company_code'] ?? ''));
         if (($phone === '' && $username === '') || $pass === '') {
             echo json_encode(["success" => false, "error" => "phone/username and password required", "server_ts" => $now]);
+            exit();
+        }
+        // RATE LIMIT: Check for brute force attempts
+        $rateIdentifier = ($username !== '' ? $username : $phone) . ':' . tcClientIp();
+        $rateAttempts = tcCheckRateLimit($rateIdentifier);
+        if ($rateAttempts === false) {
+            http_response_code(429);
+            echo json_encode(["success" => false, "error" => "Too many login attempts. Please try again in 15 minutes.", "server_ts" => $now]);
             exit();
         }
         try {
@@ -2311,11 +2369,35 @@ try {
                 }
             }
             if ($matchedUser) {
+                $sessionToken = bin2hex(random_bytes(16));
+                $sUserId = (string)($matchedUser['id'] ?? '');
+                $sCompanyId = (string)($matchedUser['company_id'] ?? $matchedUser['companyId'] ?? '');
+                if ($sUserId !== '' && $sCompanyId !== '') {
+                    try {
+                        $stmtS = $pdo->prepare('INSERT INTO user_sessions (id, user_id, company_id, token_jti, ip_address, user_agent, expires_at, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)');
+                        $stmtS->execute([
+                            bin2hex(random_bytes(16)),
+                            $sUserId,
+                            $sCompanyId,
+                            $sessionToken,
+                            tcClientIp(),
+                            (string)($_SERVER['HTTP_USER_AGENT'] ?? 'unknown'),
+                            date('Y-m-d H:i:s', time() + 86400)
+                        ]);
+                    } catch (Throwable $eSess) {
+                        error_log('[TradeCore API] user_sessions insert failed: ' . $eSess->getMessage());
+                    }
+                }
+                // SECURITY: Remove password hash from response before sending to client
+                unset($matchedUser['password'], $matchedUser['password_hash']);
+                tcClearRateLimit($rateIdentifier);
                 logCoreAction($pdo, (string)($matchedUser['username'] ?? $username), (string)($matchedUser['role'] ?? 'User'), 'User Login', 'User Login success from ' . tcClientIp());
-                echo json_encode(["success" => true, "user" => $matchedUser, "token" => bin2hex(random_bytes(16)), "server_ts" => time()]);
+                echo json_encode(["success" => true, "user" => $matchedUser, "token" => $sessionToken, "server_ts" => time()]);
             } else {
+                tcRecordFailedAttempt($rateIdentifier);
                 logCoreAction($pdo, $username !== '' ? $username : $phone, 'Guest', 'Login Failed', 'Login failed for ' . ($username !== '' ? $username : $phone) . ' from ' . tcClientIp());
-                echo json_encode(["success" => false, "error" => "User not found or inactive", "server_ts" => $now], 401);
+                http_response_code(401);
+                echo json_encode(["success" => false, "error" => "User not found or inactive", "server_ts" => $now]);
             }
         } catch (Throwable $eLogin) {
             error_log('[TradeCore API] login failed: ' . $eLogin->getMessage() . ' in ' . $eLogin->getFile() . ':' . $eLogin->getLine());

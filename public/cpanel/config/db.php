@@ -18,10 +18,11 @@ if (file_exists($localConfig)) {
     return require $localConfig;
 }
 
-// Production credentials (cPanel shared hosting)
+// Production credentials — prefer environment variables (cPanel > Software > Environment Variables)
+// Falls back to hardcoded values only when env vars are not set (shared hosting limitation)
 return [
-    'host' => 'localhost',
-    'name' => 'tanzatrade_tradecore_erp',
-    'user' => 'tanzatrade_tanzatrade',
-    'pass' => '123456789@Tanzatrade',
+    'host' => getenv('TC_DB_HOST') ?: 'localhost',
+    'name' => getenv('TC_DB_NAME') ?: 'tanzatrade_tradecore_erp',
+    'user' => getenv('TC_DB_USER') ?: 'tanzatrade_tanzatrade',
+    'pass' => getenv('TC_DB_PASS') ?: '123456789@Tanzatrade',
 ];

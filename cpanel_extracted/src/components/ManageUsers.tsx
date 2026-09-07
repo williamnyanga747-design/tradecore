@@ -1243,17 +1243,17 @@ export default function ManageUsers({
         setResetPassError(t('New passwords do not match.'));
         return;
       }
-      const hashedNewPass = hashPassword(resetPassVal);
+      // SECURITY: Send raw password to server — server hashes with bcrypt
       const target = resetPassTarget;
       const updatedUsers = users.map(u =>
         u.id === target.id
-          ? { ...u, password: hashedNewPass, firstLogin: false, mustChangePassword: false }
+          ? { ...u, password: '', firstLogin: false, mustChangePassword: false }
           : u
       );
       // Prefer atomic server-side write (small targeted request) when available
       if (onResetPassword && target) {
         const compId = String((target as any).company_id ?? (target as any).companyId ?? '');
-        const ok = await onResetPassword(target, hashedNewPass, compId);
+        const ok = await onResetPassword(target, resetPassVal, compId);
         if (!ok) {
           setResetPassError(t('Could not save new password to server. Please try again.'));
           return;

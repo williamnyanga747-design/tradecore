@@ -868,7 +868,7 @@ export async function apiUpsertUser(userData: any): Promise<boolean> {
 export async function apiChangePassword(userId: string | number, passwordHash: string, companyId?: string | number): Promise<boolean> {
   const res = await apiPost('change_password', {
     user_id: String(userId),
-    password_hash: passwordHash,
+    password: passwordHash,  // SECURITY: Send raw password, server hashes with bcrypt
     company_id: companyId != null ? String(companyId) : ''
   });
   return !!(res && res.success);
