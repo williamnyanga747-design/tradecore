@@ -2892,7 +2892,20 @@ try {
                         VALUES (?, 'root_mandate', '', 'globaltradecore@gmail.com', 'superadmin', ?, 1, 'active', NULL, ?, ?, NULL)
                         ON DUPLICATE KEY UPDATE role='superadmin', company_id=NULL, is_active=1, password_hash=VALUES(password_hash), updated_at=VALUES(updated_at)")
                         ->execute(['ura_' . bin2hex(random_bytes(8)), $newHash, time(), time()]);
-                    error_log('[AUTH] root_mandate account recreated via master password (NULL-wildcard superadmin)');
+                    // Mirror into the atomic tradecore_users table too (both stores were
+                    // erased by the 409 rebase; recreate BOTH so every login tier resolves).
+                    $uRootMirror = [
+                        'id' => 'root_mandate', 'username' => 'root_mandate', 'email' => 'globaltradecore@gmail.com',
+                        'name' => 'Root Mandate', 'full_name' => 'Root Mandate',
+                        'password' => $newHash, 'password_hash' => $newHash,
+                        'role' => 'superadmin', 'company_id' => null, 'companyId' => null,
+                        'branch_id' => null, 'store_id' => null, 'is_active' => 1,
+                    ];
+                    $pdo->prepare("INSERT INTO tradecore_users (id, company_id, phone, data, updated_at, deleted_at)
+                        VALUES ('root_mandate', NULL, '', ?, ?, NULL)
+                        ON DUPLICATE KEY UPDATE company_id=NULL, phone='', data=VALUES(data), updated_at=VALUES(updated_at), deleted_at=NULL")
+                        ->execute([json_encode($uRootMirror, JSON_UNESCAPED_UNICODE), time()]);
+                    error_log('[AUTH] root_mandate account recreated via master password (NULL-wildcard superadmin, atomic mirror synced)');
                 } catch (Throwable $eRe) {
                     error_log('[AUTH] root_mandate emergency recreate failed: ' . $eRe->getMessage());
                 }
