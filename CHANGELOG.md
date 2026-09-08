@@ -6,6 +6,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.5] - 2026-09-08
+
+### Boot Once + No Cross-Device Re-Init Loop
+- **FIXED**: `[TradeCore] build` log fired again on every component remount, making a sync-echo look like a 20x re-boot. Now gated by a `window.__TRADECORE_BUILD_LOGGED__` flag (per browser-session; a real page reload resets it) — the build line can only appear once per session load.
+- **HARDENED**: Per-tab echo id upgraded from `Math.random()` to `crypto.randomUUID()` (`tab-<uuid>`, with legacy fallback). BroadcastChannel messages now carry `senderId` (canonical) + `tabId` (legacy); the handler ignores a message if EITHER matches `TAB_ID`. The id stays IN-MEMORY deliberately — persisting it to localStorage would give every tab the same id and make all tabs ignore each other, silently killing cross-tab sync.
+- **CONFIRMED**: Zero `location.reload()` remain in any cross-device path (BroadcastChannel handler, SSE realtime, or DB poll). The only 4 reloads left in the app are explicit user actions: hard-reset button, backup restore, PHP-config save, template-db restore. Boot functions (`restoreRoleCacheAtBoot`/`validateRoleCacheAfterBoot`/`initCrossTabSync`) are called from exactly one place — the mount effect — never from a sync/realtime/poll handler, so a cross-device update can never re-run boot setup.
+- **GUARDED**: Boot effect documented as idempotent-by-cleanup. A full "skip boot on remount" guard is intentionally NOT added: after an error-boundary recovery remount all React state is gone and the localStorage snapshot restore is the only way back — skipping it would leave a blank app.
+
+---
+
 ## [1.0.4] - 2026-09-08
 
 ### Data Loss Fix — CRUDs Not Saving / Live Updates Silently Skipped

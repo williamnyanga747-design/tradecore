@@ -137,7 +137,19 @@ import {
 } from 'lucide-react';
 
 // Unique identifier for this browser tab — used to ignore our own BroadcastChannel messages
-const TAB_ID = Math.random().toString(36).slice(2);
+// Per-browser-TAB session id, used to ignore BroadcastChannel self-echo.
+// Deliberately IN-MEMORY, never persisted: every tab in the same browser must get a
+// DISTINCT id so the echo-guard filters only the sending tab. Storing it in
+// localStorage would give all tabs the same id and make them ALL ignore each other,
+// silently killing cross-tab sync.
+const TAB_ID = ((): string => {
+  try {
+    if (typeof crypto !== 'undefined' && typeof (crypto as any).randomUUID === 'function') {
+      return 'tab-' + (crypto as any).randomUUID();
+    }
+  } catch {}
+  return 'tab-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+})();
 
 // Global offline flag maintained by the window 'offline'/'online' listeners. Every
 // background network path (cross-tab re-fetch, 5s poll, PHP flush, mutate ack) must
@@ -1367,8 +1379,16 @@ export default function App() {
   const [fifoBatchProduct, setFifoBatchProduct] = useState<StockItem | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  // One-time build log (runs once on mount, not on every re-render)
-  useEffect(() => { console.log('[TradeCore] build 2026-09-07-05'); }, []);
+  // One-time build log — fires exactly ONCE per browser session load. The window flag
+  // resets on a real page reload (new session => fresh log) but survives component
+  // remounts within the same session (error-boundary recovery, hot-reload), so a
+  // remount can never re-log boot or suggest a re-boot happened. The sync loop fix is
+  // structural (no reload inside cross-device handlers); this guard is defense-in-depth.
+  useEffect(() => {
+    if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
+    (window as any).__TRADECORE_BUILD_LOGGED__ = true;
+    console.log('[TradeCore] build 2026-09-08-1');
+  }, []);
 
   useEffect(() => {
     const unsubscribe = toast.subscribe((newToast) => {
@@ -1891,9 +1911,15 @@ export default function App() {
       ch.onmessage = (e) => {
         const msg = e.data;
         if (!msg || typeof msg !== 'object') return;
-        if (msg.tabId && msg.tabId === TAB_ID) return; // ignore our own message
+        // Self-echo guard: ignore our own message. senderId is the canonical field;
+        // tabId is accepted for older cached bundles in other tabs (defense-in-depth).
+        if (msg.senderId === TAB_ID) return;
+        if (msg.tabId && msg.tabId === TAB_ID) return;
         const msgVer = Number(msg.version ?? 0);
-        // Don't log or re-fetch if we already have this version
+        // Don't log or re-fetch if we already have this version. lastServerVersionRef
+        // tracks the highest version WE have APPLIED, and server versions are globally
+        // monotonic, so a known version means our state is already current — ignoring
+        // it is correct deduplication, not a stale-skip.
         if (msgVer > 0 && msgVer <= lastServerVersionRef.current) return;
         console.log('[Sync] Cross-tab: another tab updated server data, re-fetching...');
         scheduleCrossTabRefetch(msgVer);
@@ -1906,7 +1932,7 @@ export default function App() {
       const v = Number(version ?? getLastServerVersion() ?? 0);
       if (v > 0 && v <= lastNotifiedVersionRef.current) return; // already notified for this version
       lastNotifiedVersionRef.current = v;
-      syncChannelRef.current?.postMessage({ tabId: TAB_ID, version: v });
+      syncChannelRef.current?.postMessage({ type: 'DB_CHANGE', senderId: TAB_ID, tabId: TAB_ID, version: v });
     } catch {}
   };
 
@@ -2330,6 +2356,14 @@ export default function App() {
     // any DB resolution so active_company_id is never 'none' (which the switch effect
     // would bounce to company 1) and the session never flashes to the login page.
     // The 2.5s background get_my_role revalidation then silently applies Admin changes.
+    // Forced re-boot containers (restoreRoleCacheAtBoot / validateRoleCacheAfterBoot)
+    // and this effect's wiring are IDEMPOTENT-BY-CLEANUP: React runs this effect's
+    // cleanup (closes the BroadcastChannel, clears poll/timeout timers, removes
+    // storage/listener hooks) before any legitimate remount, so re-entering boot is
+    // safe and the ONLY way to restore React state after an error-boundary recovery.
+    // NEVER add a window.location.reload() or a version-0 state reset here — the
+    // cross-device reload loop (build logging 20x + wiping dirty keys) is exactly what
+    // a reload inside this path produces.
     restoreRoleCacheAtBoot();
     validateRoleCacheAfterBoot();
     // 0. Probe API URL candidates immediately so all subsequent calls use the working endpoint
