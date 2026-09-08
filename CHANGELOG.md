@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.7] - 2026-09-08
+
+### Build 2026-09-08-2 — Unlimited Persistence Audit
+- **FIXED (409 data loss)**: `flushToPhp` conflict rebase was `merged[k] = serverData[k]` — a wholesale replacement that could DROP a brand-new Company/Category the server 409 did not yet contain. Rebase now uses `protectDirtyCollections()` (merge-not-overwrite): server blob is the base, dirty snapshots overlay (local wins), and every non-dirty collection gets a per-id union that appends local-only records. The `mutate_record` 4c conflict merge path got the same fix (App.tsx). "Category/Company add disappears after refresh" root cause eliminated.
+- **FIXED**: `InvalidStateError: database connection is closing` — verified idb.ts already auto-reopens + serializes writes (singleton `enginePromise`, `withIdbWriteLock`). Added crash-safe auto-recovery: a failed first `openDB()` now resets the cached promise so the next access RETRIES instead of degrading to memory-only for the session (offlinePersistence.ts).
+- **FIXED**: `Form submission canceled because the form is not connected` — `requestSubmit()` call sites (stockItemForm / stockTransferForm) now go through a guarded `submitFormById()` helper (`isConnected` check, try/catch, bubbling-submit fallback, in-form button click fallback).
+- **FIXED (flush size)**: flush timeout raised 30s → 60s (App.tsx:4222) and PHP `max_execution_time` 60 → 120 with `memory_limit 512M` applied to ALL actions (api.php bootstrap + php_sync.php). Added best-effort `post_max_size`/`upload_max_filesize` 20M (PHP_INI_PERDIR — real ceiling via cPanel MultiPHP INI). No payload-size blocking exists anywhere: flush gate is key-type only.
+- **VERIFIED already-correct**: `shouldFlush` is key-type (`categories`/`companies`/`products`/`branches`/`stores` → always flush, session-only → skip), IDB never calls `db.close()` from lifecycle/SW hooks, `TAB_ID` per-tab UUID, build log once per session, version-locked client (no double-flush 409).
+
 ## [1.0.6] - 2026-09-08
 
 ### Sync Engine: Event-Driven First, Poll as Safety Net

@@ -36,6 +36,30 @@ import { TANZANIA_REGIONS } from './utils/regions';
 import ChartErrorBoundary from './ChartErrorBoundary';
 import PanelErrorBoundary from './PanelErrorBoundary';
 
+// SAFE FORM SUBMIT (2026-09-08-2): requestSubmit() throws "Form submission canceled
+// because the form is not connected" whenever the target form was unmounted by a
+// rapid modal close/remount between the gesture and the handler microtask, or the
+// button lives in a tree whose form element is not connected. Guard the element and
+// its connection state, catch the throw, and fall back to dispatching a real bubbling
+// submit event (which React's onSubmit still intercepts) or clicking the in-form
+// submit button. Never surfaces the console error, never double-submits.
+function submitFormById(formId: string): void {
+  const form = document.getElementById(formId) as HTMLFormElement | null;
+  if (form && form.isConnected) {
+    try {
+      form.requestSubmit();
+      return;
+    } catch (e) {
+      try {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        return;
+      } catch (e2) {}
+    }
+  }
+  const btn = document.querySelector(`#${formId} button[type="submit"]`) as HTMLButtonElement | null;
+  if (btn) btn.click();
+}
+
 // Modular Components
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -1387,7 +1411,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-1');
+    console.log('[TradeCore] build 2026-09-08-2');
   }, []);
 
   useEffect(() => {
@@ -4057,13 +4081,12 @@ export default function App() {
 
       if (result.conflict) {
         // 4c. Whole-blob version conflict: another write bumped _version while we
-        //     were editing. Merge this record onto the server's authoritative state.
+        //     were editing. Merge this record onto the server's authoritative state
+        //     (merge-not-overwrite — protectDirtyCollections keeps any local-only
+        //     records and newer local edits, so the rebase never drops a new record).
         const conflict = consumeConflictData();
         if (conflict?.serverData && dbStateRef.current) {
-          const merged = { ...dbStateRef.current, ...conflict.serverData };
-          if (!NON_SYNCED_KEYS.has(collection) && (dirtyValuesRef.current as any)[collection] !== undefined) {
-            merged[collection] = (dirtyValuesRef.current as any)[collection];
-          }
+          const merged: any = protectDirtyCollections(conflict.serverData);
           applyData(merged, true);
           try { localStorage.setItem('tradecore_data', JSON.stringify(merged)); } catch {}
         }
@@ -4270,24 +4293,21 @@ export default function App() {
           // 409 Conflict (or save failure): server is ahead. Rebase onto the fresh
           // server blob, then replay the client's recorded edits on top (local wins),
           // and retry against the server's new version.
-          const conflict = consumeConflictData();
-          if (conflict && conflict.serverData) {
-            console.warn(`[PHP API] 409 Conflict detected — rebasing local edits onto server version ${conflict.serverVersion}`);
-            const localPending = dirtyValuesRef.current as Record<string, any>;
-            // 1. Start from the CLIENT'S full state — preserves all non-dirty
-            //    collections (companies, branches, stores, settings, etc.) that the
-            //    server's 409 response may not include if the client only sent dirty keys.
-            const merged: any = { ...dbStateRef.current };
-            // 2. Overlay the server's authoritative data for dirty keys (server wins on
-            //    conflicts for keys the user didn't explicitly edit).
-            for (const k of Object.keys(conflict.serverData)) {
-              if (k === '_version' || k === '_serverUpdatedAt' || k === 'lastUpdated') continue;
-              merged[k] = conflict.serverData[k];
-            }
-            // 3. Re-apply ONLY the collections the user actually edited (local wins).
-            for (const k of Object.keys(localPending)) merged[k] = localPending[k];
-            // 3. Persist the rebased state locally + in the UI (cache write marks it dirty nowhere).
-            applyData(merged, true);
+const conflict = consumeConflictData();
+            if (conflict && conflict.serverData) {
+              console.warn(`[PHP API] 409 Conflict detected — rebasing local edits onto server version ${conflict.serverVersion}`);
+              // MERGE-NOT-OVERWRITE REBASE (2026-09-08-2): the OLD rebase began from the
+              // client state and then wholesale-replaced every collection present in the
+              // server's 409 payload (`merged[k] = serverData[k]`), which could DROP a
+              // brand-new Company/Category that the local snapshot held but the server
+              // did not. Now we use protectDirtyCollections() — the same per-record union
+              // merge the cross-device poll uses: the server blob is the base, every
+              // locally-dirty collection snapshot is overlaid (local wins), and for every
+              // non-dirty collection a per-id union appends local-only records so an
+              // unflushed new record can never be erased by a 409 rebase.
+              const localPending = dirtyValuesRef.current as Record<string, any>;
+              const merged: any = protectDirtyCollections(conflict.serverData);
+              applyData(merged, true);
             localStorage.setItem('tradecore_data', JSON.stringify(merged));
             // CRITICAL: Wrap version write in guard — same loop risk as the flush path.
             isApplyingRemoteUpdateRef.current = true;
@@ -14829,7 +14849,7 @@ try {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { (document.getElementById('stockItemForm') as HTMLFormElement | null)?.requestSubmit(); }}
+                  onClick={() => submitFormById('stockItemForm')}
                   className="px-5 py-2 bg-brand hover:bg-brand-hover text-white rounded-lg text-sm font-semibold"
                 >
                   Save Product
@@ -14951,7 +14971,7 @@ try {
                 </button>
                 <button
                   type="button"
-                  onClick={() => { (document.getElementById('stockTransferForm') as HTMLFormElement | null)?.requestSubmit(); }}
+                  onClick={() => submitFormById('stockTransferForm')}
                   className="px-5 py-2 bg-brand hover:bg-brand-hover text-white rounded-lg text-sm font-semibold"
                 >
                   Complete Transfer

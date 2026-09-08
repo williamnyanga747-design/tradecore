@@ -1,1 +1,1 @@
-﻿{"version":"1.0.6","name":"TradeCore ERP","date":"2026-09-08","description":"Sync engine event-driven first: poll cut 5s->30s with fast-path dedup; no boot re-runs in sync"}
+﻿{"version":"1.0.7","name":"TradeCore ERP","date":"2026-09-08","description":"v1.0.7 UNLIMITED persistence: merge-not-overwrite 409 rebase (never drops new Company/Category), safe form submit, IDB open auto-recovery, flush timeout 60s, PHP 512M/120s best-effort"}

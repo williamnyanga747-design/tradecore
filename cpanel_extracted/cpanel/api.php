@@ -10,6 +10,19 @@
 error_reporting(E_ERROR | E_PARSE);
 @ini_set('display_errors', '0');
 
+// UNLIMITED REQUEST LAYER (2026-09-08-2): TradeCore persists deltas of ANY size
+// (0.5KB single-record flushes up to multi-MB bulk imports). The flush pipeline is
+// key-type gated (never size-gated), so the runtime limits below are raised for every
+// action (write AND read paths). post_max_size / upload_max_filesize are configured
+// PHP_INI_PERDIR: ini_set() is a best-effort NO-OP under FastCGI/FPM — there the real
+// ceiling must be raised in cPanel → MultiPHP INI Editor. No payload is ever rejected
+// by size below; a request this big simply needs enough time + memory to commit.
+@ini_set('memory_limit', '512M');
+@ini_set('max_execution_time', '120');
+@set_time_limit(120);
+@ini_set('post_max_size', '20M');
+@ini_set('upload_max_filesize', '20M');
+
 // 1. Set headers BEFORE anything else
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');

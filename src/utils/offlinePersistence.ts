@@ -163,6 +163,11 @@ function getEngine(): Promise<Engine> {
       }
       mirrorLoaded = true;
     }).catch(() => {});
+    // Auto-recovery (2026-09-08-2): if the very first open fails (transient quota /
+    // browser-blocked open), forget the rejected promise so the next access RETRIES
+    // instead of degrading to memory-only for the whole session. Matches the
+    // auto-reopen guarantee in idb.ts.
+    enginePromise.catch(() => { enginePromise = null; });
   }
   return enginePromise;
 }
