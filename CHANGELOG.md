@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.3] - 2026-09-08
+
+### Infinite Sync Loop Fix
+- **FIXED**: Eliminated the `[DB] Cross-device change detected, applying update` → `[TradeCore] build` infinite reload loop. Root cause: `validateRoleCacheAfterBoot` called `window.location.reload()` when it detected a server-side role change, which reset all version watermarks and caused the 5-second cross-device poll to re-detect the same change on every mount.
+- **FIXED**: `validateRoleCacheAfterBoot` now dispatches a `tradecore:role-changed` custom event instead of reloading. The App component handles this event silently — updating `currentUser` state in-place and triggering a background re-fetch — so the running React tree picks up the new role assignment without destroying unsaved local state or re-mounting the component tree.
+- **FIXED**: Cross-device poll now has a debounce guard (`lastPollAppliedVersionRef` + 10s minimum interval) that prevents re-applying the same server version after a reload or within a short window. Breaks the "poll → apply → reload → poll → apply" infinite loop.
+- **FIXED**: `handleStorageChange` (the `StorageEvent` listener) now has a 2-second debounce to prevent rapid-fire events from multiple `localStorage` writes during `applyData` from triggering multiple `scheduleCrossTabRefetch` calls.
+- **PRESERVED**: BroadcastChannel self-echo guard (`tabId` check) is unchanged — `TAB_ID` is already a module-level constant that persists across re-renders.
+
+---
+
 ## [1.0.2] - 2026-09-08
 
 ### Clear Authentication Messages (Login / Register / Forgot Password)

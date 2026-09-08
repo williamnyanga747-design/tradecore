@@ -383,12 +383,11 @@ async function validateRoleCacheAfterBoot(): Promise<void> {
         };
         localStorage.setItem('tradecore_role_cache', JSON.stringify(fresh));
         localStorage.setItem('active_company_id', String(server.company_id ?? ''));
-        console.warn('[RoleCache] Role changed on server - reloading with new assignment', fresh);
-        // Flush queued mutations before the reload so nothing is lost, then reload cleanly.
-        setTimeout(() => {
-          try { (window as any).__tradecorePreserveWork?.(); } catch {}
-          setTimeout(() => { try { window.location.reload(); } catch {} }, 250);
-        }, 0);
+        console.warn('[RoleCache] Role changed on server — applying silently (no reload loop)', fresh);
+        // SILENT ROLE MERGE: instead of a hard reload (which triggers the 5s poll → apply → role re-check → reload
+        // infinite loop), dispatch a custom event so the running React tree can pick up the new role assignment
+        // without destroying unsaved local state or re-mounting the component tree.
+        try { window.dispatchEvent(new CustomEvent('tradecore:role-changed', { detail: fresh })); } catch {}
       } else {
         console.log('[RoleCache] Background validation OK - role unchanged');
       }
@@ -853,6 +852,16 @@ export default function App() {
   const incrementalSyncSinceRef = React.useRef<number>(0);
   const lastPolledCompanyIdRef = React.useRef<string | null>(null);
   const lastSkipSigRef = React.useRef<string>('');
+  // POLL DEBOUNCE: prevents the cross-device poll from re-applying the same server
+  // version after a reload or within a short window. Breaks the "poll → apply → reload
+  // → poll → apply" infinite loop where the version ref was reset to 0 on reload.
+  const lastPollAppliedVersionRef = React.useRef<number>(0);
+  const lastPollAppliedTimeRef = React.useRef<number>(0);
+  // STORAGE EVENT DEBOUNCE: prevents rapid-fire storage events (e.g. from multiple
+  // localStorage writes in quick succession during applyData) from triggering multiple
+  // scheduleCrossTabRefetch calls. Breaks the "storage event → re-fetch → apply →
+  // storage event" micro-loop.
+  const lastStorageEventTimeRef = React.useRef<number>(0);
   // Monotonic server version — fixes same-second TIMESTAMP collisions
   const lastServerVersionRef = React.useRef<number>(0);
   // Guards against applying/re-broadcasting the same server version more than once
@@ -2729,6 +2738,11 @@ export default function App() {
           lastSelfWrittenVersionRef.current = null;
           return;
         }
+        // DEBOUNCE: if a storage event was processed within the last 2s, skip —
+        // prevents rapid-fire events from multiple localStorage writes during applyData.
+        const nowEv = Date.now();
+        if ((nowEv - lastStorageEventTimeRef.current) < 2000) return;
+        lastStorageEventTimeRef.current = nowEv;
         const newVer = Number(e.newValue);
         const oldVer = Number(e.oldValue ?? 0);
         if (!Number.isFinite(newVer) || newVer === 0) return;
@@ -2747,6 +2761,33 @@ export default function App() {
       }
     };
     if (!deferred) window.addEventListener('storage', handleStorageChange);
+
+    // SILENT ROLE MERGE LISTENER: when validateRoleCacheAfterBoot detects a role
+    // change on the server, instead of a hard reload (which caused the infinite
+    // "build → poll → apply → role-check → reload" loop), it dispatches a custom
+    // event that we handle here — updating the running React state in-place.
+    const handleRoleChanged = (e: Event) => {
+      const fresh = (e as CustomEvent).detail;
+      if (!fresh || typeof fresh !== 'object') return;
+      console.log('[RoleCache] Applying role change silently:', fresh);
+      setCurrentUser((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          role: fresh.role ?? prev.role,
+          companyId: fresh.companyId ?? prev.companyId,
+          company_id: fresh.company_id ?? prev.company_id,
+          branchId: fresh.branchId ?? prev.branchId,
+          branch_id: fresh.branch_id ?? prev.branch_id,
+          storeId: fresh.storeId ?? prev.storeId,
+          store_id: fresh.store_id ?? prev.store_id,
+          allowedPages: fresh.allowedPages ?? prev.allowedPages,
+        };
+      });
+      // Force a re-fetch so the new role's data scope is picked up immediately
+      scheduleCrossTabRefetch(0);
+    };
+    window.addEventListener('tradecore:role-changed', handleRoleChanged);
 
     // --- NETWORK RESILIENCE: pause ALL background sync while offline, resume on reconnect.
     // This is the primary defence against the "Failed to fetch" → cross-tab re-fetch loop:
@@ -2963,11 +3004,22 @@ export default function App() {
           if (fullState.lastUpdated) noteStateTimestamp(fullState.lastUpdated);
           if ((fullState as any)._serverUpdatedAt) lastServerTimestampRef.current = (fullState as any)._serverUpdatedAt;
           if (shouldApplyIncomingState(fullState)) {
+            // POLL DEBOUNCE: if we already applied this exact version within the last 10s,
+            // skip — this breaks the infinite "poll → apply → reload → poll" loop where
+            // the version ref resets to 0 on reload and the same data is re-applied.
+            const nowMs = Date.now();
+            const appliedVer = Number((fullState as any)._version ?? (fullState as any).version ?? 0);
+            if (appliedVer > 0 && appliedVer === lastPollAppliedVersionRef.current
+                && (nowMs - lastPollAppliedTimeRef.current) < 10000) {
+              return;
+            }
             console.log('[DB] Cross-device change detected, applying update');
             const mergedState = protectDirtyCollections(fullState);
             applyData(mergedState, true);
             usersSyncedRef.current = true;
             localStorage.setItem('tradecore_data', JSON.stringify(mergedState));
+            lastPollAppliedVersionRef.current = appliedVer;
+            lastPollAppliedTimeRef.current = nowMs;
           }
         }
       } catch (e) {}
@@ -3018,6 +3070,7 @@ export default function App() {
       unsubscribe();
       clearInterval(crossDevicePoll);
       window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('tradecore:role-changed', handleRoleChanged);
       window.removeEventListener('offline', handleOffline);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('beforeunload', handleBeforeUnload);

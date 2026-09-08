@@ -1,1 +1,1 @@
-﻿{"version":"1.0.2","name":"TradeCore ERP","date":"2026-09-08","description":"Clear auth messages: inline login errors, working forgot/reset-password flow, inline registration errors"}
+﻿{"version":"1.0.3","name":"TradeCore ERP","date":"2026-09-08","description":"Fixed infinite sync loop: role cache reload, cross-device poll debounce, storage event debounce"}
