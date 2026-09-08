@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.6] - 2026-09-08
+
+### Sync Engine: Event-Driven First, Poll as Safety Net
+- **CHANGED**: Cross-device reconciliation poll reduced from every 5s to every 30s (App.tsx:2880). Idle traffic is now ~6x lighter. The poll callback was audited and confirmed unchanged in behavior: it performs a cheap no-change probe or version/timestamp-stale-gated merge, and NEVER re-runs boot — boot functions (`restoreRoleCacheAtBoot`/`validateRoleCacheAfterBoot`/`initCrossTabSync`) are invoked only from the mount effect, so a poll can never re-log the build line or reset UI state.
+- **ADDED**: Event-driven fast-path dedup inside the poll. If the realtime/SSE, BroadcastChannel, or storage-event channels have already converged this tab onto the current server version within the last 3s, the safety-net poll is skipped entirely (no redundant server GET).
+- **PRIMARY FAST PATHS (unchanged)**: SSE realtime events, BroadcastChannel cross-tab messages, `storage` events, local-mutation flush ack, and online-reconnect all trigger `scheduleCrossTabRefetch()` immediately (300ms debounce) — these are the event-driven paths that apply data the instant it changes.
+- **KEPT 5s inactivity watchdog** (App.tsx:5647): a local POS-security auto-lock timer. It makes zero network calls, cannot re-run boot or log builds, and must run continuously to enforce the 5-minute idle lock — intentionally not event-driven.
+- **WHY a poll remains at all**: `BroadcastChannel` cannot cross devices/browsers. Removing the fallback poll entirely would leave device→device changes invisible until manual reload. The 30s safety net guarantees eventual convergence across devices while staying dormant in the idle case.
+
+---
+
 ## [1.0.5] - 2026-09-08
 
 ### Boot Once + No Cross-Device Re-Init Loop

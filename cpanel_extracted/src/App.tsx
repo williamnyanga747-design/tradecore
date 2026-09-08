@@ -2866,14 +2866,32 @@ export default function App() {
       window.addEventListener('online', handleOnline);
     }
 
-    // 3. Poll database every 5s — company-filtered atomic poll is source of truth (fixes Chrome 0 vs Edge 1 desync)
-    // If company_id is known, fetch ONLY that company's products/users (tiny payload, ignores client timestamp).
-    // Fallback to version-based full-blob poll for public pages / ROOT (no company).
+    // 3. Reconcile database state with the server:
+    //    - PRIMARY (event-driven): SSE realtime + BroadcastChannel cross-tab + storage
+    //      events + explicit local-mutation ack all trigger scheduleCrossTabRefetch().
+    //      These are the fast paths; they apply the moment data actually changes.
+    //    - SAFETY NET (fallback): a low-rate 30s reconciliation poll (NOT a boot-rerun —
+    //      this callback only fetches/merges data; boot functions run from the mount
+    //      effect alone). It exists ONLY because BroadcastChannel can't cross devices/
+    //      browsers, so without it a change made on device A would never reach device B
+    //      until a reload. Idle traffic is ~6x lighter than the old 5s interval, and every
+    //      apply is already gated by version/timestamp staleness + poll debounce, so an
+    //      idle tab makes a cheap no-change probe and returns.
     const crossDevicePoll = deferred ? null : setInterval(async () => {
       try {
         // OFFLINE: pause the poll entirely — a fetch now throws "Failed to fetch" and the
         // empty catch leaves dead air. The 'online' listener forces an immediate resync.
         if (offlineRef.current) return;
+        // EVENT-DRIVEN FAST-PATH DEDUP: if the event channels (SSE / BroadcastChannel /
+        // storage) have already brought this tab current, an idle tab should stay idle and
+        // NOT issue a redundant server GET. A recently-applied version (within the debounce
+        // window) means our state is already converged, so the 30s safety-net poll is skipped.
+        const lastAppliedAt = lastPollAppliedTimeRef.current || 0;
+        const latestSeen = lastRealtimeVersionRef.current;
+        if (latestSeen > 0 && latestSeen === lastServerVersionRef.current && (Date.now() - lastAppliedAt) < 3000) {
+          // Event channel already converged us; skip this redundant probe.
+          return;
+        }
         const pollCompanyId = (() => {
           try {
             const cid = (currentCompanyId != null ? String(currentCompanyId) : null);
@@ -3062,7 +3080,7 @@ export default function App() {
           }
         }
       } catch (e) {}
-    }, 5000);
+    }, 30000);
 
     // 4. On page close, do a final save via sendBeacon
     const handleBeforeUnload = () => {
