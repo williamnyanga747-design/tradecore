@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9] - 2026-09-08
+
+### Build 2026-09-08-4 — Superadmin Global Access Audit (root_mandate)
+- **Server-enforced global scope**: `tcResolveOperatorUser()` resolves the authenticated operator (atomic `tradecore_users` → `user_accounts` → blob) and `tcIsSuperOperatorUser()` recognizes root_mandate/superadmin + every super-role spelling. The `snapshot` action and the `v2_list_*` read endpoints are now FORCED to global scope (`company_id=''` = ALL companies) for a super operator — no passed `company_id` can ever narrow them (per-company snapshots for staff are untouched).
+- **Cross-company reads**: `snapshot` with global scope loads ALL companies' stores/users/categories + the full blob overlay; `v2_list_products` gained a dedicated cross-company branch (normalized `products` no company filter + blob overlay for not-yet-mirrored rows).
+- **Super accounts are undeletable & unpinnable** (`tcGuardUserMutation`, server-enforced on `upsert_user`, `assign_user`/`create_user`, `delete_user`, `v2_upsert_user_account`, `v2_delete_user_account`): nobody except `root_mandate` may modify/delete a global super admin; `superadmin` cannot modify `root_mandate`; a super admin can never be assigned a single company (company_id forced to `''`/NULL wildcard — never the legacy `1`). Every rejection is `error_log`-ged + written to `audit_logs` as a `Super Admin Guard` action.
+- **Frontend Global View (All Companies)**: Header company selector shows **"Global View (All Companies)"** (value 0) for global super admins only; activating it sets `active_company_id='all'`, applies a cross-company authoritative snapshot and aggregates the branch/store/dashboard lists across every company. A concrete company can still be picked to drill down — super admins can edit Company A then Company B without logout. Role detection is tolerant to every spelling (`'Super Admin'`/`'superadmin'`/`'super_admin'` + root usernames).
+- **Preservation**: super-role scope checks replaced the string-exact `role === 'Super Admin'` gates in `visibleCompanies`/`visibleStores` and the Header selectors so `root_mandate` behaves as a global super even if a build stores the role in a different casing.
+
 ## [1.0.8] - 2026-09-08
 
 ### Build 2026-09-08-3 — Auth & Password Reset Audit

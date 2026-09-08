@@ -17,6 +17,7 @@ interface HeaderProps {
   currentBranchId: number | null;
   currentStoreId: number | null;
   settings: Settings;
+  globalView?: boolean;
   onContextChange: (level: 'company' | 'branch' | 'store', val: number) => void;
   onOpenSettings: () => void;
   onToggleMobileSidebar: () => void;
@@ -29,6 +30,13 @@ interface HeaderProps {
   onLanguageChange?: (lang: 'en' | 'sw' | 'fr' | 'es') => void;
 }
 
+// SUPER-ADMIN GLOBAL SCOPE: true for the root accounts and any company-less super role
+// ('Super Admin' / 'superadmin' / 'super_admin'). A global super admin is NEVER a
+// single-company operator — every selector below must treat them as cross-company.
+const isSuperScopeUser = (u: User | null): boolean =>
+  !!u && (u.isRoot === true || u.username === 'root_mandate' || u.username === 'superadmin' ||
+    ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(u.role || '').trim()));
+
 export default function Header({
   currentPage,
   currentUser,
@@ -39,6 +47,7 @@ export default function Header({
   currentBranchId,
   currentStoreId,
   settings,
+  globalView,
   onContextChange,
   onOpenSettings,
   onToggleMobileSidebar,
@@ -50,9 +59,13 @@ export default function Header({
   language,
   onLanguageChange
 }: HeaderProps) {
-  const isSuperAdmin = currentUser?.role === 'Super Admin';
+  const isSuperAdmin = isSuperScopeUser(currentUser);
   const isAdmin = currentUser?.role === 'Admin' || isSuperAdmin;
   const userInitial = (currentUser?.name?.[0] || currentUser?.username?.[0] || 'U').toUpperCase();
+
+  // GLOBAL VIEW (ALL COMPANIES): when a global super admin activates it, the company,
+  // branch and store selectors aggregate across EVERY company in the system.
+  const inGlobalView = !!globalView && isSuperAdmin;
 
   const activeComp = companies.find(c => c.id === currentCompanyId);
   const activeCompCurrency = activeComp?.currency || settings.companyCurrencies?.[currentCompanyId || 1] || settings.currency || 'USD';
@@ -65,15 +78,19 @@ export default function Header({
     getStoredLanguage();
   const t = (text: string) => translate(text, activeCompLanguage);
 
-  // Filter available options based on hierarchy and soft-deleted status
+  // Filter available options based on hierarchy and soft-deleted status.
+  // Global View aggregates branches/stores across ALL companies (grouped by company).
   const availableCompanies = (isSuperAdmin 
     ? companies 
     : companies.filter(c => c.id === currentCompanyId)
   ).filter(c => !c.isDeleted);
 
-  const availableBranches = (isSuperAdmin 
-    ? branches.filter(b => b.companyId === currentCompanyId)
-    : branches.filter(b => b.companyId === (currentUser?.companyId || currentCompanyId))
+  const availableBranches = (inGlobalView
+    ? branches.filter(b => !b.isDeleted)
+    : (isSuperAdmin 
+      ? branches.filter(b => b.companyId === currentCompanyId)
+      : branches.filter(b => b.companyId === (currentUser?.companyId || currentCompanyId))
+    )
   ).filter(b => !b.isDeleted);
 
   const [btConnected, setBtConnected] = useState<boolean>(false);
@@ -91,13 +108,15 @@ export default function Header({
     };
   }, []);
 
-  let availableStores = stores.filter(s => {
-    if (currentBranchId) return s.branchId === currentBranchId && !s.isDeleted;
-    const branch = branches.find(b => b.id === s.branchId);
-    return branch && branch.companyId === (currentUser?.companyId || currentCompanyId) && !s.isDeleted;
-  });
+  let availableStores = inGlobalView
+    ? stores.filter(s => !s.isDeleted)
+    : stores.filter(s => {
+        if (currentBranchId) return s.branchId === currentBranchId && !s.isDeleted;
+        const branch = branches.find(b => b.id === s.branchId);
+        return branch && branch.companyId === (currentUser?.companyId || currentCompanyId) && !s.isDeleted;
+      });
 
-  if (currentUser && currentUser.role !== 'Super Admin') {
+  if (!inGlobalView && currentUser && !isSuperScopeUser(currentUser)) {
     const userCompanyBranchIds = branches
       .filter(b => b.companyId === (currentUser.companyId || currentCompanyId) && !b.isDeleted)
       .map(b => b.id);
@@ -218,13 +237,22 @@ export default function Header({
           {/* Company Context Select */}
           {isSuperAdmin && (
             <select
-              value={currentCompanyId || ''}
+              value={inGlobalView ? 0 : (currentCompanyId || '')}
               onChange={(e) => onContextChange('company', Number(e.target.value))}
               className="bg-transparent text-white text-xs px-2 py-1 outline-none border-none cursor-pointer font-medium shrink-0"
             >
-              {availableCompanies.map(c => (
-                <option key={c.id} value={c.id} className="text-gray-900 bg-white font-medium">{c.name}</option>
-              ))}
+              {inGlobalView ? (
+                <option value={0} className="text-gray-900 bg-white font-bold">{t('Global View (All Companies)')}</option>
+              ) : (
+                <>
+                  {isSuperAdmin && (
+                    <option value={0} className="text-gray-900 bg-white font-bold">{t('Global View (All Companies)')}</option>
+                  )}
+                  {availableCompanies.map(c => (
+                    <option key={c.id} value={c.id} className="text-gray-900 bg-white font-medium">{c.name}</option>
+                  ))}
+                </>
+              )}
             </select>
           )}
 

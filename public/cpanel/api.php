@@ -810,6 +810,135 @@ function tcAuthorizeOperatorSoft($pdo, $rawInput, $action = '') {
     return 1;
 }
 
+/**
+ * tcResolveOperatorUser — resolve the authenticated operator (root_mandate /
+ * superadmin / any staff) to the FULL user object the DB holds. 3-tier lookup,
+ * mirroring login/reset: atomic tradecore_users (by id, then username), then the
+ * user_accounts normalized table, then the state blob. Returns null for guests.
+ * The returned array carries a normalized `company_id` string ('' = company-less).
+ */
+function tcResolveOperatorUser($pdo, $rawInput) {
+    $username = $userId = '';
+    foreach ($_SERVER as $k => $v) {
+        if (strcasecmp($k, 'HTTP_X_OPERATOR') === 0 && $v !== '') $username = $v;
+        if (strcasecmp($k, 'HTTP_X_OPERATOR_ID') === 0 && $v !== '') $userId = $v;
+    }
+    if ($username === '' && $userId === '') {
+        $in = is_array($rawInput) ? $rawInput : (@json_decode((string)$rawInput, true) ?: []);
+        if (!empty($in['operator'])) $username = (string)$in['operator'];
+        if (!empty($in['user_id'])) $userId = (string)$in['user_id'];
+    }
+    if ($username === '' && $userId === '') return null;
+    $norm = function ($u, $companyCol = '') use ($userId) {
+        if (!is_array($u)) return null;
+        if ($companyCol !== '') $u['company_id'] = (string)($u['company_id'] ?? $u['companyId'] ?? $companyCol ?? '');
+        else $u['company_id'] = (string)($u['company_id'] ?? $u['companyId'] ?? '');
+        if (!isset($u['id']) && $userId !== '') $u['id'] = $userId;
+        return $u;
+    };
+    try {
+        if ($userId !== '') {
+            $stmt = $pdo->prepare("SELECT company_id, data, deleted_at FROM tradecore_users WHERE deleted_at IS NULL AND id = ? LIMIT 1");
+            $stmt->execute([(string)$userId]);
+            $row = $stmt->fetch();
+            if ($row && $row['data']) { $u = json_decode($row['data'], true); if (is_array($u)) return $norm($u, $row['company_id']); }
+        }
+        if ($username !== '') {
+            $stmt = $pdo->prepare("SELECT company_id, data, deleted_at FROM tradecore_users WHERE deleted_at IS NULL AND LOWER(BINARY data->>'$.username') = ? LIMIT 1");
+            $stmt->execute([strtolower($username)]);
+            $row = $stmt->fetch();
+            if ($row && $row['data']) { $u = json_decode($row['data'], true); if (is_array($u)) return $norm($u, $row['company_id']); }
+        }
+    } catch (Throwable $eOp) { error_log('[TradeCore API] tcResolveOperatorUser atomic failed: ' . $eOp->getMessage()); }
+    try {
+        if ($userId !== '') {
+            $stmt = $pdo->prepare("SELECT * FROM user_accounts WHERE deleted_at IS NULL AND id = ? LIMIT 1");
+            $stmt->execute([(string)$userId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row) return $norm($row, $row['company_id']);
+        }
+        if ($username !== '') {
+            $stmt = $pdo->prepare("SELECT * FROM user_accounts WHERE deleted_at IS NULL AND LOWER(username) = ? LIMIT 1");
+            $stmt->execute([strtolower($username)]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row) return $norm($row, $row['company_id']);
+        }
+    } catch (Throwable $eOp2) { error_log('[TradeCore API] tcResolveOperatorUser user_accounts failed: ' . $eOp2->getMessage()); }
+    try {
+        $stmt = $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1");
+        $row = $stmt->fetch();
+        if ($row && $row['json_data']) {
+            $pd = normalizeBlobData(json_decode($row['json_data'], true));
+            if (is_array($pd) && isset($pd['users']) && is_array($pd['users'])) {
+                foreach ($pd['users'] as $bu) {
+                    if (!is_array($bu)) continue;
+                    if ($userId !== '' && (string)($bu['id'] ?? '') === $userId) return $norm($bu);
+                    if ($username !== '' && strtolower(trim((string)($bu['username'] ?? ''))) === strtolower($username)) return $norm($bu);
+                }
+            }
+        }
+    } catch (Throwable $eOp3) {}
+    return null;
+}
+
+/**
+ * tcIsSuperOperatorUser — is this user a GLOBAL (company-less) super admin?
+ * Accepts the root usernames, the isRoot flag, and the role spellings used across
+ * builds ('Super Admin', 'superadmin', 'super_admin'). A super admin NEVER belongs
+ * to a single company: its company_id must be ''/null (wildcard), never '1'.
+ */
+function tcIsSuperOperatorUser($u) {
+    if (!is_array($u)) return false;
+    $role = strtolower(trim((string)($u['role'] ?? '')));
+    $name = strtolower(trim((string)($u['username'] ?? '')));
+    if ($name === 'root_mandate' || $name === 'superadmin') return true;
+    if (!empty($u['isRoot'])) return true;
+    return in_array($role, ['super admin', 'superadmin', 'super_admin'], true);
+}
+
+/**
+ * tcGuardUserMutation — SUPER-ADMIN PROTECTION GATE (server-enforced).
+ * Prevents non-root callers from creating/modifying/deleting or DEMOTING a global
+ * super admin, and prevents a global super admin from ever being assigned to a
+ * single company (company_id must stay ''/null = wildcard). Returns an error string
+ * if the mutation must be rejected ('' = allowed). Every rejection is audited.
+ */
+function tcGuardUserMutation($pdo, $rawInput, $targetUser, $mode) {
+    $caller = tcResolveOperatorUser($pdo, $rawInput);
+    $callerIsSuper = tcIsSuperOperatorUser($caller);
+    $callerName = strtolower(trim((string)($caller['username'] ?? '')));
+    $targetIsArray = is_array($targetUser);
+    $targetNameRaw = $targetIsArray ? (string)($targetUser['username'] ?? '') : '';
+    $targetName = strtolower(trim($targetNameRaw));
+    $targetIsSuper = $targetIsArray && tcIsSuperOperatorUser($targetUser);
+    $reject = function ($reason) use ($pdo, $rawInput, $callerName) {
+        error_log('[TradeCore API] super-guard REJECTED (' . $reason . ') caller=' . $callerName);
+        try { logCoreAction($pdo, tcCurrentOperator($rawInput)[0], tcCurrentOperator($rawInput)[1], 'Super Admin Guard', 'Rejected ' . $reason . ' by ' . $callerName); } catch (Throwable $e) {}
+        return 'SuperAdminProtection: ' . $reason;
+    };
+    // Mode: create/update/delete
+    // 1. Nobody may touch root_mandate except root_mandate itself (it is the owner account).
+    if ($targetName === 'root_mandate' && $mode !== 'read') {
+        if (!$callerIsSuper || $callerName !== 'root_mandate') return $reject('modify-root-mandate');
+    }
+    // 2. A non-global caller may never create/update/delete a super admin account.
+    if ($targetIsSuper && !$callerIsSuper) return $reject('non-super-modifying-super');
+    // 3. 'superadmin' cannot modify 'root_mandate' (already covered above). 'root_mandate'
+    //    may modify 'superadmin'; a global 'superadmin' may modify itself but never 'root_mandate'.
+    if ($callerName === 'superadmin' && $targetName === 'root_mandate') return $reject('superadmin-modifying-root');
+    // 4. A global super admin must stay company-less: rejecting any non-empty company assignment.
+    if ($targetIsSuper && $targetIsArray) {
+        $tco = (string)($targetUser['company_id'] ?? $targetUser['companyId'] ?? '');
+        if ($tco !== '' && $tco !== '0') return $reject('super-assigned-single-company');
+    }
+    // 5. Delete mode: block deleting a super account unless caller is root_mandate and the
+    //    target is NOT root_mandate itself.
+    if ($mode === 'delete' && $targetIsSuper && $callerName !== 'root_mandate') {
+        return $reject('non-root-deleting-super');
+    }
+    return '';
+}
+
 // 3. Detect SSE early — bypass all headers/json logic
 $isSSE = (
     stripos($_SERVER['HTTP_ACCEPT'] ?? '', 'text/event-stream') !== false ||
@@ -933,6 +1062,18 @@ try {
                 $bodyIn = json_decode((string)$rawInput, true);
                 if (is_array($bodyIn) && isset($bodyIn['company_id'])) $companyId = trim((string)$bodyIn['company_id']);
             }
+            // SUPERADMIN GLOBAL SCOPE (Issue): a global super admin (root_mandate /
+            // superadmin / role 'Super Admin') ALWAYS receives the CROSS-COMPANY state —
+            // never a forced single-company subset. company_id='' makes the normalized
+            // loads below return ALL companies (stores/users/categories) and keeps every
+            // blob-backed collection global. Per-company snapshots are still served to
+            // staff — the super-scope override never narrows or hard-locks a company.
+            $snapSuper = tcResolveOperatorUser($pdo, $rawInput);
+            if (tcIsSuperOperatorUser($snapSuper)) {
+                if ($companyId !== '') error_log('[TradeCore API] snapshot: super scope requested company_id=' . $companyId . ' -> serving GLOBAL company state');
+                $companyId = '';
+            }
+            unset($snapSuper);
 
             // 1. Authoritative blob: version watermark + every blob-backed collection.
             $blobRow = $pdo->query("SELECT json_data, version FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch(PDO::FETCH_ASSOC);
@@ -1981,8 +2122,12 @@ try {
         $userJson = $input['user_json'] ?? null;
         $user = $userJson ? json_decode($userJson, true) : null;
         if (!$user || !isset($user['id'])) { echo json_encode(["success" => false, "error" => "Missing user.id", "server_ts" => $now]); exit(); }
+        // SUPER-ADMIN PROTECTION GATE (server-enforced; the client guard is trust-no-one).
+        $superGuard = tcGuardUserMutation($pdo, $rawInput, $user, 'update');
+        if ($superGuard !== '') { echo json_encode(["success" => false, "error" => $superGuard, "server_ts" => $now]); exit(); }
         $id = (string)$user['id'];
         $companyId = (string)($user['company_id'] ?? $user['companyId'] ?? '');
+        if (tcIsSuperOperatorUser($user) && $companyId !== '') { $user['company_id'] = $user['companyId'] = ''; $companyId = ''; }
         $phone = (string)($user['phone'] ?? $user['phoneNumber'] ?? '');
         $j = json_encode($user, JSON_UNESCAPED_UNICODE);
         $ts = isset($user['updated_at']) && is_numeric($user['updated_at']) ? (int)$user['updated_at'] : $now;
@@ -2024,6 +2169,25 @@ try {
         $id = (string)($input['id'] ?? '');
         $companyId = (string)($input['company_id'] ?? '');
         if (!$id) { echo json_encode(["success" => false, "error" => "Missing id", "server_ts" => $now]); exit(); }
+        // SUPER-ADMIN PROTECTION GATE: resolve the target row and refuse super deletes by
+        // anyone except root_mandate (and never root_mandate itself).
+        $targetForGuard = null;
+        try {
+            $gStmt = $pdo->prepare("SELECT data, company_id FROM tradecore_users WHERE id=? AND deleted_at IS NULL LIMIT 1");
+            $gStmt->execute([(string)$id]);
+            $gRow = $gStmt->fetch();
+            if ($gRow && $gRow['data']) { $gd = json_decode($gRow['data'], true); if (is_array($gd)) { $gd['company_id'] = (string)($gd['company_id'] ?? $gd['companyId'] ?? $gRow['company_id'] ?? ''); $targetForGuard = $gd; } }
+            if (!$targetForGuard) {
+                $gStmt2 = $pdo->prepare("SELECT * FROM user_accounts WHERE id=? AND deleted_at IS NULL LIMIT 1");
+                $gStmt2->execute([(string)$id]);
+                $gRow2 = $gStmt2->fetch(PDO::FETCH_ASSOC);
+                if ($gRow2) $targetForGuard = $gRow2;
+            }
+        } catch (Throwable $eGuard) {}
+        if ($targetForGuard) {
+            $superGuard = tcGuardUserMutation($pdo, $rawInput, $targetForGuard, 'delete');
+            if ($superGuard !== '') { echo json_encode(["success" => false, "error" => $superGuard, "server_ts" => $now]); exit(); }
+        }
         try {
             // REQUIREMENT 3 + 1: strict transaction — the soft-delete (status='deleted'
             // via deleted_at) and the blob-removal must COMMIT atomically BEFORE this
@@ -2285,8 +2449,12 @@ try {
         $userJson = $input['user_json'] ?? null;
         $user = $userJson ? json_decode($userJson, true) : null;
         if (!$user || !isset($user['id'])) { echo json_encode(["success" => false, "error" => "Missing user.id", "server_ts" => $now]); exit(); }
+        // SUPER-ADMIN PROTECTION GATE (assign_user / create_user).
+        $superGuard = tcGuardUserMutation($pdo, $rawInput, $user, 'update');
+        if ($superGuard !== '') { echo json_encode(["success" => false, "error" => $superGuard, "server_ts" => $now]); exit(); }
         $id = (string)$user['id'];
         $companyId = (string)($user['company_id'] ?? $user['companyId'] ?? '');
+        if (tcIsSuperOperatorUser($user) && $companyId !== '') { $user['company_id'] = $user['companyId'] = ''; $companyId = ''; }
         $phone = (string)($user['phone'] ?? $user['phoneNumber'] ?? '');
         $j = json_encode($user, JSON_UNESCAPED_UNICODE);
         $ts = $now;
@@ -2796,6 +2964,15 @@ try {
         $v2in = tcV2Input($rawInput);
         list($v2op, $v2role) = tcCurrentOperator($rawInput);
         $v2company = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+        // SUPERADMIN GLOBAL SCOPE: read endpoints assert the caller's real scope. A global
+        // super admin's LIST requests are forced to the GLOBAL scope ('' = ALL companies) so
+        // no passed company_id can narrow them; staff keep their own requested scope.
+        $v2SuperOp = tcResolveOperatorUser($pdo, $rawInput);
+        $v2IsSuper = tcIsSuperOperatorUser($v2SuperOp);
+        if ($v2IsSuper && in_array($action, ['v2_list_companies', 'v2_list_stores', 'v2_list_products', 'v2_list_categories', 'v2_list_user_accounts'], true)) {
+            if ($v2company !== '') error_log('[TradeCore API] v2_list: super scope requested company_id=' . $v2company . ' -> serving GLOBAL list');
+            $v2company = '';
+        }
 
         // ---- v2_list_companies --------------------------------------------------
         if ($action === 'v2_list_companies') {
@@ -3004,19 +3181,62 @@ try {
 
         // ---- v2_list_products -----------------------------------------------------
         if ($action === 'v2_list_products') {
-            $list = tcLoadProductsN($pdo, $v2company, (string)($v2in['store_id'] ?? $v2in['storeId'] ?? ''), (int)($v2in['since'] ?? 0));
-            if (count($list) === 0 && $v2company !== '') {
+            $list = [];
+            if ($v2company === '' && $v2IsSuper) {
+                // GLOBAL SUPER SCOPE: load products across ALL companies (tcLoadProductsN
+                // requires a concrete company, so query the full normalized table here).
                 try {
-                    $pre = $pdo ? $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch() : null;
-                    $pd = ($pre && $pre['json_data']) ? normalizeBlobData(json_decode($pre['json_data'], true)) : [];
-                    if (is_array($pd) && isset($pd['marketplaceProducts']) && is_array($pd['marketplaceProducts'])) {
-                        foreach ($pd['marketplaceProducts'] as $p) {
-                            if (!is_array($p) || isset($p['isDeleted']) || isset($p['deletedAt'])) continue;
-                            if ((string)($p['company_id'] ?? $p['companyId'] ?? '') !== $v2company) continue;
-                            $list[] = $p;
-                        }
+                    $sql = "SELECT * FROM products WHERE deleted_at IS NULL ORDER BY name ASC";
+                    if (($v2in['store_id'] ?? $v2in['storeId'] ?? '') !== '') { $sql = "SELECT * FROM products WHERE deleted_at IS NULL AND store_id=? ORDER BY name ASC"; }
+                    $sp = $pdo->prepare($sql);
+                    if (($v2in['store_id'] ?? $v2in['storeId'] ?? '') !== '') $sp->execute([(string)($v2in['store_id'] ?? $v2in['storeId'] ?? '')]); else $sp->execute();
+                    $pmap = [];
+                    foreach ($sp->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                        $extra = [];
+                        if ($r['extra_json']) { $d = json_decode($r['extra_json'], true); if (is_array($d)) $extra = $d; }
+                        $p = [
+                            'id' => $r['id'], 'companyId' => $r['company_id'], 'company_id' => $r['company_id'], 'storeId' => $r['store_id'],
+                            'categoryId' => $r['category_id'], 'sku' => $r['sku'], 'name' => $r['name'],
+                            'barcode' => $r['barcode'], 'price' => (float)$r['unit_price'], 'unitPrice' => (float)$r['unit_price'],
+                            'costPrice' => (float)$r['cost_price'], 'unitCost' => (float)$r['cost_price'],
+                            'stockQty' => (float)$r['stock_qty'], 'quantity' => (float)$r['stock_qty'],
+                            'lowStockThreshold' => $r['low_stock_threshold'] === null ? null : (float)$r['low_stock_threshold'],
+                            'taxRate' => (float)$r['tax_rate'], 'unit' => $r['unit'], 'image' => $r['image_url'],
+                            'description' => $r['description'], 'is_active' => (int)$r['is_active'], 'active' => (int)$r['is_active'],
+                            'created_at' => $r['created_at'], 'updated_at' => $r['updated_at'],
+                        ];
+                        foreach ($extra as $ek => $ev) { if (!array_key_exists($ek, $p)) $p[$ek] = $ev; }
+                        $pmap[$r['id']] = $p;
                     }
-                } catch (Throwable $e) { error_log('[TradeCore API] v2_list_products blob fallback failed: ' . $e->getMessage()); }
+                    // Blob overlay for products not yet mirrored (marketplace-only rows).
+                    try {
+                        $pre = $pdo ? $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch() : null;
+                        $pd = ($pre && $pre['json_data']) ? normalizeBlobData(json_decode($pre['json_data'], true)) : [];
+                        if (is_array($pd) && isset($pd['marketplaceProducts']) && is_array($pd['marketplaceProducts'])) {
+                            foreach ($pd['marketplaceProducts'] as $p) {
+                                if (!is_array($p) || isset($p['isDeleted']) || isset($p['deletedAt'])) continue;
+                                $pid = (string)($p['id'] ?? '');
+                                if ($pid !== '' && !isset($pmap[$pid])) $pmap[$pid] = $p;
+                            }
+                        }
+                    } catch (Throwable $e) {}
+                    $list = array_values($pmap);
+                } catch (Throwable $e) { error_log('[TradeCore API] v2_list_products global failed: ' . $e->getMessage()); }
+            } else {
+                $list = tcLoadProductsN($pdo, $v2company, (string)($v2in['store_id'] ?? $v2in['storeId'] ?? ''), (int)($v2in['since'] ?? 0));
+                if (count($list) === 0 && $v2company !== '') {
+                    try {
+                        $pre = $pdo ? $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch() : null;
+                        $pd = ($pre && $pre['json_data']) ? normalizeBlobData(json_decode($pre['json_data'], true)) : [];
+                        if (is_array($pd) && isset($pd['marketplaceProducts']) && is_array($pd['marketplaceProducts'])) {
+                            foreach ($pd['marketplaceProducts'] as $p) {
+                                if (!is_array($p) || isset($p['isDeleted']) || isset($p['deletedAt'])) continue;
+                                if ((string)($p['company_id'] ?? $p['companyId'] ?? '') !== $v2company) continue;
+                                $list[] = $p;
+                            }
+                        }
+                    } catch (Throwable $e) { error_log('[TradeCore API] v2_list_products blob fallback failed: ' . $e->getMessage()); }
+                }
             }
             echo json_encode(["success" => true, "list" => $list, "count" => count($list), "server_ts" => $now]);
             exit();
@@ -3148,7 +3368,11 @@ try {
             if (!$pdo) { echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
             $user = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['user'] ?? null) ? $v2in['user'] : null);
             if (!$user || !isset($user['id'])) { echo json_encode(["success" => false, "error" => "Missing user.id", "server_ts" => $now]); exit(); }
+            // SUPER-ADMIN PROTECTION GATE (server-enforced).
+            $superGuard2 = tcGuardUserMutation($pdo, $rawInput, $user, 'update');
+            if ($superGuard2 !== '') { echo json_encode(["success" => false, "error" => $superGuard2, "server_ts" => $now]); exit(); }
             $ucid = (string)($user['company_id'] ?? $user['companyId'] ?? $v2company ?? '');
+            if (tcIsSuperOperatorUser($user) && $ucid !== '') { $ucid = ''; }
             $user['company_id'] = $user['companyId'] = $ucid;
             $ok = tcUpsertUserRow($pdo, $user, $now);
             if ($ok) tcBlobMerge($pdo, 'users', $user);
@@ -3163,6 +3387,25 @@ try {
             $id = (string)($v2in['id'] ?? '');
             $ucid = $v2company !== '' ? $v2company : (string)($v2in['company_id'] ?? '');
             if ($id === '') { echo json_encode(["success" => false, "error" => "Missing user id", "server_ts" => $now]); exit(); }
+            // SUPER-ADMIN PROTECTION GATE (delete): resolve the target row; super accounts are
+            // undeletable except by root_mandate (and root_mandate itself is never deletable).
+            try {
+                $gD = null;
+                $gStmt = $pdo->prepare("SELECT data, company_id FROM tradecore_users WHERE id=? AND deleted_at IS NULL LIMIT 1");
+                $gStmt->execute([(string)$id]);
+                $gRow = $gStmt->fetch();
+                if ($gRow && $gRow['data']) { $gd = json_decode($gRow['data'], true); if (is_array($gd)) { $gd['company_id'] = (string)($gd['company_id'] ?? $gd['companyId'] ?? $gRow['company_id'] ?? ''); $gD = $gd; } }
+                if (!$gD) {
+                    $gStmt2 = $pdo->prepare("SELECT * FROM user_accounts WHERE id=? AND deleted_at IS NULL LIMIT 1");
+                    $gStmt2->execute([(string)$id]);
+                    $gRow2 = $gStmt2->fetch(PDO::FETCH_ASSOC);
+                    if ($gRow2) $gD = $gRow2;
+                }
+                if ($gD) {
+                    $superGuard3 = tcGuardUserMutation($pdo, $rawInput, $gD, 'delete');
+                    if ($superGuard3 !== '') { echo json_encode(["success" => false, "error" => $superGuard3, "server_ts" => $now]); exit(); }
+                }
+            } catch (Throwable $eGuard2) {}
             try {
                 $pdo->prepare("UPDATE user_accounts SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]);
                 if ($ucid !== '') $pdo->prepare("UPDATE tradecore_users SET deleted_at=? WHERE id=? AND company_id=?")->execute([$now, $id, $ucid]);

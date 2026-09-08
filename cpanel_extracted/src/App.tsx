@@ -703,6 +703,19 @@ export default function App() {
   const isRootUser = (u: User | null): boolean =>
     !!u && (u.isRoot === true || u.username === 'root_mandate' || u.username === 'superadmin');
 
+  // SUPER-ADMIN GLOBAL SCOPE helper — true for the root accounts AND any account
+  // carrying a global (company-less) super role, in every role spelling used across
+  // builds ('Super Admin' in defaultData / the DB, 'superadmin', 'super_admin').
+  // A global super admin must NEVER be treated as a single-company operator.
+  const isSuperScopeUser = (u: User | null): boolean =>
+    !!u && (isRootUser(u) ||
+      ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(u.role || '').trim()));
+
+  // GLOBAL VIEW (ALL COMPANIES) — company-less workspace flag, ON only for global
+  // super admins. active_company_id is set to 'all'; every company/branch/store list
+  // and the dashboard aggregate across ALL companies in the system.
+  const [globalCompanyView, setGlobalCompanyView] = useState<boolean>(false);
+
   // Camera capture modal state & stream ref
   const [showCameraCaptureModal, setShowCameraCaptureModal] = useState<boolean>(false);
   const cameraVideoRef = React.useRef<HTMLVideoElement | null>(null);
@@ -1411,7 +1424,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-3');
+    console.log('[TradeCore] build 2026-09-08-4');
   }, []);
 
   useEffect(() => {
@@ -5570,10 +5583,15 @@ const conflict = consumeConflictData();
       return;
     }
 
-    if (currentUser.role === 'Super Admin') {
+    if (isSuperScopeUser(currentUser)) {
       const activeCompanies = companies.filter(c => !c.isDeleted);
       const activeBranches = branches.filter(b => !b.isDeleted);
       const activeStores = stores.filter(s => !s.isDeleted);
+
+      // GLOBAL VIEW: keep the last concrete company so state stays stable; do NOT
+      // force-switch (a forced parentCo here would trip the resync effect and emit
+      // "Company switched X -> Y forcing resync" for a super in Global View).
+      if (globalCompanyView) return;
 
       let parentCo = currentCompanyId;
       if (!parentCo || !activeCompanies.some(c => c.id === parentCo)) {
@@ -5683,25 +5701,26 @@ const conflict = consumeConflictData();
   // Restrict accessible stores based on soft-deletion, active company selection, and user assignment permissions
   const visibleCompanies = useMemo(() => {
     let result = companies.filter(c => !c.isDeleted);
-    if (currentUser && currentUser.role !== 'Super Admin') {
+    if (currentUser && !isSuperScopeUser(currentUser)) {
       result = result.filter(c => c.id === currentUser.companyId);
-    } else if (currentCompanyId) {
+    } else if (!globalCompanyView && currentCompanyId) {
       result = result.filter(c => c.id === currentCompanyId);
     }
     return result;
-  }, [companies, currentCompanyId, currentUser]);
+  }, [companies, currentCompanyId, currentUser, globalCompanyView]);
 
   const visibleStores = useMemo(() => {
     let result = stores.filter(s => !s.isDeleted);
     
-    if (currentCompanyId) {
+    // GLOBAL VIEW: a global super admin sees EVERY store across every company.
+    if (!(isSuperScopeUser(currentUser) && globalCompanyView) && currentCompanyId) {
       const activeCompanyBranchIds = branches
         .filter(b => b.companyId === currentCompanyId && !b.isDeleted)
         .map(b => b.id);
       result = result.filter(s => activeCompanyBranchIds.includes(s.branchId));
     }
     
-    if (currentUser && currentUser.role !== 'Super Admin') {
+    if (currentUser && !isSuperScopeUser(currentUser)) {
       const userCompanyBranchIds = branches
         .filter(b => b.companyId === currentUser.companyId && !b.isDeleted)
         .map(b => b.id);
@@ -5724,7 +5743,7 @@ const conflict = consumeConflictData();
     }
     
     return result;
-  }, [stores, branches, currentCompanyId, currentUser]);
+  }, [stores, branches, currentCompanyId, currentUser, globalCompanyView]);
 
   // --- RECHARTS STABLE PROPS (prevent Error #185 cascading notifyNestedSubs) ---
   const rechartsMargin = useMemo(() => ({ top: 10, right: 10, left: -10, bottom: 0 }), []);
@@ -10045,6 +10064,24 @@ try {
 
   const handleContextChange = (level: 'company' | 'branch' | 'store', val: number) => {
     if (level === 'company') {
+      // GLOBAL VIEW (ALL COMPANIES): only available to global super admins. The company
+      // selector uses value 0 for the "Global View (All Companies)" entry. We keep the
+      // last concrete currentCompanyId (so the resync effect never trips) and apply a
+      // cross-company authoritative snapshot (company_id='') that returns EVERY company's
+      // stores/users/categories so the whole-workspace lists + dashboard aggregate.
+      if (val === 0 && isSuperScopeUser(currentUser)) {
+        setGlobalCompanyView(true);
+        persistActiveCompany('all');
+        void (async () => {
+          try {
+            const snap = await fetchCompanySnapshot('');
+            if (snap && typeof snap === 'object') { applyData(snap, true); console.log('[Global View] applied cross-company snapshot (ALL companies)'); }
+            else console.warn('[Global View] snapshot for ALL returned nothing — keeping current state');
+          } catch (e) { console.warn('[Global View] cross-company snapshot failed — keeping current state', e); }
+        })();
+        return;
+      }
+      setGlobalCompanyView(false);
       explicitCompanySwitchRef.current = true;
       setCurrentCompanyId(val);
       const b = branches.find(x => x.companyId === val);
@@ -13547,6 +13584,7 @@ try {
           currentBranchId={currentBranchId}
           currentStoreId={currentStoreId}
           settings={settings}
+          globalView={globalCompanyView}
           onContextChange={handleContextChange}
           onOpenSettings={handleOpenSettings}
           onToggleMobileSidebar={() => setMobileSidebarOpen(!mobileSidebarOpen)}
