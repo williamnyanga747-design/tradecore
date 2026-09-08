@@ -193,7 +193,9 @@ function tcEnsureNormalizedTables($pdo) {
         try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN branch_id VARCHAR(64) DEFAULT NULL AFTER company_id"); } catch (Throwable $eMig) {}
         try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN store_id VARCHAR(64) DEFAULT NULL AFTER branch_id"); } catch (Throwable $eMig2) {}
         $pdo->exec("CREATE TABLE IF NOT EXISTS audit_trails (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, store_id VARCHAR(64) DEFAULT NULL, user_id VARCHAR(64) DEFAULT NULL, user_name VARCHAR(255) DEFAULT NULL, action VARCHAR(100) NOT NULL, entity_type VARCHAR(100) DEFAULT NULL, entity_id VARCHAR(64) DEFAULT NULL, entity_name VARCHAR(255) DEFAULT NULL, details TEXT DEFAULT NULL, details_json TEXT DEFAULT NULL, ip_address VARCHAR(45) DEFAULT NULL, created_at BIGINT NOT NULL, INDEX idx_at_company_action (company_id, action), INDEX idx_at_created (created_at), INDEX idx_at_entity (entity_type, entity_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-        // Password reset tokens (forgot-password / reset-password): single-use, 10-minute expiry.
+        // Password reset tokens (forgot-password / reset-password): single-use (consumed=1 set
+        // ONLY after a successful password change), 30-minute expiry. This table is NOT part of
+        // the state blob — full-state flushes / 409 rebases can never overwrite a token.
         $pdo->exec("CREATE TABLE IF NOT EXISTS password_reset_tokens (id VARCHAR(64) PRIMARY KEY, token_hash CHAR(64) NOT NULL, user_id VARCHAR(64) NOT NULL, company_id VARCHAR(64) DEFAULT NULL, email VARCHAR(190) NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, consumed TINYINT(1) NOT NULL DEFAULT 0, UNIQUE KEY uniq_prt_hash (token_hash), INDEX idx_prt_hash_consumed (token_hash, consumed)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $done = true;
     } catch (Throwable $e) {
@@ -1596,6 +1598,14 @@ try {
                 }
 
                 // 3. Merge: if changedKeys provided, only overwrite those collections
+                // AUTH AUDIT (2026-09-08-2): password reset tables are NEVER part of the state
+                // blob. Strip any hypothetical password_resets / password_reset_tokens keys from
+                // both the incoming delta and the changedKeys list so a full-state flush or 409
+                // rebase can never clobber a live reset token (single source of truth = MySQL).
+                if (is_array($stateData)) { unset($stateData['password_resets'], $stateData['password_reset_tokens']); }
+                if (is_array($changedKeys)) {
+                    $changedKeys = array_values(array_filter($changedKeys, function ($ck) { return !in_array((string)$ck, ['password_resets', 'password_reset_tokens'], true); }));
+                }
                 $toPersist = $stateData;
                 if (is_array($changedKeys) && count($changedKeys) > 0 && is_array($prevData) && count($prevData) > 0) {
                     foreach ($prevData as $k => $v) {
@@ -2371,6 +2381,11 @@ try {
                 if (!is_array($dec)) continue;
                 if (strtolower(trim((string)($dec['email'] ?? ''))) === $email) {
                     $foundUser = $dec; $foundId = (string)$r['id']; $foundCompany = (string)($r['company_id'] ?? '');
+                    // AUTH AUDIT: never trust a hardcoded company (e.g. '1') — fall back to the
+                    // stored company_id, then the JSON's own company field, then wildcard ''.
+                    if ($foundCompany === '' || $foundCompany === '1') {
+                        $foundCompany = (string)($dec['company_id'] ?? $dec['companyId'] ?? '');
+                    }
                     break;
                 }
             }
@@ -2380,31 +2395,36 @@ try {
                 $stmt = $pdo->prepare("SELECT id, company_id, username FROM user_accounts WHERE lower(email) = lower(?) AND deleted_at IS NULL LIMIT 1");
                 $stmt->execute([$email]);
                 $row = $stmt->fetch();
-                if ($row) { $foundId = (string)$row['id']; $foundCompany = (string)($row['company_id'] ?? ''); $foundUser = ['id' => $foundId, 'username' => (string)($row['username'] ?? $foundId)]; }
+                if ($row) { $foundId = (string)$row['id']; $foundCompany = (string)($row['company_id'] ?? ''); if ($foundCompany === '' || $foundCompany === '1') $foundCompany = ''; $foundUser = ['id' => $foundId, 'username' => (string)($row['username'] ?? $foundId)]; }
             } catch (Throwable $eFe2) { error_log('[TradeCore API] forgot-password user_accounts lookup failed: ' . $eFe2->getMessage()); }
         }
+        // AUTH AUDIT (2026-09-08-2): reset links are single-use (consumed=1 set ONLY after a
+        // successful password change — never on page load or failed verification) with a
+        // 30-minute expiry (was 10 min; increased for testing). The token lives in its own
+        // MySQL table — it is NOT part of the state blob, so a full-state flush / 409 rebase
+        // can never overwrite it.
         $token = bin2hex(random_bytes(24));
         $resetUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? 'tanzaniatradecore.co.tz') . '/reset-password?token=' . urlencode($token);
         if ($foundId !== '' && $foundUser) {
             try {
                 tcEnsureNormalizedTables($pdo);
                 $pdo->prepare("INSERT INTO password_reset_tokens (id, token_hash, user_id, company_id, email, created_at, expires_at, consumed) VALUES (?,?,?,?,?,?,?,0)")
-                    ->execute([bin2hex(random_bytes(8)), hash('sha256', $token), $foundId, $foundCompany, $email, $now, $now + 600]);
+                    ->execute([bin2hex(random_bytes(8)), hash('sha256', $token), $foundId, $foundCompany, $email, $now, $now + 1800]);
             } catch (Throwable $eTok) { error_log('[TradeCore API] forgot-password token insert failed: ' . $eTok->getMessage()); }
         }
         $mailSent = false;
         if (function_exists('mail') && getenv('DISABLE_RESET_MAIL') !== '1') {
             $subject = 'TradeCore ERP - Password Reset Link';
-            $body = "Hello,\n\nUse the link below to reset your TradeCore ERP password. It works once and expires in 10 minutes.\n\n" . $resetUrl . "\n\nIf you did not request this, you can safely ignore this email.\n\n- TradeCore ERP Support";
+            $body = "Hello,\n\nUse the link below to reset your TradeCore ERP password. It works once and expires in 30 minutes.\n\n" . $resetUrl . "\n\nIf you did not request this, you can safely ignore this email.\n\n- TradeCore ERP Support";
             $headers = "From: TradeCore ERP <no-reply@tanzaniatradecore.co.tz>\r\nReply-To: globaltradecore@gmail.com\r\nContent-Type: text/plain; charset=UTF-8\r\n";
             try { $mailSent = @mail($email, $subject, $body, $headers); } catch (Throwable $eMail) { $mailSent = false; }
         }
         if ($foundId === '' || !$foundUser) {
             echo json_encode(["success" => true, "message" => "If an account exists for that email, a password reset link has been sent to it.", "sent" => $mailSent, "server_ts" => $now]);
         } elseif ($mailSent) {
-            echo json_encode(["success" => true, "message" => "A password reset link has been sent to your email. It expires in 10 minutes.", "sent" => true, "server_ts" => $now]);
+            echo json_encode(["success" => true, "message" => "A password reset link has been sent to your email. It expires in 30 minutes.", "sent" => true, "server_ts" => $now]);
         } else {
-            echo json_encode(["success" => true, "sent" => false, "token" => $token, "resetUrl" => $resetUrl, "message" => "We could not send the email automatically, so use this one-time secure reset link (valid for 10 minutes).", "server_ts" => $now]);
+            echo json_encode(["success" => true, "sent" => false, "token" => $token, "resetUrl" => $resetUrl, "message" => "We could not send the email automatically, so use this one-time secure reset link (valid for 30 minutes).", "server_ts" => $now]);
         }
         exit();
     }
@@ -2429,26 +2449,37 @@ try {
         $tokRow = null;
         try {
             tcEnsureNormalizedTables($pdo);
-            $stmt = $pdo->prepare("SELECT * FROM password_reset_tokens WHERE token_hash=? AND consumed=0 AND expires_at > ? LIMIT 1");
-            $stmt->execute([hash('sha256', $token), $now]);
+            // AUTH AUDIT (2026-09-08-2): lookup by token_hash + consumed ONLY — expiry is
+            // checked AFTER the account is resolved. An expired link reports "expired" (not a
+            // misleading "could not find the account"), and a valid-but-orphaned token reports
+            // account_not_found. This separates the four possible reasons exactly.
+            $stmt = $pdo->prepare("SELECT * FROM password_reset_tokens WHERE token_hash=? AND consumed=0 LIMIT 1");
+            $stmt->execute([hash('sha256', $token)]);
             $tokRow = $stmt->fetch();
         } catch (Throwable $eTok2) { $tokRow = null; }
         if (!$tokRow) {
-            echo json_encode(["success" => false, "error" => "This reset link is invalid or has expired. Please request a new one.", "server_ts" => $now]);
+            error_log('[TradeCore API] reset-password: token_not_found');
+            echo json_encode(["success" => false, "reason" => "token_not_found", "error" => "This reset link is invalid or has expired. Please request a new one.", "server_ts" => $now]);
             exit();
         }
         $userId = (string)$tokRow['user_id'];
-        $companyId = (string)($tokRow['company_id'] ?? '');
+        $tokCompany = (string)($tokRow['company_id'] ?? '');
+        $tokEmail = strtolower(trim((string)($tokRow['email'] ?? '')));
         $u = null; $phone = '';
+        // 1. tradecore_users lookup — company-aware when the token carries one, with a
+        //    company-less fallback so a token minted with an empty company_id still resolves.
+        //    There is NO "default company 1" fallback here: an empty token company means
+        //    "any company", never "company 1".
         try {
-            if ($companyId !== '') {
-                $stmt = $pdo->prepare("SELECT data FROM tradecore_users WHERE id=? AND company_id=? LIMIT 1"); $stmt->execute([$userId, $companyId]);
+            if ($tokCompany !== '') {
+                $stmt = $pdo->prepare("SELECT data FROM tradecore_users WHERE id=? AND company_id=? AND deleted_at IS NULL LIMIT 1"); $stmt->execute([$userId, $tokCompany]);
             } else {
-                $stmt = $pdo->prepare("SELECT data FROM tradecore_users WHERE id=? LIMIT 1"); $stmt->execute([$userId]);
+                $stmt = $pdo->prepare("SELECT data FROM tradecore_users WHERE id=? AND deleted_at IS NULL LIMIT 1"); $stmt->execute([$userId]);
             }
             $row = $stmt->fetch();
-            if ($row && $row['data']) { $dec = json_decode($row['data'], true); if (is_array($dec)) $u = $dec; }
+            if ($row && $row['data']) { $dec = json_decode($row['data'], true); if (is_array($dec)) { $u = $dec; if (isset($dec['phone'])) $phone = (string)$dec['phone']; } }
         } catch (Throwable $eLd) { error_log('[TradeCore API] reset-password load failed: ' . $eLd->getMessage()); }
+        // 2. Blob users fallback (ERP users that live in the state blob).
         if (!$u) {
             try {
                 $preRow = $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch();
@@ -2460,10 +2491,55 @@ try {
                 }
             } catch (Throwable $eLd2) {}
         }
-        if ($companyId === '') $companyId = (string)($u['company_id'] ?? $u['companyId'] ?? '');
+        // 3. user_accounts fallback (marketplace-only accounts — these have NO tradecore_users
+        //    row and NO blob entry, which previously produced false "account not found").
+        if (!$u) {
+            try {
+                $stmt = $pdo->prepare("SELECT * FROM user_accounts WHERE id=? AND deleted_at IS NULL LIMIT 1");
+                $stmt->execute([$userId]);
+                $a = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($a) {
+                    $u = [
+                        'id' => $a['id'],
+                        'username' => (string)($a['username'] ?? $a['id']),
+                        'company_id' => (string)($a['company_id'] ?? ''),
+                        'phone' => (string)($a['phone'] ?? ''),
+                        'email' => (string)($a['email'] ?? ''),
+                        'role' => (string)($a['role'] ?? 'User')
+                    ];
+                    $phone = (string)($a['phone'] ?? '');
+                }
+            } catch (Throwable $eLd3) { error_log('[TradeCore API] reset-password user_accounts load failed: ' . $eLd3->getMessage()); }
+        }
+        $companyId = (string)($u['company_id'] ?? $u['companyId'] ?? $tokCompany);
         if ($phone === '') $phone = (string)($u['phone'] ?? $u['phoneNumber'] ?? '');
+        if ($u && isset($u['id'])) {
+            // Expiry is checked ONLY after the account exists, so an expired link says
+            // "expired" and a live link says exactly what went wrong. 
+            $expires = (int)$tokRow['expires_at'];
+            if ($expires > 0 && $now > $expires) {
+                error_log('[TradeCore API] reset-password: expired user=' . $userId . ' (expires_at=' . $expires . ' now=' . $now . ')');
+                echo json_encode(["success" => false, "reason" => "expired", "error" => "This reset link has expired. Please request a new one.", "server_ts" => $now]);
+                exit();
+            }
+            // Company context must match when BOTH sides carry one (empty = wildcard).
+            $accountCompany = (string)($u['company_id'] ?? $u['companyId'] ?? '');
+            if ($tokCompany !== '' && $accountCompany !== '' && $tokCompany !== $accountCompany) {
+                error_log('[TradeCore API] reset-password: company_mismatch token_company=' . $tokCompany . ' account_company=' . $accountCompany . ' user=' . $userId);
+                echo json_encode(["success" => false, "reason" => "company_mismatch", "error" => "We could not find the account for this reset link. Please request a new one.", "server_ts" => $now]);
+                exit();
+            }
+            // Email must match when the token AND the account both carry one (case-insensitive).
+            $accountEmail = strtolower(trim((string)($u['email'] ?? $u['emailAddress'] ?? '')));
+            if ($tokEmail !== '' && $accountEmail !== '' && $accountEmail !== $tokEmail) {
+                error_log('[TradeCore API] reset-password: email_mismatch token_email=' . $tokEmail . ' account_email=' . $accountEmail . ' user=' . $userId);
+                echo json_encode(["success" => false, "reason" => "email_mismatch", "error" => "We could not find the account for this reset link. Please request a new one.", "server_ts" => $now]);
+                exit();
+            }
+        }
         if (!$u || !isset($u['id'])) {
-            echo json_encode(["success" => false, "error" => "We could not find the account for this reset link. Please request a new one.", "server_ts" => $now]);
+            error_log('[TradeCore API] reset-password: account_not_found user=' . $userId . ' token=' . $tokCompany);
+            echo json_encode(["success" => false, "reason" => "account_not_found", "error" => "We could not find the account for this reset link. Please request a new one.", "server_ts" => $now]);
             exit();
         }
         $newHash = password_hash($newPassword, PASSWORD_BCRYPT);

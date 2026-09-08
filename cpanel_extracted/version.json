@@ -1,1 +1,1 @@
-﻿{"version":"1.0.7","name":"TradeCore ERP","date":"2026-09-08","description":"v1.0.7 UNLIMITED persistence: merge-not-overwrite 409 rebase (never drops new Company/Category), safe form submit, IDB open auto-recovery, flush timeout 60s, PHP 512M/120s best-effort"}
+﻿{"version":"1.0.8","name":"TradeCore ERP","date":"2026-09-08","description":"v1.0.8 AUTH audit: reset tokens 30-min single-use, exact-reason redeem (token_not_found/expired/company_mismatch/email_mismatch), user_accounts fallback (no more false 'could not find account'), reset tables excluded from flush/409 blob"}

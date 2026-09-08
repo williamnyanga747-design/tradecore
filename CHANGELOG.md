@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.8] - 2026-09-08
+
+### Build 2026-09-08-3 — Auth & Password Reset Audit
+- **FIXED "We could not find the account for this reset link"**: the redeem handler now resolves the account from THREE sources with correct precedence — `tradecore_users` (company-aware, empty-company = wildcard, **no default-company-1 fallback**), the state blob, and finally `user_accounts` (marketplace-only accounts previously produced false account-not-found). Token is looked up by hash + `consumed=0` only.
+- **Exact failure reasons** (returned as `reason` + logged via error_log): `token_not_found`, `expired`, `company_mismatch`, `email_mismatch`, `account_not_found`. Expiry is checked ONLY after the account resolves, so a live-token failure is never misdiagnosed as an expired/missing one.
+- **Company + email context validated**: token `company_id` / email (lowercase-trimmed) vs account, mismatches rejected with the generic message + exact logged reason.
+- **One-time use preserved**: `consumed=1` is set only after the bcrypt password write completes — never on page load or failed verification (verified unchanged in flow).
+- **Expiry 10 → 30 minutes** for testing (forgot-password insert `$now + 1800`, mail body + UI text updated).
+- **Reset tables excluded from flush/409 blob**: `password_resets` / `password_reset_tokens` keys are stripped from the `save_state` delta and `changedKeys` in the server merge — the token lives only in MySQL, so no full-state flush or 409 rebase can overwrite it.
+- **Auth-route deferral**: `/reset-password` verification is 100% server-side (token passed via POST, checked in the `password_reset_tokens` table — never IDB). The auth-only boot deferral (which prevents the login-freeze loop) stays for all auth routes; it does not touch the token.
+
 ## [1.0.7] - 2026-09-08
 
 ### Build 2026-09-08-2 — Unlimited Persistence Audit

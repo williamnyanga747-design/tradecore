@@ -139,7 +139,7 @@ export default function AuthPasswordReset({ mode, token, translate: t, theme, on
             <p className={`relative text-[11px] ${th.textDim} font-semibold mt-1`}>
               {mode === 'forgot'
                 ? t('Enter your account email and we will send you a secure one-time reset link.')
-                : t('Choose a new password for your account. The reset link works only once and expires in 10 minutes.')}
+                : t('Choose a new password for your account. The reset link works only once and expires in 30 minutes.')}
             </p>
           </div>
 
@@ -264,7 +264,7 @@ export default function AuthPasswordReset({ mode, token, translate: t, theme, on
 
         <p className={`text-center text-[10px] ${th.footerText} font-semibold mt-4 flex items-center justify-center gap-1`}>
           <ExternalLink className="w-3 h-3" />
-          {t('Secure password reset • one-time token • 10-minute expiry')}
+          {t('Secure password reset • one-time token • 30-minute expiry')}
         </p>
       </div>
     </div>
