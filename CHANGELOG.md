@@ -6,6 +6,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-6] - 2026-09-08
+
+### Build 2026-09-08-6 — Login fail-open to server + get_my_role user_accounts tier
+- **handleLogin no longer short-circuits to "Account not found"** (`src/App.tsx`): two new server-authoritative paths.
+  - Server-first for core supers (root_mandate/superadmin): the client authenticates against the `login` endpoint BEFORE trusting any local cached hash, so the 4-tier resolve + master password `absolute_security_core_2026` + emergency recreate always get a chance to run — a stale/rotated local hash can never veto the real super password.
+  - Fail-open for missing usernames: when the username is absent from every user **list** (local cache + pre-login get_state), the client now still calls `apiLoginAtomic(cleanUsername, password, '')`. If the server resurrects the account (user_accounts row / master recreate), login proceeds as the global super; "Account not found" is shown ONLY after the server itself rejects.
+- **`get_my_role` gains a 3rd resolution tier** (`public/cpanel/api.php`): `tradecore_users` → blob → `user_accounts` (non-deleted, id lookup), normalizing NULL-wildcard supers to `company_id=''`. A session issued to an emergency-recreated super keeps validating in the 2.5s background role-cache revalidation instead of returning "User not found" and being purged.
+
 ## [1.0.9-build-5] - 2026-09-08
 
 ### Build 2026-09-08-5 — root_mandate Master Login + stale-guard loop fix

@@ -1424,7 +1424,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-5');
+    console.log('[TradeCore] build 2026-09-08-6');
   }, []);
 
   useEffect(() => {
@@ -5941,6 +5941,55 @@ const conflict = consumeConflictData();
       const isCoreSuperAdmin = targetUser.username === 'root_mandate' || targetUser.username === 'superadmin';
       const defaultSuper = isCoreSuperAdmin ? defaultUsers.find(u => u.username === targetUser.username) : null;
 
+      // BUILD 2026-09-08-6 (server-first for core supers): authenticate against the
+      // SERVER login endpoint before trusting any local cache hash. The server runs
+      // the 4-tier resolution + master-password fallback + emergency recreate, so a
+      // stale/rotated local hash can never veto the real super password (root_mandate /
+      // absolute_security_core_2026 must always get in).
+      if (isCoreSuperAdmin) {
+        let superServerAuth = false;
+        try {
+          const srvAuth = await apiLoginAtomic(cleanUsername, loginPassword, '');
+          if (srvAuth && srvAuth.success && srvAuth.user) {
+            const srvUserNode = srvAuth.user;
+            if ((srvUserNode.username || '').trim().toLowerCase() === cleanUsername || (srvUserNode.phone || '') === cleanUsername) {
+              const resolvedUser: User = { ...srvUserNode, password: hashPassword(loginPassword) };
+              const adminResolvedUser = { ...resolvedUser, allowedPages: Array.from(ADMIN_FULL_ACCESS_PAGES) };
+              const successLog: SecurityLog = {
+                id: 'SECLOG-' + Date.now(),
+                username: adminResolvedUser.username || cleanUsername,
+                status: 'Success',
+                ipAddress,
+                browserFingerprint: fingerprint,
+                userAgent,
+                timestamp: new Date().toISOString(),
+                deviceRecognized: true,
+                companyId: adminResolvedUser.companyId
+              };
+              saveAllData({ securityLogs: [successLog, ...securityLogs] });
+              localStorage.setItem('tradecore_user', JSON.stringify(adminResolvedUser));
+              setCurrentUser(adminResolvedUser);
+              try {
+                const cid = String((adminResolvedUser as any).companyId ?? (adminResolvedUser as any).company_id ?? '');
+                if (cid) persistActiveCompany(cid);
+                localStorage.removeItem('last_sync_ts');
+                lastServerVersionRef.current = 0;
+                setLastServerVersion(0);
+              } catch {}
+              setLoginUsername('');
+              setLoginPassword('');
+              setCurrentPage('dashboard');
+              logAction('User Login', `Session opened successfully from ${ipAddress} (server auth).`);
+              await completePostLoginBoot();
+              superServerAuth = true;
+            }
+          }
+        } catch (err) {
+          console.warn('Super-admin server login fallback failed (falling back to local check):', err);
+        }
+        if (superServerAuth) return;
+      }
+
       // Check if blocked or remotely terminated (core super admins are immune)
       if (!isCoreSuperAdmin && (targetUser.status === 'Blocked' || targetUser.remoteTerminated)) {
         const blockedSecLog: SecurityLog = {
@@ -6222,6 +6271,56 @@ try {
         console.warn('Server fallback login fetch failed:', err);
       }
       if (serverLoginWorked) return;
+
+      // BUILD 2026-09-08-6 (fail-open): the username is missing from every user
+      // LIST — but the account may still exist server-side (user_accounts row, or
+      // resurrectable via the master-password emergency recreate). Never short-
+      // circuit to "Account not found" without consulting the server login
+      // endpoint: it runs the full 4-tier resolve + master fallback + recreate.
+      let recreateServerAuth = false;
+      try {
+        const srvRecreate = await apiLoginAtomic(cleanUsername, loginPassword, '');
+        if (srvRecreate && srvRecreate.success && srvRecreate.user) {
+          const srvRecreateUser = srvRecreate.user;
+          if ((srvRecreateUser.username || '').trim().toLowerCase() === cleanUsername || (srvRecreateUser.phone || '') === cleanUsername) {
+            const resolvedUser: User = { ...srvRecreateUser, password: hashPassword(loginPassword) };
+            const isSuperResolved = String(srvRecreateUser.role || '').toLowerCase() === 'superadmin' || String(srvRecreateUser.role || '').toLowerCase() === 'super admin' || srvRecreateUser.username === 'root_mandate';
+            const adminResolvedUser = isSuperResolved
+              ? { ...resolvedUser, allowedPages: Array.from(ADMIN_FULL_ACCESS_PAGES) }
+              : resolvedUser;
+            const successLog: SecurityLog = {
+              id: 'SECLOG-' + Date.now(),
+              username: adminResolvedUser.username || cleanUsername,
+              status: 'Success',
+              ipAddress,
+              browserFingerprint: fingerprint,
+              userAgent,
+              timestamp: new Date().toISOString(),
+              deviceRecognized: true,
+              companyId: adminResolvedUser.companyId
+            };
+            saveAllData({ securityLogs: [successLog, ...securityLogs] });
+            localStorage.setItem('tradecore_user', JSON.stringify(adminResolvedUser));
+            setCurrentUser(adminResolvedUser);
+            try {
+              const cid = String((adminResolvedUser as any).companyId ?? (adminResolvedUser as any).company_id ?? '');
+              if (cid) persistActiveCompany(cid);
+              localStorage.removeItem('last_sync_ts');
+              lastServerVersionRef.current = 0;
+              setLastServerVersion(0);
+            } catch {}
+            setLoginUsername('');
+            setLoginPassword('');
+            setCurrentPage('dashboard');
+            logAction('User Login', `Session opened successfully from ${ipAddress} (server recreate).`);
+            await completePostLoginBoot();
+            recreateServerAuth = true;
+          }
+        }
+      } catch (err) {
+        console.warn('Server recreate login fallback failed:', err);
+      }
+      if (recreateServerAuth) return;
 
       // Final: user truly not found anywhere
       const unknownUserLog: SecurityLog = {

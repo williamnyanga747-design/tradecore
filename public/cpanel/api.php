@@ -3028,6 +3028,30 @@ try {
                     }
                 } catch (Throwable $eBlob) {}
             }
+            // Tier 3: user_accounts registry (non-deleted) — catches a session
+            // created from an emergency-recreated super (id assigned there) or any
+            // user_accounts-only account. Global supers keep company_id='' wildcard.
+            if (!$user) {
+                try {
+                    $stmt3 = $pdo->prepare("SELECT * FROM user_accounts WHERE id=? AND (deleted_at IS NULL OR deleted_at=0) LIMIT 1");
+                    $stmt3->execute([$userId]);
+                    $ua3 = $stmt3->fetch(PDO::FETCH_ASSOC);
+                    if ($ua3) {
+                        $co3 = ($ua3['company_id'] === null || $ua3['company_id'] === '') ? '' : (string)$ua3['company_id'];
+                        $user = [
+                            'id' => (string)$ua3['id'],
+                            'username' => (string)($ua3['username'] ?? ''),
+                            'role' => (string)($ua3['role'] ?? 'Staff'),
+                            'company_id' => $co3,
+                            'branch_id' => ($ua3['branch_id'] === null ? null : (string)$ua3['branch_id']),
+                            'store_id' => ($ua3['store_id'] === null ? null : (string)$ua3['store_id']),
+                            'is_active' => (int)($ua3['is_active'] ?? 1),
+                        ];
+                    }
+                } catch (Throwable $eUa3) {
+                    error_log('[TradeCore API] get_my_role user_accounts fallback error: ' . $eUa3->getMessage());
+                }
+            }
             // Also keep the soft-auth verdict visible so the client can purge a
             // revoked/deleted account's cache even when the row is gone.
             if (!$user) {
