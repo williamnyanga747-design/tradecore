@@ -1,1 +1,1 @@
-﻿{"version":"1.0.3","name":"TradeCore ERP","date":"2026-09-08","description":"Fixed infinite sync loop: role cache reload, cross-device poll debounce, storage event debounce"}
+﻿{"version":"1.0.4","name":"TradeCore ERP","date":"2026-09-08","description":"Fixed CRUDs not saving: SSE same-version acceptance, poll dirty protection, atomic upsert error handling"}

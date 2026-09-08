@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.4] - 2026-09-08
+
+### Data Loss Fix — CRUDs Not Saving / Live Updates Silently Skipped
+- **FIXED**: SSE realtime handler rejected same-version updates (`rtVer <= lastRealtimeVersionRef`). When the server processes a CRUD and broadcasts the result back via SSE with the same version, the client silently dropped it — making CRUDs appear to save locally but vanish on reload. Now accepts same-version updates (`rtVer < lastRealtimeVersionRef`); the self-echo guard prevents infinite apply→flush→SSE→apply loops for own mutations.
+- **FIXED**: Cross-device poll's company-scoped path wholesale-replaced product/user arrays from `dirtyValuesRef` snapshots, overwriting server data from OTHER devices. The per-id UNION merge above already correctly preserves local-only records; the crude wholesale replacement has been removed.
+- **FIXED**: `apiUpsertProduct`, `apiUpsertUser`, `apiDeleteProduct` were fire-and-forget with `.catch(() => {})`. Failures were silently swallowed — CRUDs would appear to succeed locally but never reach the server. Now they log failures, return `false` on error, and track the server version on success so the cross-device poll can detect the change.
+
+---
+
 ## [1.0.3] - 2026-09-08
 
 ### Infinite Sync Loop Fix

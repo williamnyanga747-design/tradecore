@@ -2668,8 +2668,14 @@ export default function App() {
       unsubscribe = connectPhpRealtimeSync((phpData) => {
       if (phpData) {
         const rtVer = Number(phpData._version ?? phpData.version ?? 0);
-        // Version guard: skip if this live event carries a version we already have
-        if (rtVer > 0 && lastRealtimeVersionRef.current > 0 && rtVer <= lastRealtimeVersionRef.current) {
+        // Version guard: skip if this live event carries a version OLDER than what we
+        // already applied. Allow same-version updates — the server may have bumped
+        // a record within the same blob version (e.g. apiUpsertProduct doesn't bump
+        // _version), and rejecting same-version SSE events silently drops valid
+        // realtime updates, causing CRUDs to appear saved locally but vanish on reload.
+        // The self-echo guard (rtVer === lastFlushedVersionRef) below prevents infinite
+        // apply→flush→SSE→apply loops for our OWN mutations.
+        if (rtVer > 0 && lastRealtimeVersionRef.current > 0 && rtVer < lastRealtimeVersionRef.current) {
           return;
         }
         if (rtVer > 0) lastRealtimeVersionRef.current = rtVer;
@@ -2951,12 +2957,11 @@ export default function App() {
               mergedProds = sanitizeArray([...otherProds, ...mergedProds]);
               mergedUsers = sanitizeArray([...otherUsers, ...mergedUsers]);
             }
-            // Protect pending local CRUDs from the server slice: a brand-new local
-            // product/user is not on the server yet, so the merge above would
-            // filter it out of the UI ("saved temporarily then reverts to old data").
-            const pendingArrays = dirtyValuesRef.current as Record<string, any>;
-            if (Array.isArray(pendingArrays.marketplaceProducts)) mergedProds = sanitizeArray(pendingArrays.marketplaceProducts);
-            if (Array.isArray(pendingArrays.users)) mergedUsers = sanitizeArray(pendingArrays.users);
+            // CRITICAL: Do NOT wholesale-replace merged arrays with dirtyValuesRef
+            // snapshots — the per-id UNION merge above already preserves local-only
+            // records (created locally, not yet on the server). Wholesale replacement
+            // overwrites server data from OTHER devices that the merge correctly added,
+            // causing "another device's CRUDs vanish on the next poll" data loss.
             const nextState: any = { ...dbStateRef.current, marketplaceProducts: mergedProds, users: mergedUsers, lastUpdated: new Date().toISOString() };
             (dbStateRef.current as any).marketplaceProducts = mergedProds;
             (dbStateRef.current as any).users = mergedUsers;

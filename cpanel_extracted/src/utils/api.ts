@@ -847,18 +847,51 @@ async function apiPost(action: string, payload: Record<string, unknown>): Promis
   }
 }
 
-// Atomic table helpers — tiny payloads, no 5 MB blob race
+// Atomic table helpers — tiny payloads, no 5 MB blob race.
+// These are fire-and-forget on the CALLER side (the caller does not await the result
+// in most places), but the functions themselves now log failures and track the server
+// version so the cross-device poll can detect the change.
 export async function apiDeleteProduct(id: string | number, companyId: string | number): Promise<boolean> {
-  const res = await apiPost('delete_product', { id: String(id), company_id: String(companyId) });
-  return !!(res && res.success);
+  try {
+    const res = await apiPost('delete_product', { id: String(id), company_id: String(companyId) });
+    if (res && res.success) {
+      if (res.version) setLastServerVersion(Math.max(getLastServerVersion(), Number(res.version)));
+      return true;
+    }
+    console.warn('[PHP API] delete_product failed:', res?.error || 'unknown');
+    return false;
+  } catch (e) {
+    console.error('[PHP API] delete_product error:', e);
+    return false;
+  }
 }
 export async function apiUpsertProduct(product: any): Promise<boolean> {
-  const res = await apiPost('upsert_product', { product_json: JSON.stringify(product) });
-  return !!(res && res.success);
+  try {
+    const res = await apiPost('upsert_product', { product_json: JSON.stringify(product) });
+    if (res && res.success) {
+      if (res.version) setLastServerVersion(Math.max(getLastServerVersion(), Number(res.version)));
+      return true;
+    }
+    console.warn('[PHP API] upsert_product failed:', res?.error || 'unknown');
+    return false;
+  } catch (e) {
+    console.error('[PHP API] upsert_product error:', e);
+    return false;
+  }
 }
 export async function apiUpsertUser(userData: any): Promise<boolean> {
-  const res = await apiPost('upsert_user', { user_json: JSON.stringify(userData) });
-  return !!(res && res.success);
+  try {
+    const res = await apiPost('upsert_user', { user_json: JSON.stringify(userData) });
+    if (res && res.success) {
+      if (res.version) setLastServerVersion(Math.max(getLastServerVersion(), Number(res.version)));
+      return true;
+    }
+    console.warn('[PHP API] upsert_user failed:', res?.error || 'unknown');
+    return false;
+  } catch (e) {
+    console.error('[PHP API] upsert_user error:', e);
+    return false;
+  }
 }
 /**
  * Atomic password change — tiny targeted request (never a 5MB blob) so the server
