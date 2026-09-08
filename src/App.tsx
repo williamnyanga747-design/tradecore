@@ -4219,7 +4219,7 @@ export default function App() {
         }
         if (attempt === 1) console.log(`[PHP API] Flush attempt 1/${MAX_ATTEMPTS} — payload ${payloadBytes < 1048576 ? (payloadBytes / 1024).toFixed(1) + 'KB' : (payloadBytes / 1024 / 1024).toFixed(1) + 'MB'} (${dirtySnapshot.length} dirty keys)`);
         try {
-          saveOk = await saveSystemDataToPhp(dataToSend, { changedKeys: dirtySnapshot, baseVersion: serverVer, timeoutMs: 30000 });
+          saveOk = await saveSystemDataToPhp(dataToSend, { changedKeys: dirtySnapshot, baseVersion: serverVer, timeoutMs: 60000 });
         } catch (flushErr) {
           console.warn(`[PHP API] Flush attempt ${attempt}/${MAX_ATTEMPTS} threw:`, flushErr);
         }

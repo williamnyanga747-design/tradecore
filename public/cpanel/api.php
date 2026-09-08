@@ -1495,9 +1495,13 @@ try {
     // Version-aware: rejects stale writes (409 Conflict), auto-increments _version
     // ============================================================================
     if ($action === 'save_state' || $action === 'sync' || $action === 'flush') {
+        // UNLIMITED-PERSISTENCE RUNTIME LIMITS: memory is already 512M; execution time
+        // is raised to 120s (above the client's 60s flush timeout) so a LARGE save_state
+        // payload — the client never caps delta size, business deltas flush regardless
+        // of byte count — can commit fully instead of being cut mid-write.
         @ini_set('memory_limit', '512M');
-        @ini_set('max_execution_time', '60');
-        @set_time_limit(60);
+        @ini_set('max_execution_time', '120');
+        @set_time_limit(120);
         $data = json_decode($rawInput, true);
         // CRITICAL: extract inner data — frontend sends {action, data, lastUpdated, changedKeys, lastSeenVersion}
         $stateData = (is_array($data) && isset($data['data']) && is_array($data['data'])) ? $data['data'] : ($data ?: []);
