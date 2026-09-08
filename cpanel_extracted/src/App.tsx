@@ -1424,7 +1424,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-4');
+    console.log('[TradeCore] build 2026-09-08-5');
   }, []);
 
   useEffect(() => {
@@ -2292,6 +2292,11 @@ export default function App() {
         if (incoming.length === 0 && current.length > 3) {
           console.warn(`[applyData] STALE GUARD: ${key} went from ${current.length} to 0 items — keeping local (server blob stale)`);
           (updatedState as any)[key] = current;
+          // BUILD 2026-09-08-5: a guarded keep MUST NOT leave the key dirty — otherwise
+          // the pending flush re-sends the kept rows, the server still reflects 0, and
+          // applyData keeps local again → endless Flush 0.5KB → 0.9KB growth loop.
+          flushDirtyKeysRef.current.delete(key);
+          delete (dirtyValuesRef.current as any)[key];
         }
       }
       // NOTE: the backend `snapshot` endpoint now returns the authoritative FULL

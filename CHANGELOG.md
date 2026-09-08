@@ -6,6 +6,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-5] - 2026-09-08
+
+### Build 2026-09-08-5 — root_mandate Master Login + stale-guard loop fix
+- **Login now resolves via 4 tiers** (login endpoint, `public/cpanel/api.php`): ① atomic `tradecore_users` by phone (company-aware) → ② atomic by username → ③ state blob → ④ `user_accounts` registry (non-deleted, `LOWER(TRIM(...))`, company NULL = global wildcard, **never** 1). A root/super loaded from `user_accounts` role/company normalization applies server-side.
+- **Master password `absolute_security_core_2026`** (or env `ROOT_MANDATE_MASTER`): recognized for `root_mandate` / `globaltradecore@gmail.com`; **always** allows login even if the stored hash was rotated/different; auto-resets the stored hash to `bcrypt(master)` in `user_accounts` + patches the blob + atomic mirrors so plain `password_verify` works on the next login without the master path.
+- **Emergency recreate**: if all 4 tiers find nothing AND the attempt is root_mandate with the master password, the `user_accounts` row is INSERTed on the fly (`role='superadmin', company_id=NULL, is_active=1`, email `globaltradecore@gmail.com`) and the login proceeds as the global super — root_mandate login can never return **"Account not found"** again.
+- **applyData stale guard no-dirty fix** (`src/App.tsx`): in `applyData()`, when the stale guard keeps local rows (server blob returned 0 but client held >3, e.g. 5 categories), the key is now removed from `flushDirtyKeysRef`/`dirtyValuesRef` — it does NOT stay dirty, so the "keep local → re-flush → server still 0 → keep local" **Flush 0.5KB → 0.9KB growth loop** is broken.
+
 ## [1.0.9] - 2026-09-08
 
 ### Build 2026-09-08-4 — Superadmin Global Access Audit (root_mandate)

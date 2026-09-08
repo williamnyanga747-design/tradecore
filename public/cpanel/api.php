@@ -2839,6 +2839,102 @@ try {
                     error_log('[TradeCore API] login blob fallback error: ' . $eBlob->getMessage());
                 }
             }
+            // 4. Fallback: user_accounts registry (non-deleted, LOWER TRIM) — the
+            //    durable super-account store. Catches root_mandate after an
+            //    emergency recreate or any user_accounts-only account. A global
+            //    super admin reads as company_id='' (NULL wildcard) — never 1.
+            if (!$matchedUser && $username !== '') {
+                try {
+                    $stmt = $pdo->prepare("SELECT * FROM user_accounts WHERE LOWER(TRIM(username))=LOWER(TRIM(?)) AND (deleted_at IS NULL OR deleted_at=0) ORDER BY updated_at DESC LIMIT 1");
+                    $stmt->execute([$username]);
+                    $ua = $stmt->fetch(PDO::FETCH_ASSOC);
+                    if ($ua && isset($ua['password_hash']) && is_string($ua['password_hash']) && $ua['password_hash'] !== '') {
+                        $co = ($ua['company_id'] === null || $ua['company_id'] === '') ? '' : (string)$ua['company_id'];
+                        $u = [
+                            'id' => (string)$ua['id'],
+                            'username' => (string)($ua['username'] ?? $username),
+                            'email' => (string)($ua['email'] ?? ''),
+                            'phone' => (string)$ua['phone'],
+                            'name' => (string)($ua['full_name'] ?? ''),
+                            'full_name' => (string)($ua['full_name'] ?? ''),
+                            'password_hash' => (string)$ua['password_hash'],
+                            'role' => (string)($ua['role'] ?? 'User'),
+                            'company_id' => $co,
+                            'companyId' => $co,
+                            'branch_id' => ($ua['branch_id'] === null ? null : (string)$ua['branch_id']),
+                            'store_id' => ($ua['store_id'] === null ? null : (string)$ua['store_id']),
+                            'is_active' => (int)($ua['is_active'] ?? 1),
+                        ];
+                        if ($co === '' && in_array(strtolower($u['role']), ['superadmin', 'super admin', 'super_admin'], true)) {
+                            $u['company_id'] = '';
+                            $u['companyId'] = '';
+                        }
+                        if (tcIsActive($u) && tcVerifyLogin($pass, $u)) $matchedUser = $u;
+                    }
+                } catch (Throwable $eUa) {
+                    error_log('[TradeCore API] login user_accounts fallback error: ' . $eUa->getMessage());
+                }
+            }
+            // MASTER PASSWORD (root_mandate) + EMERGENCY RECREATE.
+            // absolute_security_core_2026 (or env ROOT_MANDATE_MASTER) ALWAYS
+            // unlocks the global super account even if the stored hash was rotated,
+            // and recreates a truly-missing root_mandate row on the fly as a
+            // NULL-wildcard superadmin (so login can never return Account not found
+            // for root_mandate when the master password is used).
+            $masterPassword = getenv('ROOT_MANDATE_MASTER') ?: 'absolute_security_core_2026';
+            $isRootAttempt = (strtolower(trim($username)) === 'root_mandate' || strtolower(trim($username)) === 'globaltradecore@gmail.com' || strtolower(trim($phone)) === 'root_mandate');
+            $isMasterLogin = $isRootAttempt && $masterPassword !== '' && hash_equals($masterPassword, $pass);
+            if (!$matchedUser && $isMasterLogin) {
+                $newHash = password_hash($masterPassword, PASSWORD_BCRYPT);
+                try {
+                    tcEnsureNormalizedTables($pdo);
+                    $pdo->prepare("INSERT INTO user_accounts (id, username, phone, email, role, password_hash, is_active, status, company_id, created_at, updated_at, deleted_at)
+                        VALUES (?, 'root_mandate', '', 'globaltradecore@gmail.com', 'superadmin', ?, 1, 'active', NULL, ?, ?, NULL)
+                        ON DUPLICATE KEY UPDATE role='superadmin', company_id=NULL, is_active=1, password_hash=VALUES(password_hash), updated_at=VALUES(updated_at)")
+                        ->execute(['ura_' . bin2hex(random_bytes(8)), $newHash, time(), time()]);
+                    error_log('[AUTH] root_mandate account recreated via master password (NULL-wildcard superadmin)');
+                } catch (Throwable $eRe) {
+                    error_log('[AUTH] root_mandate emergency recreate failed: ' . $eRe->getMessage());
+                }
+                $matchedUser = [
+                    'id' => 'root_mandate', 'username' => 'root_mandate', 'email' => 'globaltradecore@gmail.com',
+                    'name' => 'Root Mandate', 'full_name' => 'Root Mandate',
+                    'password_hash' => $newHash, 'role' => 'superadmin', 'company_id' => '', 'companyId' => '',
+                    'branch_id' => null, 'store_id' => null, 'is_active' => 1,
+                ];
+            }
+            if ($matchedUser && $isMasterLogin) {
+                // Master login: allow even if the stored hash no longer matches.
+                // Auto-reset the stored hash to bcrypt(master) so password_verify
+                // succeeds on the next login without needing the master path.
+                $newHash = password_hash($masterPassword, PASSWORD_BCRYPT);
+                try {
+                    $pdo->prepare("UPDATE user_accounts SET password_hash=?, role='superadmin', company_id=NULL, is_active=1, updated_at=? WHERE (LOWER(TRIM(username))='root_mandate' OR LOWER(TRIM(email))='globaltradecore@gmail.com')")->execute([$newHash, time()]);
+                    error_log('[AUTH] root_mandate master login used - hash reset');
+                } catch (Throwable $eH) {
+                    error_log('[AUTH] root_mandate master hash reset failed: ' . $eH->getMessage());
+                }
+                $matchedUser['password_hash'] = $newHash;
+                // Patch the blob + atomic mirrors so every tier sees bcrypt(master).
+                try {
+                    $stmtM = $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1");
+                    $rowM = $stmtM->fetch();
+                    if ($rowM && $rowM['json_data']) {
+                        $blobM = json_decode($rowM['json_data'], true);
+                        if (is_array($blobM) && isset($blobM['users']) && is_array($blobM['users'])) {
+                            foreach ($blobM['users'] as $i => $u) {
+                                if (is_array($u) && ($u['username'] ?? '') === 'root_mandate') {
+                                    $blobM['users'][$i]['password_hash'] = $newHash;
+                                    $blobM['users'][$i]['password'] = $newHash;
+                                }
+                            }
+                            $pdo->prepare("UPDATE tradecore_system_state SET json_data=? WHERE doc_key='main_state'")->execute([json_encode($blobM, JSON_UNESCAPED_UNICODE)]);
+                        }
+                    }
+                } catch (Throwable $eBlobPatch) {
+                    error_log('[AUTH] root_mandate blob hash patch failed: ' . $eBlobPatch->getMessage());
+                }
+            }
             if ($matchedUser) {
                 $sessionToken = bin2hex(random_bytes(16));
                 $sUserId = (string)($matchedUser['id'] ?? '');
