@@ -1249,6 +1249,19 @@ try {
         $companyId = $_GET['company_id'] ?? '';
         $since = isset($_GET['since']) ? (int)$_GET['since'] : 0;
 
+        // SUPERADMIN GLOBAL OVERRIDE (2026-09-08-10): a super admin / root_mandate
+        // operator ALWAYS receives the single GLOBAL state blob regardless of any
+        // company_id parameter — save_state writes one global row for supers, so the
+        // matching load MUST read the same global row (never a per-company subset like
+        // {product, users, sales, marketplaceOrders} that omits companies/stores/branches).
+        // This closes the "superadmin CRUD saved but vanished after reload" asymmetry.
+        $getOp = tcResolveOperatorUser($pdo, $rawInput);
+        if (tcIsSuperOperatorUser($getOp)) {
+            if ($companyId !== '') error_log('[TradeCore API] get_state: super scope requested company_id=' . $companyId . ' -> serving GLOBAL blob');
+            $companyId = '';
+        }
+        unset($getOp);
+
         if ($companyId !== '' && $pdo) {
             try {
                 $products = $users = $sales = $orders = [];
@@ -1666,6 +1679,17 @@ try {
         $stateData = (is_array($data) && isset($data['data']) && is_array($data['data'])) ? $data['data'] : ($data ?: []);
         $clientLastSeenVersion = isset($data['lastSeenVersion']) ? (int)$data['lastSeenVersion'] : 0;
         $changedKeys = $data['changedKeys'] ?? null;
+
+        // SUPERADMIN GLOBAL-SCOPE SAVE (2026-09-08-10): the state blob is a SINGLE GLOBAL
+        // row (doc_key='main_state') — a super admin / root_mandate operator must ALWAYS
+        // write to that global row, never to a per-company subset. The payload-key log
+        // below proves the scope server-side on every flush.
+        $saveOp = tcResolveOperatorUser($pdo, $rawInput);
+        $isSuperSave = tcIsSuperOperatorUser($saveOp);
+        $logCompany = is_array($saveOp) ? (string)($saveOp['company_id'] ?? $saveOp['companyId'] ?? '') : '';
+        $logSaveKeys = is_array($stateData) ? implode(',', array_slice(array_keys($stateData), 0, 40)) : 'none';
+        error_log("[SAVE] keys=" . $logSaveKeys . " company_id=" . ($logCompany === '' ? 'GLOBAL' : $logCompany) . " isSuper=" . ($isSuperSave ? '1' : '0'));
+        if ($isSuperSave) error_log('[TradeCore API] save_state: super operator -> committing to GLOBAL main_state blob (company_id=' . $logCompany . ')');
 
         if ($stateData && $pdo) {
             // Begin an explicit transaction so the blob + mirrored atomic-table writes

@@ -252,6 +252,10 @@ export async function fetchSystemDataFromPhp(timeoutMs: number = 10000): Promise
     if (apiKey) {
       headers['X-API-Key'] = apiKey;
     }
+    // BUILD 2026-09-08-10: carry the operator identity on get_state too so the backend
+    // super-global override (super admin always receives the FULL global blob, never a
+    // per-company subset that omits companies/stores/branches) can resolve the caller.
+    Object.assign(headers, getOperatorHeaders());
 
     const response = await fetchWithTimeout(`${apiUrl}?action=get_state`, {
       method: 'GET',

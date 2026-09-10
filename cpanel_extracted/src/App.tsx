@@ -927,6 +927,15 @@ export default function App() {
   const lastRealtimeVersionRef = React.useRef<number>(0);
   // Tracks the version we last flushed to the server so SSE self-echoes are detected.
   const lastFlushedVersionRef = React.useRef<number>(0);
+  // BUILD 2026-09-08-10: lastSyncVersion + lastFlushedKeys — the server version and the
+  // exact collection keys we successfully flushed on the most recent Flush OK. Used by
+  // the re-fetch merge guard to detect the server echoing our OWN flush back to us (the
+  // "Flush 13.2KB -> Flush OK -> still 2 dirty keys -> re-flush" loop): when the incoming
+  // state's version matches/advances past lastSyncVersion AND the pending dirty collections
+  // are exactly the keys we just flushed, the server state already contains those edits —
+  // merging them back (protectDirtyCollections) only re-dirties and re-flushes forever.
+  const lastSyncVersionRef = React.useRef<number>(0);
+  const lastFlushedKeysRef = React.useRef<string[]>([]);
   // Tracks the version we last notified other tabs about — prevents redundant BroadcastChannel msgs.
   const lastNotifiedVersionRef = React.useRef<number>(0);
   // REQ 2 (stale-payload protection) — optimistic write watermark. Every local mutation
@@ -1433,7 +1442,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-9');
+    console.log('[TradeCore] build 2026-09-08-10');
   }, []);
 
   useEffect(() => {
@@ -1940,10 +1949,32 @@ export default function App() {
         if (fullState.lastUpdated) noteStateTimestamp(fullState.lastUpdated);
         if ((fullState as any)._serverUpdatedAt) lastServerTimestampRef.current = (fullState as any)._serverUpdatedAt;
         console.log('[Sync] Cross-tab: applying fetched update');
-        const mergedState = protectDirtyCollections(fullState);
-        applyData(mergedState, true);
-        usersSyncedRef.current = true;
-        localStorage.setItem('tradecore_data', JSON.stringify(mergedState));
+        // BUILD 2026-09-08-10 — ECHO-MERGE GUARD: after our own Flush OK the server
+        // version is locked into lastSyncVersionRef and the flushed keys into
+        // lastFlushedKeysRef. If this re-fetch returns a version >= that lock and the
+        // pending dirty collections are EXACTLY the keys we just flushed (<= 2), the
+        // server state ALREADY contains our edits — merging them over the server
+        // (protectDirtyCollections) only re-applies the same local copies and keeps the
+        // keys dirty forever ("Flush 13.2KB -> Flush OK -> still 2 dirty keys -> loop").
+        // Return the server state AS-IS instead.
+        const pendingKeys = Object.keys(dirtyValuesRef.current ?? {}).filter(k => (dirtyValuesRef.current as any)?.[k] !== undefined && !NON_SYNCED_KEYS.has(k));
+        const isOwnFlushEcho = lastSyncVersionRef.current > 0
+          && fetchedVer > 0
+          && fetchedVer >= lastSyncVersionRef.current
+          && pendingKeys.length > 0
+          && pendingKeys.length <= 2
+          && pendingKeys.every(k => lastFlushedKeysRef.current.includes(k));
+        if (isOwnFlushEcho) {
+          console.log(`[Sync] Skipped re-merge — server state v${fetchedVer} already reflects our just-flushed collections (${pendingKeys.join(', ')})`);
+          applyData(fullState, true);
+          usersSyncedRef.current = true;
+          localStorage.setItem('tradecore_data', JSON.stringify(fullState));
+        } else {
+          const mergedState = protectDirtyCollections(fullState);
+          applyData(mergedState, true);
+          usersSyncedRef.current = true;
+          localStorage.setItem('tradecore_data', JSON.stringify(mergedState));
+        }
       } catch (err) {
         console.warn('[Sync] Cross-tab re-fetch failed:', err);
       } finally {
@@ -2272,46 +2303,18 @@ export default function App() {
       }
     }
 
-    // --- STALE SERVER SNAPSHOT PROTECTION ---
-    // Only block X->0 (server returns empty when client has data). Valid deletions
-    // like 3->2 companies are ACCEPTED — the database is the source of truth for
-    // intentional deletes.
-    // NOTE: auditTrails is NOT in STALE_GUARD — it is database-only and not part of the
-    // sync blob. When server returns 0, we ACCEPT it and clear dirty tracking to break the
-    // infinite 78->0 loop.
+    // --- STALE SERVER SNAPSHOT PROTECTION: REMOVED (BUILD 2026-09-08-10) ---
+    // The old STALE_GUARD ("server returned 0 -> keeping local rows") was REMOVED on
+    // explicit user request: when the server blob legitimately holds 0 items for a
+    // collection while the local copy has 3+, the server is authoritative — keeping
+    // local and clearing its dirty key silently stranded those rows (never re-uploaded,
+    // vanished at next reload, permanent cross-device loss). Server-side the EMPTY FLUSH
+    // GUARD in save_state already refuses any major collection dropping from >3 to 0, so
+    // a genuinely-stale blob cannot wipe the DB; and the superadmin global-scope fixes in
+    // get_state/save_state ensure the super view always loads the FULL global blob, not a
+    // per-company subset that returns 0. auditTrails remains DB-only and is preserved
+    // below when the blob reports 0 (it is excluded from the sync blob entirely).
     if (isRemoteApply) {
-      const STALE_GUARD = [
-        'stockItems', 'users', 'companies', 'branches', 'stores', 'categories',
-        'salesOrders', 'expenses', 'purchaseOrders', 'suppliers', 'customers',
-        'taxes', 'wallets', 'affiliates', 'reviews', 'flashSales', 'stories',
-        'disputes', 'deliveries', 'installmentPlans', 'chatConversations',
-        'escrowTransactions', 'loyaltyCustomers', 'productReturns', 'marketplaceOrders'
-      ] as const;
-      for (const key of STALE_GUARD) {
-        const incoming = (updatedState as any)[key];
-        const current = (dbStateRef.current as any)[key];
-        if (!Array.isArray(incoming) || !Array.isArray(current)) continue;
-        if (current.length === 0) continue; // First load — accept server data
-        // ONLY block when server returns 0 and client has >5 items (stale blob).
-        // Accept valid deletions like 3->2, 10->8 etc. — database is source of truth.
-        // CATEGORIES (added 2026-09-07): same guard. Categories are a single global array
-        // of "co_<cid>:<name>" strings; if a transient empty/company-scoped server array
-        // was misapplied, the subsequent flush of the trimmed array would delete the
-        // other companies' categories on the server itself — permanent cross-device loss.
-        if (incoming.length === 0 && current.length > 3) {
-          console.warn(`[applyData] STALE GUARD: ${key} went from ${current.length} to 0 items — keeping local (server blob stale)`);
-          (updatedState as any)[key] = current;
-          // BUILD 2026-09-08-5: a guarded keep MUST NOT leave the key dirty — otherwise
-          // the pending flush re-sends the kept rows, the server still reflects 0, and
-          // applyData keeps local again → endless Flush 0.5KB → 0.9KB growth loop.
-          flushDirtyKeysRef.current.delete(key);
-          delete (dirtyValuesRef.current as any)[key];
-        }
-      }
-      // NOTE: the backend `snapshot` endpoint now returns the authoritative FULL
-      // cross-company category set (tcLoadCategories/tcLoadCategoriesN with no company
-      // filter) so an empty categories array is a genuine empty — the guard above only
-      // protects against a transient broken/empty server blob, never real deletes.
       // auditTrails: BUG 3 FIX — the sync blob NEVER carries auditTrails (it is
       // database-only, rendered from the live DB fetch). So when a full server sync
       // arrives with an EMPTY auditTrails array, it must NOT wipe the local DB-backed
@@ -3122,7 +3125,25 @@ export default function App() {
               return;
             }
             console.log('[DB] Cross-device change detected, applying update');
-            const mergedState = protectDirtyCollections(fullState);
+            // BUILD 2026-09-08-10 — ECHO-MERGE GUARD (same rationale as cross-tab):
+            // when this poll returns our own flush's version (or newer) and the pending
+            // dirty collections are exactly the keys we just flushed (<= 2), the server
+            // state already carries those edits — apply it directly instead of merging
+            // the local copies back over it, which re-dirties and re-flushes forever.
+            const pK2 = Object.keys(dirtyValuesRef.current ?? {}).filter(k => (dirtyValuesRef.current as any)?.[k] !== undefined && !NON_SYNCED_KEYS.has(k));
+            const ownEcho2 = lastSyncVersionRef.current > 0
+              && fetchedVer > 0
+              && fetchedVer >= lastSyncVersionRef.current
+              && pK2.length > 0
+              && pK2.length <= 2
+              && pK2.every(k => lastFlushedKeysRef.current.includes(k));
+            let mergedState: any;
+            if (ownEcho2) {
+              console.log(`[Sync] Skipped poll re-merge — server state v${fetchedVer} already reflects our just-flushed collections (${pK2.join(', ')})`);
+              mergedState = fullState;
+            } else {
+              mergedState = protectDirtyCollections(fullState);
+            }
             applyData(mergedState, true);
             usersSyncedRef.current = true;
             localStorage.setItem('tradecore_data', JSON.stringify(mergedState));
@@ -4300,17 +4321,45 @@ export default function App() {
           } finally {
             isApplyingRemoteUpdateRef.current = false;
           }
-          // Clear flushed dirty keys AND their value snapshots
-          const hadNewWrite = lastLocalWriteTimeRef.current > flushStartMs;
-          if (!hadNewWrite) {
-            dirtySnapshot.forEach(k => {
-            flushDirtyKeysRef.current.delete(k);
-            delete (dirtyValuesRef.current as any)[k];
-            clearOptimisticWrite(k);
+          // Clear flushed dirty keys AND their value snapshots.
+          // BUILD 2026-09-08-10: the OLD gate `hadNewWrite = lastLocalWriteTimeRef.current > flushStartMs`
+          // kept EVERY flushed key dirty when ANY write — even a NON_SYNCED heartbeat
+          // (lastActiveAt/lastSeen/appOnline) — landed during the in-flight flush window.
+          // The same 1-2 keys therefore re-flushed forever ("Flush 13.2KB (2 dirty keys)
+          // -> Flush OK -> still dirty -> re-flush -> version churn 5063->5066"), and the
+          // pending local collections were re-merged over the server on every re-fetch, so
+          // the server's authoritative state was never applied and CRUD never persisted.
+          // Now we clear per-key: a key is only KEPT dirty if that EXACT collection was
+          // re-edited strictly after flushStartMs (optimisticWriteTsRef[k] > flushStartMs)
+          // — a genuine new edit the in-flight flush did not carry. lastSyncVersion is
+          // locked to the freshly-committed server version so the re-fetch echo guard can
+          // detect "this is our own flush coming back, not new data".
+          const clearedKeys: string[] = [];
+          const reDirtiedFlushedKeys: string[] = [];
+          dirtySnapshot.forEach(k => {
+            const optimisticTs = (optimisticWriteTsRef.current as any)[k];
+            const reWrittenDuringFlush = typeof optimisticTs === 'number' && optimisticTs > flushStartMs;
+            if (!reWrittenDuringFlush) {
+              flushDirtyKeysRef.current.delete(k);
+              delete (dirtyValuesRef.current as any)[k];
+              clearOptimisticWrite(k);
+              clearedKeys.push(k);
+            } else {
+              reDirtiedFlushedKeys.push(k);
+            }
           });
           if (newVer > 0 && newVer > lastAckVersionRef.current) lastAckVersionRef.current = newVer;
-            if (flushDirtyKeysRef.current.size === 0) flushDirtyRef.current = false;
-            else flushDirtyRef.current = true;
+          if (newVer > 0) {
+            lastSyncVersionRef.current = newVer;
+            lastFlushedKeysRef.current = [...dirtySnapshot];
+          }
+          if (flushDirtyKeysRef.current.size === 0) flushDirtyRef.current = false;
+          else flushDirtyRef.current = true;
+          if (clearedKeys.length > 0) {
+            console.log(`[Sync] Cleared dirty after ${newVer} (${clearedKeys.join(', ')})`);
+          }
+          if (reDirtiedFlushedKeys.length > 0) {
+            console.log(`[Sync] ${reDirtiedFlushedKeys.length} key(s) were re-edited during flush — staying dirty for the next pass: ${reDirtiedFlushedKeys.join(', ')}`);
           }
           // Clear pending queue on successful flush
           clearPendingQueue();

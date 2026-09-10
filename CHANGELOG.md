@@ -6,6 +6,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-10] - 2026-09-08
+
+### Build 2026-09-08-10 �?" CRITICAL: CRUD not persisting — flush loop + superadmin global scope
+- **Per-key dirty clearing after Flush OK** (`src/App.tsx` flush success path): the OLD single `hadNewWrite = lastLocalWriteTimeRef.current > flushStartMs` gate kept EVERY flushed key dirty whenever ANY write — even a NON_SYNCED heartbeat (`lastActiveAt`/`lastSeen`) — landed during the in-flight flush window. The same 1–2 keys therefore re-flushed forever ("Flush 13.2KB (2 dirty keys) -> Flush OK -> still dirty -> version churn 5063→5066"), and the pending local collections were re-merged over the server on every re-fetch, so CRUD never persisted while users did (users mirror to direct MySQL tables via separate endpoints). Keys are now cleared per-key unless that EXACT collection was re-edited strictly after `flushStartMs` (optimisticWriteTsRef), which queues it for the very next pass without looping. Logs `[Sync] Cleared dirty after <ver>`.
+- **Re-fetch echo-merge guard** (`src/App.tsx` `scheduleCrossTabRefetch` + 30s poll): new `lastSyncVersionRef` + `lastFlushedKeysRef`. When a re-fetch returns a version >= our own last Flush OK and the pending dirty collections (<= 2) are exactly the keys we just flushed, the server state ALREADY contains those edits — applying the server state AS-IS instead of merging the local copies back over it (which re-dirties and re-flushes forever). Logs `[Sync] Skipped re-merge...`.
+- **REMOVED the STALE GUARD "keeping local (server blob stale)"** (`src/App.tsx` `applyData`): when the server blob returned 0 items for a collection the client had 3+, the client kept local rows AND cleared that key's dirty flag — so the rows were never re-uploaded and silently vanished at next reload (permanent loss). The server-side EMPTY FLUSH GUARD in save_state already refuses any major collection dropping from >3 to 0, and the super fixes below ensure the super view always loads the FULL global blob. auditTrails DB-only preservation is unchanged.
+- **Superadmin ALWAYS uses the global blob** (`public/cpanel/api.php`): `get_state` now resolves the operator and forces `company_id=''` for a super admin / `root_mandate`, so the atomic per-company response (which omits companies/stores/branches) can never be served instead of the full global state; `save_state` logs `[SAVE] keys=... company_id=... isSuper=...` on every flush and commits to the single `main_state` row. `fetchSystemDataFromPhp` now sends operator headers so the backend can resolve the caller.
+- **CRUD dirty-marking verified**: `addCompany`/`addBranch`/`addStore`/`addProduct` all funnel through `saveAllData` (marks every non-NON_SYNCED key dirty) and `companies`/`categories`/`branches`/`stores` are MASTER_SYNC_KEYS that force a near-immediate flush.
+- Backend: `public/cpanel/api.php` + deploy copy both synced (braces 932/932, parens 4288/4288).
+
 ## [1.0.9-build-9] - 2026-09-08
 
 ### Build 2026-09-08-9 — First-login password change enforced for superadmin (and all users)
