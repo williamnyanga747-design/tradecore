@@ -1512,7 +1512,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-13');
+    console.log('[TradeCore] build 2026-09-08-14');
   }, []);
 
   useEffect(() => {
@@ -6013,37 +6013,51 @@ const conflict = consumeConflictData();
     }
   }, []);
 
-  // DIRECT-MYSQL COMPANY ADD (2026-09-08-13): explicit, awaited v2_upsert_company POST
+  // DIRECT-MYSQL COMPANY ADD (2026-09-08-14): explicit, awaited v2_upsert_company POST
   // followed by a GLOBAL v2_list_companies re-fetch so all users + reloads see the new
   // row. Bypasses the saveAllData diff dispatch which could silently swallow a failed POST
   // via .catch(() => {}) and leave the company local-only (invisible on reload / other users).
   const addCompany = React.useCallback(async (data: { name: string; [k: string]: unknown }) => {
+    // --- normalizeCompanyPayload: camelCase→snake_case, id + company_id always set ---
+    const tinRaw = (data as any).tin_number ?? (data as any).tinNumber ?? (data as any).tin ?? '';
+    const langRaw = (data as any).language ?? (data as any).locale ?? 'en';
     const newId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `co_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const payload = {
-      ...data,
-      id: newId,
-      company_id: newId,
+    const payload: Record<string, unknown> = {
+      id: (data as any).id ?? newId,
+      company_id: (data as any).company_id ?? newId,
       name: String(data.name || '').trim(),
-      tin: (data as any).tin !== undefined ? (data as any).tin : '',
-      tin_number: (data as any).tin_number !== undefined ? (data as any).tin_number : ((data as any).tin || ''),
+      tin_number: String(tinRaw || ''),
+      tin: String(tinRaw || ''),
+      theme_color: (data as any).theme_color ?? (data as any).themeColor ?? '#c41e3a',
+      subscription_end: (data as any).subscription_end ?? (data as any).subscriptionEnd ?? null,
+      language: langRaw,
+      locale: langRaw,
+      logo: (data as any).logo ?? (data as any).logoUrl ?? '',
       status: 'active',
       is_active: 1,
-      is_default: 0,
-      branch_id: newId,
-      created_by: currentUser?.username || 'root_mandate',
+      is_default: (data as any).is_default ?? 0,
+      branch_id: (data as any).branch_id ?? newId,
+      code: (data as any).code ?? '',
+      phone: (data as any).phone ?? '',
+      email: (data as any).email ?? '',
+      address: (data as any).address ?? (data as any).addressText ?? '',
+      currency: (data as any).currency ?? (data as any).currencyCode ?? 'TZS',
+      country: (data as any).country ?? 'Tanzania',
     };
+    console.log('[Companies] normalizeCompanyPayload →', payload);
     try {
-      const saved = await v2UpsertCompany(payload);
+      const saved = await v2UpsertCompany(payload as any);
       console.log('[Direct MySQL] v2_upsert_company', saved ? 'OK' : 'FAILED', payload);
-      if (!saved) throw new Error('v2_upsert_company returned false');
+      if (!saved) throw new Error('v2_upsert_company returned false — check server error_log');
     } catch (e) {
       console.error('[Direct MySQL] v2_upsert_company ERROR', e);
       toast.error('Company Save Failed: ' + String(e));
       throw e;
     }
+    // GLOBAL re-fetch so all users / reloads see the new row immediately.
     try {
       const all = await v2ListCompanies();
-      console.log('[Direct MySQL] v2_list_companies GLOBAL re-fetch', all.length, 'rows', all);
+      console.log('[Direct MySQL] v2_list_companies GLOBAL re-fetch', all.length, 'rows');
       if (Array.isArray(all) && all.length > 0) {
         dbStateRef.current = { ...dbStateRef.current, companies: all };
         applyCollectionState({ companies: all });
@@ -6052,7 +6066,7 @@ const conflict = consumeConflictData();
     } catch (e) {
       console.warn('[Direct MySQL] v2_list_companies re-fetch failed', e);
     }
-    return newId;
+    return payload.id as string;
   }, [currentUser]);
 
   // --- TELEMETRY & FINGERPRINTING HELPERS ---

@@ -6,6 +6,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-14] - 2026-09-10
+
+### Build 2026-09-08-14 — COMPANY-ADD FULL FIX: backend robustness + frontend normalizeCompanyPayload + round-trip themeColor/subscriptionEnd/logo through MySQL
+After build-13's explicit v2_upsert_company POST, the user reported the company STILL vanishes (screenshot 2026-09-10_192817/192606): server returned `success:false`, and the payload logged lacked `id`/`company_id`. The `companies` table also lacked columns for `theme_color`, `subscription_end`, `logo`, so even a successful insert lost the app-specific fields on reload.
+
+**Root causes identified:**
+1. Frontend `addCompany` payload included `id`/`company_id` but the server handler only accepted them via `$v2in['entity']`; if the entity wrapper was missing or malformed, it returned `{"success":false, "error":"Missing company.id"}` — never the DB error.
+2. `tcUpsertCompanyRow` accepted both camelCase and snake_case for many fields but NOT `theme_color`/`subscription_end`/`logo`/`tin` (only `tin_number`/`tinNumber`). The `companies` table had no `theme_color`, `subscription_end`, or `logo` columns.
+3. `tcLoadCompanies` did not return `themeColor`/`subscriptionEnd`/`logo` so even a successful write was invisible to the app on refresh.
+4. The handler could return bare false on PDO exceptions with no structured error.
+
+**Backend fixes** (`public/cpanel/api.php`):
+- `tcEnsureNormalizedTables`: ALTER TABLE `companies` ADD `theme_color VARCHAR(16)`, `subscription_end BIGINT`, `logo TEXT` (safe idempotent).
+- `tcUpsertCompanyRow`: accepts `&$err` param (never returns bare false without error message). Normalizes `tin`→`tin_number`, `language`→`locale`, `themeColor`→`theme_color`, `subscriptionEnd`→`subscription_end`, `logo`/`logoUrl`→`logo`. INSERT/UPDATE includes new columns.
+- `v2_upsert_company` handler: robust entity extraction — tries `$v2in['entity']`, `$v2in['company']`, then the entire payload (bare top-level). Auto-generates `id` via `random_bytes(8)` when missing. Catches PDOException explicitly. Response always includes `"error"` key. Wrapped tcBlobMerge in try/catch.
+- `tcLoadCompanies`: returns `themeColor`, `subscriptionEnd`, `logo`, `language`. ORDER BY `created_at DESC, name ASC`.
+- `v2_list_companies`: superadmin GLOBAL scope already forced (line 3142).
+
+**Frontend fix** (`src/App.tsx`):
+- `addCompany` now builds payload via `normalizeCompanyPayload`: explicit `id`+`company_id` (uuid), all fields in snake_case AND camelCase (both forms), `status:'active'`, `is_active:1`, `theme_color` from form, `subscription_end` from form. Logs `[Companies] normalizeCompanyPayload →` before POST.
+- GLOBAL v2_list_companies re-fetch applied immediately after successful upsert.
+
+**Note for phpMyAdmin verification**: query `SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY created_at DESC` (NOT `tradecore_companies` — that table does not exist; `companies` is the single source of truth).
+
 ## [1.0.9-build-13] - 2026-09-08
 
 ### Build 2026-09-08-13 — Add Company now goes DIRECT MySQL via explicit awaited POST (fixes "nimeadd company imefutika" / company local-only after refresh / invisible to other users)
