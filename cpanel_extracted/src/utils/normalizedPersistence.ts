@@ -221,6 +221,27 @@ export async function v2DeleteStore(id: string | number, companyId?: string | nu
 }
 
 // ----------------------------------------------------------------------------
+// BRANCHES (server: store rows whose branch_id === own id; list is MySQL-first)
+// ----------------------------------------------------------------------------
+export async function v2ListBranches(companyId?: string | number): Promise<Store[]> {
+  const res = await v2Post<V2ListResponse<Store>>('v2_list_branches', companyKey(companyId));
+  return res && Array.isArray(res.list) ? res.list : [];
+}
+
+export async function v2UpsertBranch(entity: Store, companyId?: string | number): Promise<boolean> {
+  const branchShape = { ...entity, branch_id: entity.id, branchId: entity.id } as Store;
+  const res = await v2Post<V2WriteResponse>('v2_upsert_store', {
+    entity: branchShape,
+    ...companyKey(companyId ?? branchShape.company_id ?? branchShape.companyId)
+  });
+  return !!(res && res.success);
+}
+
+export async function v2DeleteBranch(id: string | number, companyId?: string | number): Promise<boolean> {
+  return v2DeleteStore(id, companyId);
+}
+
+// ----------------------------------------------------------------------------
 // PRODUCTS
 // ----------------------------------------------------------------------------
 export async function v2ListProducts(companyId: string | number, opts?: { storeId?: string | number; since?: number }): Promise<Product[]> {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Company, Branch, Store, Customer, Supplier, Tax, StockItem, User
 } from '../types';
@@ -36,6 +36,7 @@ interface MasterDataProps {
   translate: (text: string) => string;
   logAction: (action: string, details: string) => void;
   saveAllData: (updatedFields: any) => void;
+  refreshMasterData?: (tab: string) => void;
   mutateRecord?: (collection: string, op: 'upsert' | 'delete', recordId: string | number, record: any) => Promise<boolean>;
   settings?: any;
   currentUser?: any;
@@ -65,6 +66,7 @@ export default function MasterData({
   translate: t,
   logAction,
   saveAllData,
+  refreshMasterData,
   mutateRecord,
   settings,
   currentUser,
@@ -121,6 +123,16 @@ export default function MasterData({
 
   // Helper for money formatting
   const fmt = (amt: number) => formatMoney(amt, currency, exchangeRate);
+
+  // DIRECT-MYSQL TAB LOAD (2026-09-08-12): opening System Companies / Branches / Stores
+  // re-reads the collection straight from MySQL (superadmin = GLOBAL server-side scope).
+  // No more "Filter per-company snapshot … skipping due to company_id mismatch" — the list
+  // IS whatever the tradecore_companies / stores tables hold, refreshed on every tab open.
+  useEffect(() => {
+    if (refreshMasterData && (currentPage === 'companies' || currentPage === 'branches' || currentPage === 'stores')) {
+      refreshMasterData(currentPage);
+    }
+  }, [currentPage, refreshMasterData]);
 
   // --- DELETE HANDLERS ---
   const handleDeleteCompany = (id: number) => {

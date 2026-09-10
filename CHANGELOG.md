@@ -6,6 +6,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-12] - 2026-09-08
+
+### Build 2026-09-08-12 — DIRECT-MYSQL CRUD MIGRATION: master data no longer rides the state blob
+The reported bug pattern — "13.4KB Flush → 409 Conflict server version ahead → new Company vanishes" — happened because `saveAllData` shipped every master-data edit as a full `save_state` blob delta (versioned, conflict-prone). The server ALREADY had the direct-MySQL machinery (`companies`/`stores`/`products`/`customers`/`suppliers` normalized tables + `v2_*` atomic endpoints); the frontend just never used it for these collections. Users were the only entity users saw work because they already mirrored to `user_accounts`. This build migrates the master collections onto the SAME direct network path as users. No duplicate data model was introduced (the original plan's `tradecore_companies` table + `api/companies.php` files were rejected: identical live tables/endpoints already existed and forking them would split data into two sources of truth).
+
+**Now**:
+- **Direct diffed CRUD dispatch** (`src/App.tsx` `saveAllData` → `DIRECT_DELTA_HANDLERS`): for `companies`/`branches`/`stores`/`customers`/`suppliers`/`marketplaceProducts`, the PREVIOUS array is diffed against the incoming one so ONLY changed records hit the wire — new = `v2_upsert_*` (~0.5KB POST), edited = one upsert, removed = `v2_delete_*` (deleted rows stay deleted; the OLD full-array upsert-of-survivors silently resurrected deleted customers/suppliers on reload).
+- **Never dirty-marked / never blob** (`DIRECT_SYNC_KEYS`): these keys are excluded from `flushDirtyKeysRef`/`dirtyValuesRef`/`MASTER_SYNC_KEYS` (now just `categories`), so no more 13.4KB `save_state` delta, no version bump, no 409 Conflict for master data; the blob payload stays settings/UI only.
+- **System Companies / Branches / Stores read MySQL directly** (`refreshMasterData` + `MasterData.tsx` effect on tab open): each tab re-fetches via `v2_list_companies` / new `v2_list_branches` / `v2_list_stores` — super admin scope is forced GLOBAL server-side (`api.php` `tcResolveOperatorUser`/`tcIsSuperOperatorUser`), killing the "Filter per-company snapshot … skipping due to company_id mismatch" class.
+- **New `v2_list_branches`** (`public/cpanel/api.php`): branches are `stores` rows whose `branch_id` equals their own `id` (the wiring `tcMirrorNormalized` already used); super global + company-scoped, blob fallback while the table is empty. Registered in the super-global force-list.
+- **`tcLoadCompanies` now returns `company_id`** per row so every downstream company-scoped match sees `alphaglobal`-style ids, never an undefined `company_id`.
+- **Server commit paths untouched re: versioning**: `v2_upsert_company/store/product` do plain `INSERT … ON DUPLICATE KEY UPDATE … deleted_at=NULL` + audit trail; no main_state version bump → no 409.
+- IDB stays a pure offline read cache (`cacheSystemState/getCachedSystemState`); MySQL is the only source of truth. Bell-and-braces applyData reboot fallback + 409-rebase companies union from build -11 remain (now no-ops for companies since they no longer enter the blob).
+
+### Backend
+- `public/cpanel/api.php`: `v2_list_branches` added; `v2_list_branches` included in the SUPERADMIN GLOBAL scope force-list; `tcLoadCompanies` row output gains `company_id`. Deploy copy will be re-hash-synced and verified (SYNC True expected).
+
 ## [1.0.9-build-11] - 2026-09-08
 
 ### Build 2026-09-08-11 — New Company added via System Companies now survives reload (fixes "added a Company, then it vanished")

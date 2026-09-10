@@ -138,6 +138,12 @@ import {
   listInstallmentOrders, upsertInstallmentOrder,
   listInstallmentPayments, upsertInstallmentPayment
 } from './utils/entityPersistence';
+import {
+  v2UpsertCompany, v2DeleteCompany, v2ListCompanies,
+  v2UpsertStore, v2DeleteStore, v2ListStores,
+  v2ListBranches, v2UpsertBranch, v2DeleteBranch,
+  v2UpsertProduct, v2DeleteProduct
+} from './utils/normalizedPersistence';
 // @ts-ignore - virtual module provided by vite-plugin-pwa
 import { registerSW } from 'virtual:pwa-register';
 import { toast, Toast } from './utils/toast';
@@ -236,7 +242,71 @@ const NON_SYNCED_KEYS = new Set(['auditTrails', 'active_company_id', 'company_se
 // writes in the system. They are NEVER eligible for micro-flush suppression (shouldFlush)
 // and any dirty master key is enough to force an immediate full-state flush so the edit
 // can never be dropped by a <1KB delta guard or an early dirty-marker clear.
-const MASTER_SYNC_KEYS = new Set(['companies', 'categories', 'branches', 'stores']);
+// DIRECT-MYSQL MIGRATION (2026-09-08-12): companies/branches/stores were REMOVED from this
+// set — they now commit straight to MySQL via the v2_* atomic endpoints (see
+// DIRECT_SYNC_KEYS below), so the blob flush must not be force-armed for them anymore.
+const MASTER_SYNC_KEYS = new Set(['categories']);
+
+// DIRECT-MYSQL COLLECTIONS (2026-09-08-12): these master-data collections are persisted
+// entirely through the v2_* / entity atomic endpoints (INSERT/UPDATE/DELETE straight into
+// the normalized MySQL tables — companies, stores, products, customers, suppliers) and
+// NEVER ride the main_state blob. They are excluded from flushDirtyKeysRef / dirtyValuesRef,
+// so save_state no longer ships a 13.4KB blob delta, no version bump, no 409 Conflict, and a
+// deleted row stays deleted (the old per-record upsert-of-survivors resurrected it). IDB
+// stays a pure offline read cache; MySQL is the only source of truth.
+const DIRECT_SYNC_KEYS = new Set(['companies', 'branches', 'stores', 'customers', 'suppliers', 'marketplaceProducts']);
+
+// DIRECT-MYSQL DELTA DISPATCH (2026-09-08-12): diff the PREVIOUS array (dbStateRef before
+// this save) against the incoming one so ONLY actually-changed records hit the wire — a
+// brand-new record posts ~0.5KB (not a 13.4KB blob), an edited record upserts once, and a
+// REMOVED record issues v2Delete* (the old full-array upsert-of-survivors let a deleted
+// row silently resurrect on the next reload). Writers all go to the fixed INSERT/UPDATE
+// MySQL endpoints — no version bump, no 409. The catch-fallback stays silent because the
+// local state already applied optimistically and the next snapshot re-reads MySQL.
+function directDeltaParts(prev: any, next: any) {
+  const prevArr = Array.isArray(prev) ? prev : [];
+  const nextArr = Array.isArray(next) ? next : [];
+  const prevMap = new Map<string, any>();
+  for (const r of prevArr) { if (r && r.id != null) prevMap.set(String(r.id), r); }
+  const nextMap = new Map<string, any>();
+  for (const r of nextArr) { if (r && r.id != null) nextMap.set(String(r.id), r); }
+  const upsert: any[] = [];
+  for (const r of nextArr) {
+    if (!r || r.id == null) continue;
+    const p = prevMap.get(String(r.id));
+    if (!p || JSON.stringify(p) !== JSON.stringify(r)) upsert.push(r);
+  }
+  const removed: string[] = [];
+  for (const id of prevMap.keys()) if (!nextMap.has(id)) removed.push(id);
+  return { upsert, removed, nextMap };
+}
+
+const DIRECT_DELTA_HANDLERS: Record<string, (u: any[], r: string[], nextMap: Map<string, any>, companyId: any) => void> = {
+  companies: (u, r) => {
+    for (const rec of u) void v2UpsertCompany(rec).catch(() => {});
+    for (const id of r) void v2DeleteCompany(id).catch(() => {});
+  },
+  branches: (u, r) => {
+    for (const rec of u) void v2UpsertBranch(rec).catch(() => {});
+    for (const id of r) void v2DeleteBranch(id).catch(() => {});
+  },
+  stores: (u, r, nextMap, companyId) => {
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; void v2UpsertStore(rec, cid).catch(() => {}); }
+    for (const id of r) { const cid = nextMap.get(id)?.company_id ?? nextMap.get(id)?.companyId ?? companyId; void v2DeleteStore(id, cid).catch(() => {}); }
+  },
+  customers: (u, r, _nextMap, companyId) => {
+    for (const rec of u) void upsertCustomer(rec, companyId).catch(() => {});
+    for (const id of r) void deleteCustomer(id).catch(() => {});
+  },
+  suppliers: (u, r, _nextMap, companyId) => {
+    for (const rec of u) void upsertSupplier(rec, companyId).catch(() => {});
+    for (const id of r) void deleteSupplier(id).catch(() => {});
+  },
+  marketplaceProducts: (u, r, nextMap, companyId) => {
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; if (cid != null && cid !== '') void v2UpsertProduct(rec, cid).catch(() => {}); }
+    for (const id of r) { const cid = nextMap.get(id)?.company_id ?? nextMap.get(id)?.companyId ?? companyId; if (cid != null && cid !== '') void v2DeleteProduct(id, cid).catch(() => {}); }
+  }
+};
 
 // KEY-BASED SYNC PIVOT (2026-09-07-02): flush eligibility is decided by the ENTITY
 // TYPE of the dirty keys — NEVER by payload byte size. A delta containing any real
@@ -1442,7 +1512,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-11');
+    console.log('[TradeCore] build 2026-09-08-12');
   }, []);
 
   useEffect(() => {
@@ -3748,12 +3818,12 @@ export default function App() {
     // and avoid last-write-wins resurrection (e.g. Device B's stale blob reviving a deleted product).
     // IMPORTANT: auditTrails is excluded from dirty tracking — it is database-only and not
     // part of the sync blob. Including it causes an infinite 78->0 loop.
-    try { Object.keys(updatedFields || {}).forEach(k => { if (!NON_SYNCED_KEYS.has(k)) { flushDirtyKeysRef.current.add(k); stampOptimisticWrite(k); } }); } catch {}
+    try { Object.keys(updatedFields || {}).forEach(k => { if (!NON_SYNCED_KEYS.has(k) && !DIRECT_SYNC_KEYS.has(k)) { flushDirtyKeysRef.current.add(k); stampOptimisticWrite(k); } }); } catch {}
     // Snapshot the exact values so a 409 rebase can replay the user's edits on top
     // of the fresh server blob (data survives even if dbStateRef gets overwritten).
     try {
       Object.keys(updatedFields || {}).forEach((k: string) => {
-        if (!NON_SYNCED_KEYS.has(k)) (dirtyValuesRef.current as any)[k] = (updatedFields as any)[k];
+        if (!NON_SYNCED_KEYS.has(k) && !DIRECT_SYNC_KEYS.has(k)) (dirtyValuesRef.current as any)[k] = (updatedFields as any)[k];
       });
     } catch {}
     
@@ -3871,6 +3941,17 @@ export default function App() {
         const val = (updatedFields as any)[key];
         if (!val) continue;
 
+        // DIRECT-MYSQL COLLECTIONS (2026-09-08-12): companies/branches/stores/
+        // customers/suppliers/marketplaceProducts commit ONLY through the v2_* / entity
+        // atomic endpoints. Diffed delta (create/edit/delete), never the state blob, so
+        // there is NO 13.4KB flush + version bump + 409 Conflict for these records.
+        if (DIRECT_SYNC_KEYS.has(key)) {
+          const delta = directDeltaParts((current as any)[key], val);
+          const dh = DIRECT_DELTA_HANDLERS[key];
+          if (dh) dh(delta.upsert, delta.removed, delta.nextMap, companyId);
+          continue;
+        }
+
         // Route each collection to its atomic API endpoint
         switch (key) {
           case 'expenses':
@@ -3879,19 +3960,9 @@ export default function App() {
               for (const e of val) { if (e?.id) upsertExpense(e, companyId).catch(() => {}); }
             }
             break;
-          case 'suppliers':
-            if (Array.isArray(val)) {
-              for (const s of val) { if (s?.id) upsertSupplier(s, companyId).catch(() => {}); }
-            }
-            break;
           case 'purchaseOrders':
             if (Array.isArray(val)) {
               for (const po of val) { if (po?.id) upsertPurchaseOrder(po, companyId).catch(() => {}); }
-            }
-            break;
-          case 'customers':
-            if (Array.isArray(val)) {
-              for (const c of val) { if (c?.id) upsertCustomer(c, companyId).catch(() => {}); }
             }
             break;
           case 'settings':
@@ -3966,11 +4037,7 @@ export default function App() {
             break;
           // These collections already have atomic endpoints via api.ts
           case 'stockItems':
-          case 'companies':
-          case 'branches':
-          case 'stores':
           case 'users':
-          case 'marketplaceProducts':
           case 'marketplaceOrders':
           case 'salesOrders':
             // Handled by existing mutateCollectionRecord / apiUpsert* functions
@@ -5915,6 +5982,36 @@ const conflict = consumeConflictData();
     };
     saveAllData({ auditTrails: [newLog, ...(dbStateRef.current?.auditTrails || auditTrails)] });
   };
+
+  // DIRECT-MYSQL LIST REFRESH (2026-09-08-12): when a master-data tab opens, re-read the
+  // collection straight from MySQL via the v2_* list endpoints (super admin scope is GLOBAL
+  // server-side), so System Companies/Branches/Stores always reflect the DB — not a stale
+  // blob/IDB array. Applied locally + cached to IDB (offline read cache only); it NEVER
+  // marks anything dirty, so it can't reinject the collections into the state blob.
+  const refreshMasterData = React.useCallback((tab: string) => {
+    if (tab === 'companies') {
+      void v2ListCompanies().then((list) => {
+        if (!Array.isArray(list) || list.length === 0) return;
+        dbStateRef.current = { ...dbStateRef.current, companies: list };
+        applyCollectionState({ companies: list });
+        void cacheSystemState(dbStateRef.current).catch(() => {});
+      });
+    } else if (tab === 'stores') {
+      void v2ListStores().then((list) => {
+        if (!Array.isArray(list) || list.length === 0) return;
+        dbStateRef.current = { ...dbStateRef.current, stores: list };
+        applyCollectionState({ stores: list });
+        void cacheSystemState(dbStateRef.current).catch(() => {});
+      });
+    } else if (tab === 'branches') {
+      void v2ListBranches().then((list) => {
+        if (!Array.isArray(list) || list.length === 0) return;
+        dbStateRef.current = { ...dbStateRef.current, branches: list };
+        applyCollectionState({ branches: list });
+        void cacheSystemState(dbStateRef.current).catch(() => {});
+      });
+    }
+  }, []);
 
   // --- TELEMETRY & FINGERPRINTING HELPERS ---
   const getBrowserFingerprint = (): string => {
@@ -12451,6 +12548,7 @@ try {
             translate={t}
             logAction={logAction}
             saveAllData={saveAllData}
+            refreshMasterData={refreshMasterData}
             mutateRecord={mutateCollectionRecord}
             settings={settings}
             currentUser={currentUser}

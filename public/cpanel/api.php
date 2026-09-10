@@ -431,7 +431,7 @@ function tcLoadCompanies($pdo) {
         $rows = $pdo->query("SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
         foreach ($rows as $r) {
             $out[] = [
-                'id' => $r['id'], 'name' => $r['name'], 'code' => $r['code'],
+                'id' => $r['id'], 'company_id' => $r['id'], 'name' => $r['name'], 'code' => $r['code'],
                 'currency' => $r['currency_code'], 'currencyCode' => $r['currency_code'],
                 'country' => $r['country'], 'phone' => $r['phone'], 'email' => $r['email'],
                 'tinNumber' => $r['tin_number'], 'addressText' => $r['address'],
@@ -3139,7 +3139,7 @@ try {
         // no passed company_id can narrow them; staff keep their own requested scope.
         $v2SuperOp = tcResolveOperatorUser($pdo, $rawInput);
         $v2IsSuper = tcIsSuperOperatorUser($v2SuperOp);
-        if ($v2IsSuper && in_array($action, ['v2_list_companies', 'v2_list_stores', 'v2_list_products', 'v2_list_categories', 'v2_list_user_accounts'], true)) {
+        if ($v2IsSuper && in_array($action, ['v2_list_companies', 'v2_list_branches', 'v2_list_stores', 'v2_list_products', 'v2_list_categories', 'v2_list_user_accounts'], true)) {
             if ($v2company !== '') error_log('[TradeCore API] v2_list: super scope requested company_id=' . $v2company . ' -> serving GLOBAL list');
             $v2company = '';
         }
@@ -3305,6 +3305,36 @@ try {
                     }
                 } catch (Throwable $e) { error_log('[TradeCore API] v2_list_stores blob fallback failed: ' . $e->getMessage()); }
             }
+            echo json_encode(["success" => true, "list" => $list, "count" => count($list), "server_ts" => $now]);
+            exit();
+        }
+
+        // ---- v2_list_branches ----------------------------------------------------
+        // DIRECT-MYSQL BRANCH LIST (2026-09-08-12): branches are store rows whose
+        // branch_id equals their own id (tcMirrorNormalized + v2_upsert_store write them
+        // that way). Super admins get every company's branches (GLOBAL scope); staff get
+        // only their own company's. Falls back to the legacy blob 'branches' array while
+        // the normalized table is still empty, exactly like the other v2_list_* reads.
+        if ($action === 'v2_list_branches') {
+            $list = [];
+            try {
+                $bset = tcLoadStores($pdo, $v2company);
+                foreach ($bset as $s) {
+                    $bid = $s['branchId'] ?? null;
+                    if ($bid !== null && $bid !== '' && (string)$bid === (string)$s['id']) $list[] = $s;
+                }
+                if (count($list) === 0) {
+                    $pre = $pdo ? $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch() : null;
+                    $pd = ($pre && $pre['json_data']) ? normalizeBlobData(json_decode($pre['json_data'], true)) : [];
+                    if (is_array($pd) && isset($pd['branches']) && is_array($pd['branches'])) {
+                        foreach ($pd['branches'] as $b) {
+                            if (!is_array($b) || empty($b['id']) || !empty($b['isDeleted']) || !empty($b['deletedAt'])) continue;
+                            if ($v2company !== '' && (string)($b['company_id'] ?? $b['companyId'] ?? '') !== $v2company) continue;
+                            $list[] = $b;
+                        }
+                    }
+                }
+            } catch (Throwable $eBr) { error_log('[TradeCore API] v2_list_branches failed: ' . $eBr->getMessage()); }
             echo json_encode(["success" => true, "list" => $list, "count" => count($list), "server_ts" => $now]);
             exit();
         }
