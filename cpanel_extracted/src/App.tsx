@@ -283,8 +283,8 @@ function directDeltaParts(prev: any, next: any) {
 
 const DIRECT_DELTA_HANDLERS: Record<string, (u: any[], r: string[], nextMap: Map<string, any>, companyId: any) => void> = {
   companies: (u, r) => {
-    for (const rec of u) void v2UpsertCompany(rec).catch(() => {});
-    for (const id of r) void v2DeleteCompany(id).catch(() => {});
+    for (const rec of u) void v2UpsertCompany(rec).catch((e) => console.warn('[Direct MySQL] v2_upsert_company delta failed', e, rec));
+    for (const id of r) void v2DeleteCompany(id).catch((e) => console.warn('[Direct MySQL] v2_delete_company delta failed', e, id));
   },
   branches: (u, r) => {
     for (const rec of u) void v2UpsertBranch(rec).catch(() => {});
@@ -1512,7 +1512,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-12');
+    console.log('[TradeCore] build 2026-09-08-13');
   }, []);
 
   useEffect(() => {
@@ -6012,6 +6012,48 @@ const conflict = consumeConflictData();
       });
     }
   }, []);
+
+  // DIRECT-MYSQL COMPANY ADD (2026-09-08-13): explicit, awaited v2_upsert_company POST
+  // followed by a GLOBAL v2_list_companies re-fetch so all users + reloads see the new
+  // row. Bypasses the saveAllData diff dispatch which could silently swallow a failed POST
+  // via .catch(() => {}) and leave the company local-only (invisible on reload / other users).
+  const addCompany = React.useCallback(async (data: { name: string; [k: string]: unknown }) => {
+    const newId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `co_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const payload = {
+      ...data,
+      id: newId,
+      company_id: newId,
+      name: String(data.name || '').trim(),
+      tin: (data as any).tin !== undefined ? (data as any).tin : '',
+      tin_number: (data as any).tin_number !== undefined ? (data as any).tin_number : ((data as any).tin || ''),
+      status: 'active',
+      is_active: 1,
+      is_default: 0,
+      branch_id: newId,
+      created_by: currentUser?.username || 'root_mandate',
+    };
+    try {
+      const saved = await v2UpsertCompany(payload);
+      console.log('[Direct MySQL] v2_upsert_company', saved ? 'OK' : 'FAILED', payload);
+      if (!saved) throw new Error('v2_upsert_company returned false');
+    } catch (e) {
+      console.error('[Direct MySQL] v2_upsert_company ERROR', e);
+      toast.error('Company Save Failed: ' + String(e));
+      throw e;
+    }
+    try {
+      const all = await v2ListCompanies();
+      console.log('[Direct MySQL] v2_list_companies GLOBAL re-fetch', all.length, 'rows', all);
+      if (Array.isArray(all) && all.length > 0) {
+        dbStateRef.current = { ...dbStateRef.current, companies: all };
+        applyCollectionState({ companies: all });
+        void cacheSystemState(dbStateRef.current).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[Direct MySQL] v2_list_companies re-fetch failed', e);
+    }
+    return newId;
+  }, [currentUser]);
 
   // --- TELEMETRY & FINGERPRINTING HELPERS ---
   const getBrowserFingerprint = (): string => {
@@ -12549,6 +12591,7 @@ try {
             logAction={logAction}
             saveAllData={saveAllData}
             refreshMasterData={refreshMasterData}
+            addCompany={addCompany}
             mutateRecord={mutateCollectionRecord}
             settings={settings}
             currentUser={currentUser}

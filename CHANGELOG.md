@@ -6,6 +6,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-13] - 2026-09-08
+
+### Build 2026-09-08-13 — Add Company now goes DIRECT MySQL via explicit awaited POST (fixes "nimeadd company imefutika" / company local-only after refresh / invisible to other users)
+After the build-12 direct-MySQL migration, adding a Company through System Companies still did not make it to MySQL in all cases. The reported symptom (Screenshot 162036.png): the Company appeared in the switch list and a Flush for (users, settings) 12.4KB happened, but NO `v2_upsert_company` POST appeared in the network tab — so on reload the server loaded its (unchanged) MySQL list and the new row vanished, and other users never saw it either.
+
+**Root cause**: the build-12 diff dispatch (`saveAllData` → `DIRECT_DELTA_HANDLERS.companies`) fired `v2UpsertCompany(rec).catch(() => {})` — a silent swallow. Any failure in URL resolution, auth, or the POST itself was eaten with NO console output and NO MySQL write, then the flow never re-fetched from the DB. The Company was therefore local-only: UI had it, MySQL did not.
+
+**Fix** (`src/App.tsx` + `src/components/MasterData.tsx`):
+- New `addCompany` callback passed to System Companies: creates the record with `crypto.randomUUID()` (fallback `co_<ts>_<rand>`), then performs an EXPLICIT `/api.php?action=v2_upsert_company` POST that is **awaited** and **logged** (`[Direct MySQL] v2_upsert_company OK|FAILED`). On failure it throws + shows a toast instead of silently swallowing, so a failed write can never masquerade as success.
+- Immediately after the successful write it runs `v2_list_companies` (super admin scope = GLOBAL server-side) and applies the fresh MySQL list to local state + IDB cache (`[Direct MySQL] v2_list_companies GLOBAL re-fetch N rows`), so all views + other users + the next reload read the row from the `companies` table.
+- `MasterData.tsx` company-create handler now calls `addCompany(cleanCompany)` (awaited) and only saves the local `settings` (companyLanguages/Currencies/ExchangeRates) via `saveAllData` — NO `saveAllData({ companies })` for the create path, so the write cannot be lost in the blob/diff pipeline. Falls back to the old numeric-`nextId` path only when the prop is absent.
+- `DIRECT_DELTA_HANDLERS` catch blocks now log (`console.warn('[Direct MySQL] v2_upsert_company delta failed', e, rec)`) instead of swallowing so the same silent-death class is visible everywhere.
+
+**Note for verification in phpMyAdmin**: the new row lands in the existing **`companies`** table (NOT a `tradecore_companies` table — that was the rejected duplicate-schema plan). Query: `SELECT * FROM companies WHERE name = 'Gamma Ltd' AND deleted_at IS NULL;` — expected one row with the recent `created_at`/`updated_at`.
+
 ## [1.0.9-build-12] - 2026-09-08
 
 ### Build 2026-09-08-12 — DIRECT-MYSQL CRUD MIGRATION: master data no longer rides the state blob

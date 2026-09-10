@@ -37,6 +37,7 @@ interface MasterDataProps {
   logAction: (action: string, details: string) => void;
   saveAllData: (updatedFields: any) => void;
   refreshMasterData?: (tab: string) => void;
+  addCompany?: (data: { name: string; [k: string]: unknown }) => Promise<string>;
   mutateRecord?: (collection: string, op: 'upsert' | 'delete', recordId: string | number, record: any) => Promise<boolean>;
   settings?: any;
   currentUser?: any;
@@ -67,6 +68,7 @@ export default function MasterData({
   logAction,
   saveAllData,
   refreshMasterData,
+  addCompany,
   mutateRecord,
   settings,
   currentUser,
@@ -417,33 +419,45 @@ export default function MasterData({
         saveAllData({ companies: updated, settings: nextSettings });
         logAction('Edit Company', `Modified Company details for: ${data.name}`);
       } else {
-        // Create
-        const nextId = Math.max(0, ...companies.map(c => c.id)) + 1;
-        // RECORD-SHAPE PARITY (2026-09-08-11): a new Company must carry the same
-        // identity fields as the registration path's newCompany (company_id,
-        // is_default, created_by). Any company-scoped snapshot/filter (client or
-        // server) matches on company_id — a record with an undefined company_id is
-        // "skipped as mismatched", which is exactly how a just-created Company
-        // vanished while the two seed default Companies stayed. Super Admin global
-        // scope + this shape guarantee the new record survives snapshots/reloads.
-        const newCo: any = {
-          ...cleanCompany,
-          id: nextId,
-          company_id: nextId,
-          is_default: false,
-          created_by: 'root_mandate'
-        };
-        const nextSettings = {
-          ...settings,
-          companyLanguages: { ...(settings?.companyLanguages || {}), [nextId]: coLang },
-          companyCurrencies: { ...(settings?.companyCurrencies || {}), [nextId]: coCurr },
-          companyExchangeRates: { ...(settings?.companyExchangeRates || {}), [nextId]: coRate }
-        };
-        saveAllData({ companies: [...companies, newCo], settings: nextSettings });
-        logAction('Create Company', `Registered new Company: ${data.name}`);
+        // Create — DIRECT MySQL via addCompany (2026-09-08-13): explicit awaited
+        // v2_upsert_company POST + GLOBAL v2_list_companies re-fetch so the new
+        // row is visible to ALL users and survives reload. Falls back to old
+        // saveAllData path if addCompany prop is not provided.
+        if (addCompany) {
+          try {
+            const newId = await addCompany(cleanCompany);
+            const nextSettings = {
+              ...settings,
+              companyLanguages: { ...(settings?.companyLanguages || {}), [newId]: coLang },
+              companyCurrencies: { ...(settings?.companyCurrencies || {}), [newId]: coCurr },
+              companyExchangeRates: { ...(settings?.companyExchangeRates || {}), [newId]: coRate }
+            };
+            saveAllData({ settings: nextSettings });
+            logAction('Create Company', `Registered new Company: ${data.name} (id=${newId})`);
+          } catch (e) {
+            console.error('[MasterData] addCompany failed', e);
+          }
+        } else {
+          const nextId = Math.max(0, ...companies.map(c => c.id)) + 1;
+          const newCo: any = {
+            ...cleanCompany,
+            id: nextId,
+            company_id: nextId,
+            is_default: false,
+            created_by: 'root_mandate'
+          };
+          const nextSettings = {
+            ...settings,
+            companyLanguages: { ...(settings?.companyLanguages || {}), [nextId]: coLang },
+            companyCurrencies: { ...(settings?.companyCurrencies || {}), [nextId]: coCurr },
+            companyExchangeRates: { ...(settings?.companyExchangeRates || {}), [nextId]: coRate }
+          };
+          saveAllData({ companies: [...companies, newCo], settings: nextSettings });
+          logAction('Create Company', `Registered new Company: ${data.name}`);
+        }
       }
     } else if (type === 'branch') {
-      const parsedCoId = parseInt(data.companyId) || currentCompanyId || 1;
+      const parsedCoId = (data.companyId !== undefined && data.companyId !== null && data.companyId !== '') ? (parseInt(data.companyId) || data.companyId) : (currentCompanyId || 1);
       const cleanData = { ...data, companyId: parsedCoId };
       if (data.id) {
         const updated = branches.map(b => b.id === data.id ? cleanData : b);
