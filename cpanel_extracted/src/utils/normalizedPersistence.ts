@@ -191,6 +191,11 @@ export async function v2UpsertCompany(entity: Company): Promise<boolean> {
   return !!(res && res.success);
 }
 
+/** Detailed variant — returns the raw server response (with error message) for diagnostics. */
+export async function v2UpsertCompanyDetailed(entity: Company): Promise<V2WriteResponse | null> {
+  return v2Post<V2WriteResponse>('v2_upsert_company', { entity });
+}
+
 export async function v2DeleteCompany(id: string | number): Promise<boolean> {
   const res = await v2Post<V2WriteResponse>('v2_delete_company', { id: String(id) });
   return !!(res && res.success);

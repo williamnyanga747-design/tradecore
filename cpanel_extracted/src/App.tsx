@@ -139,7 +139,7 @@ import {
   listInstallmentPayments, upsertInstallmentPayment
 } from './utils/entityPersistence';
 import {
-  v2UpsertCompany, v2DeleteCompany, v2ListCompanies,
+  v2UpsertCompany, v2UpsertCompanyDetailed, v2DeleteCompany, v2ListCompanies,
   v2UpsertStore, v2DeleteStore, v2ListStores,
   v2ListBranches, v2UpsertBranch, v2DeleteBranch,
   v2UpsertProduct, v2DeleteProduct
@@ -1512,7 +1512,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-14');
+    console.log('[TradeCore] build 2026-09-08-15');
   }, []);
 
   useEffect(() => {
@@ -6046,9 +6046,14 @@ const conflict = consumeConflictData();
     };
     console.log('[Companies] normalizeCompanyPayload →', payload);
     try {
-      const saved = await v2UpsertCompany(payload as any);
+      // BUILD 2026-09-08-15: use the detailed variant so the REAL server error (PDO
+      // message from error_log / response.error) is surfaced to the console + toast —
+      // never a bare boolean that hides "Incorrect integer value" or other SQL errors.
+      const res = await v2UpsertCompanyDetailed(payload as any);
+      console.log('[Direct MySQL] v2_upsert_company RESPONSE', res);
+      const saved = !!(res && res.success);
       console.log('[Direct MySQL] v2_upsert_company', saved ? 'OK' : 'FAILED', payload);
-      if (!saved) throw new Error('v2_upsert_company returned false — check server error_log');
+      if (!saved) throw new Error(res?.error || 'v2_upsert_company returned false — check server error_log');
     } catch (e) {
       console.error('[Direct MySQL] v2_upsert_company ERROR', e);
       toast.error('Company Save Failed: ' + String(e));

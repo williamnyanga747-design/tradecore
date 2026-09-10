@@ -6,6 +6,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-15] - 2026-09-10
+
+### Build 2026-09-08-15 — COMPANY-ADD ROOT-CAUSE FIX: subscription_end types + exact server error surfaced (fixes "v2_upsert_company still returns false even with correct payload")
+With build-14's normalizeCompanyPayload sending the correct `{id, company_id, name, tin_number}` PLUS form fields (`subscriptionEnd: '2026-09-30'`, `themeColor`), the INSERT still failed. The REAL cause was a schema/type mismatch the boolean-only helper hid:
+
+1. **`subscription_end` was declared BIGINT** but the app's `Company.subscriptionEnd` is a **date string** (`'2026-09-30'`; `Header.tsx:142` and `MasterData.tsx:639` compare `todayStr > c.subscriptionEnd`). MySQL strict mode rejects a date string into a BIGINT column → `SQLSTATE[22007]: Incorrect integer value: '2026-09-30'` → `tcUpsertCompanyRow` catch → `success:false`. The frontend's `v2UpsertCompany` returned only `!!(res.success)` so the exact PDO error never appeared in console.
+2. On a fresh DB the ALTERs for `theme_color`/`subscription_end`/`logo` had not run before the INSERT.
+
+**Backend fixes** (`public/cpanel/api.php`):
+- `tcEnsureNormalizedTables`: `subscription_end` now `VARCHAR(16)` — ADD (fresh) **and** MODIFY (fix build-14's BIGINT), idempotent. Matches the app's date-string contract.
+- `tcUpsertCompanyRow`: calls `tcEnsureNormalizedTables($pdo)` first so theme_color/subscription_end/logo columns always exist before INSERT.
+- `v2_upsert_company` handler: on failure logs **`[v2_upsert_company] FAILED SQL: <PDO message> DATA: <json payload>`** — the exact grep-able line to paste. Response already carries `"error"`.
+
+**Frontend fix** (`src/App.tsx` + `src/utils/normalizedPersistence.ts`):
+- New `v2UpsertCompanyDetailed` returns the RAW `V2WriteResponse` (not boolean). `addCompany` now logs `[Direct MySQL] v2_upsert_company RESPONSE <full>` and throws with `res.error` so the **real MySQL error** appears in console + toast instead of a bare `v2_upsert_company returned false`.
+
+**Note on tables**: the write/read target is the existing **`companies`** table (single source of truth). `tradecore_companies` does NOT exist and is NOT created — that was the rejected duplicate-schema plan. Verify with `SHOW CREATE TABLE companies;` / `SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY created_at DESC;`.
+
 ## [1.0.9-build-14] - 2026-09-10
 
 ### Build 2026-09-08-14 — COMPANY-ADD FULL FIX: backend robustness + frontend normalizeCompanyPayload + round-trip themeColor/subscriptionEnd/logo through MySQL

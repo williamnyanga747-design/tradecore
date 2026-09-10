@@ -198,7 +198,11 @@ function tcEnsureNormalizedTables($pdo) {
         // BUILD 2026-09-08-14: add theme_color, subscription_end, logo to companies for
         // full round-trip of MasterData company fields via MySQL (no more local-only loss).
         try { $pdo->exec("ALTER TABLE companies ADD COLUMN theme_color VARCHAR(16) DEFAULT NULL AFTER locale"); } catch (Throwable $eMigTc) {}
-        try { $pdo->exec("ALTER TABLE companies ADD COLUMN subscription_end BIGINT DEFAULT NULL AFTER theme_color"); } catch (Throwable $eMigSe) {}
+        // BUILD 2026-09-08-15: subscription_end holds a DATE STRING like '2026-09-30'
+        // (the app's Company.subscriptionEnd) — VARCHAR, NOT BIGINT (strict mode would
+        // reject a date string into a BIGINT column with "Incorrect integer value").
+        try { $pdo->exec("ALTER TABLE companies ADD COLUMN subscription_end VARCHAR(16) DEFAULT NULL AFTER theme_color"); } catch (Throwable $eMigSe) {}
+        try { $pdo->exec("ALTER TABLE companies MODIFY COLUMN subscription_end VARCHAR(16) DEFAULT NULL"); } catch (Throwable $eMigSe2) {}
         try { $pdo->exec("ALTER TABLE companies ADD COLUMN logo TEXT DEFAULT NULL AFTER subscription_end"); } catch (Throwable $eMigLo) {}
         $pdo->exec("CREATE TABLE IF NOT EXISTS audit_trails (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, store_id VARCHAR(64) DEFAULT NULL, user_id VARCHAR(64) DEFAULT NULL, user_name VARCHAR(255) DEFAULT NULL, action VARCHAR(100) NOT NULL, entity_type VARCHAR(100) DEFAULT NULL, entity_id VARCHAR(64) DEFAULT NULL, entity_name VARCHAR(255) DEFAULT NULL, details TEXT DEFAULT NULL, details_json TEXT DEFAULT NULL, ip_address VARCHAR(45) DEFAULT NULL, created_at BIGINT NOT NULL, INDEX idx_at_company_action (company_id, action), INDEX idx_at_created (created_at), INDEX idx_at_entity (entity_type, entity_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         // Password reset tokens (forgot-password / reset-password): single-use (consumed=1 set
@@ -251,6 +255,7 @@ function tcBlobMerge($pdo, $field, $entity = null, $removeId = null) {
 
 function tcUpsertCompanyRow($pdo, $c, $now, &$err = '') {
     if (!$pdo || !is_array($c) || !isset($c['id'])) { $err = 'Missing company.id or no PDO'; return false; }
+    tcEnsureNormalizedTables($pdo); // columns theme_color/subscription_end/logo must exist
     $id = (string)$c['id'];
     // DELETED-ENTITY GUARD (2026-09-07): honor the client's soft-delete flag so a blob
     // flush can never resurrect a company the user deleted. Previously the ON DUPLICATE
@@ -3199,6 +3204,7 @@ try {
                 $err = 'PDO Exception: ' . $eUpsert->getMessage();
                 error_log('[TradeCore API] v2_upsert_company PDO exception: ' . $err);
             }
+            if (!$ok) error_log('[v2_upsert_company] FAILED SQL: ' . ($err ?: 'unknown') . ' DATA: ' . json_encode($company));
             if ($ok) {
                 try { tcBlobMerge($pdo, 'companies', $company); } catch (Throwable $eBlob) { error_log('[TradeCore API] v2_upsert_company blob merge failed: ' . $eBlob->getMessage()); }
             }
