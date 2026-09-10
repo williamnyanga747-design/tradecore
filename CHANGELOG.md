@@ -6,6 +6,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-18] - 2026-09-10
+
+### Build 2026-09-08-18 — SYSTEM-WIDE scope fix: `company=NaN`, `Company Parent: N/A`, empty-snapshot data wipes, and cascade company deletion
+Screenshot `Company Parent: N/A` + `company=NaN` + the GUI freeze/inactivity on an invalid company showed the workspace re-scoping itself to a degenerate company id on every load/switch.
+
+**Root cause**: the server mints **string UUID** ids (`co_<hex>` / `crypto.randomUUID`), but the frontend treated every id as a **number**: `currentCompanyId` was `useState<number|null>` fed by `Number(localStorage.getItem('active_company_id'))` and `Number(<select>.value)` → `NaN`. Strict `===` between the string UUID and the number made every parent-name/category/company filter fail (`Company Parent: N/A`), and a `NaN` company target running the destructive `snapshot`/`get_state`/v2-list path returned zero-row scoped queries **plus** the full global blob overlay, which clients applied UNCONDITIONALLY — wiping local categories/stock/branches on every refresh and switch.
+
+**Frontend fixes** (`src/`, mirrored through the `cpanel_extracted/src` junction):
+1. **String-ID discipline** — `currentCompanyId/currentBranchId/currentStoreId` are now `useState<string | null>`; new `src/utils/idUtils.ts` (`sv`, `sameId`, `isValidCompanyScope`, `isRealCompanyId`, `safeCompanyId`). Boot reconcile (Super Admin/Admin/staff scopes), `handleContextChange`, the settings company select, `handleImpersonateCompany`, cross-device poll, and the switch effect all compare with `sameId()` and **reject** non-real targets (`'NaN'/'undefined'/'null'/'all'`) so a degenerate scope can never trigger a destructive snapshot/lock.
+2. **Snapshot/global separation** — `fetchCompanySnapshot` refuses to snapshot a non-real scope; `''`/`'all'` route to a dedicated `fetchGlobalSnapshotBody()`; `v2FetchCompanyState` returns `null` for non-real scopes instead of assembling a fake empty state.
+3. **Category scoping** — `normalizedPersistence` parses the `co_<id>:<name>` prefix as a **string** (was `parseInt` → `NaN`), `Category.companyId` is `string | number`; `categoryHelper` (`formatCompanyCategory`, `getCompanyCategories`, `getStoreCategories`) is string-safe.
+4. **Record ownership injections** — new customers/suppliers carry `company_id`; branch/store save handlers keep raw string scopes (no `parseInt`); every company/branch/store id comparison across Header, Expenses, POSModal, FinancialReport, Reports, AICopilot, MasterData, ManageUsers, Receipts, RootMandatePanel, MarketplaceOrdersPanel, AffiliateProgramPanel converted to `sameId()` (tsc clean).
+
+**Backend fixes** (`public/cpanel/api.php`, synced to `cpanel_extracted/cpanel/api.php`):
+1. **`tcValidCompanyScope()`** gate + degenerate-scope rejection in `snapshot`, `get_state`, and every `v2_*` action: a `NaN`-style scope returns an empty/refusal payload and logs — never the global blob fallback.
+2. **Transactional cascade `v2_delete_company`** — one transaction soft-deletes `companies` + `stores`/`stock_categories`/`products`/`user_accounts` by `company_id`, legacy `tradecore_users/products/sales/marketplace_orders`, hard-deletes `audit_trails` rows, strips the company's collections from every blob array, bumps the version, and ROLLS BACK on any failure — a deleted company can no longer be REBUILT by the next snapshot or leak into audit lists.
+
+**Acceptance**: deploy head commit → hard refresh → company selector shows a real company (no `NaN`) → `Company Parent` resolves → add category/product → cross-device sync no longer wipes local data → delete a company → `SELECT * FROM companies/stores/stock_categories WHERE id/company_id=<id>` shows `deleted_at` set. Table is still `companies`.
+
 ## [1.0.9-build-17] - 2026-09-10
 
 ### Build 2026-09-08-17 — CRITICAL SQL 1292 FIX: `Incorrect datetime value: '1789066134' for column 'created_at'` + epoch-schema self-healing

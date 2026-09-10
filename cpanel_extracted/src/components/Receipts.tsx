@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { ConfirmActionModal } from './ConfirmActionModal';
 import { toast } from '../utils/toast';
+import { sameId } from '../utils/idUtils';
 
 interface ReceiptsProps {
   salesOrders: SalesOrder[];
@@ -17,7 +18,7 @@ interface ReceiptsProps {
   customers: Customer[];
   suppliers: Supplier[];
   stockItems: StockItem[];
-  currentStoreId: number | null;
+  currentStoreId: string | number | null;
   currency: string;
   exchangeRate: number;
   translate: (t: string) => string;
@@ -373,8 +374,8 @@ export default function Receipts({
 
   // Filters
   const filteredSales = salesOrders.filter(so => {
-    const activeStoreId = filterStoreId !== 'all' ? parseInt(filterStoreId) : null;
-    const matchStore = activeStoreId ? so.storeId === activeStoreId : true;
+    const activeStoreId = filterStoreId !== 'all' ? String(filterStoreId) : null;
+    const matchStore = activeStoreId ? sameId(so.storeId, activeStoreId) : true;
     
     const matchStartDate = filterStartDate ? so.date >= filterStartDate : true;
     const matchEndDate = filterEndDate ? so.date <= filterEndDate : true;
@@ -391,8 +392,8 @@ export default function Receipts({
     // Exclude soft-deleted purchase orders
     if (po.isDeleted) return false;
 
-    const activeStoreId = filterStoreId !== 'all' ? parseInt(filterStoreId) : null;
-    const matchStore = activeStoreId ? po.storeId === activeStoreId : true;
+    const activeStoreId = filterStoreId !== 'all' ? String(filterStoreId) : null;
+    const matchStore = activeStoreId ? sameId(po.storeId, activeStoreId) : true;
 
     const matchStartDate = filterStartDate ? po.date >= filterStartDate : true;
     const matchEndDate = filterEndDate ? po.date <= filterEndDate : true;

@@ -22,6 +22,7 @@ import {
 } from '../types';
 import { defaultHomepageContent } from '../initialData';
 import { getPhpConfig } from '../utils/api';
+import { sameId } from '../utils/idUtils';
 import { Stars, VerifiedBadge, TZS } from './marketplace/MarketplaceShared';
 import AnalyticsLineChart from './marketplace/AnalyticsLineChart';
 import LeafletMap from './marketplace/LeafletMap';
@@ -161,7 +162,7 @@ function formatDate(iso?: string): string {
 }
 
 function companyName(companies: Company[], id: number): string {
-  return companies.find(c => c.id === id)?.name || `Company #${id}`;
+  return companies.find(c => sameId(c.id, id))?.name || `Company #${id}`;
 }
 
 function companyVerificationState(c: Company): { label: string; cls: string } {
@@ -520,7 +521,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
             <tbody className="divide-y divide-gray-100">
               {filtered.map(c => {
                 const state = companyVerificationState(c);
-                const count = products.filter(p => p.companyId === c.id).length;
+                const count = products.filter(p => sameId(p.companyId, c.id)).length;
                 return (
                   <tr key={c.id} className="hover:bg-gray-50">
                     <td className="px-3 py-2.5">
@@ -2250,7 +2251,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {rows.map(s => {
-                const company = companies.find(c => c.id === s.companyId);
+                const company = companies.find(c => sameId(c.id, s.companyId));
                 const label = company ? company.name : `Company #${s.companyId}`;
                 return (
                   <tr key={s.id} className="hover:bg-gray-50 align-top">
@@ -2348,7 +2349,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
             </thead>
             <tbody className="divide-y divide-gray-100">
               {rows.slice(0, 120).map(o => {
-                const company = companies.find(c => c.id === o.companyId);
+                const company = companies.find(c => sameId(c.id, o.companyId));
                 const pct = o.commissionPercent || 0;
                 return (
                   <tr key={o.id} className="hover:bg-gray-50 align-top">

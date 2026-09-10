@@ -8,6 +8,7 @@ import { toast } from '../utils/toast';
 import { hashPassword, isHashedPassword } from '../utils/hash';
 import { apiChangePassword, apiDeleteUser, apiUpsertUser } from '../utils/api';
 import { defaultUsers } from '../initialData';
+import { sameId } from '../utils/idUtils';
 
 interface ManageUsersProps {
   currentPage: string;
@@ -19,9 +20,9 @@ interface ManageUsersProps {
   securityLogs?: SecurityLog[];
   rolePermissions: Record<string, string[]>;
   currentUser: User | null;
-  currentCompanyId: number | null;
-  currentBranchId: number | null;
-  currentStoreId: number | null;
+  currentCompanyId: string | number | null;
+  currentBranchId: string | number | null;
+  currentStoreId: string | number | null;
   settings: Settings;
   isSuperAdmin: boolean;
   isGlobalSuperAdmin: boolean;
@@ -98,7 +99,7 @@ export default function ManageUsers({
   });
 
   // Helper getters
-  const getCompanyName = (id: number | null) => id ? (companies.find(c => c.id === id)?.name || t('Unknown')) : t('Global / All');
+  const getCompanyName = (id: number | null) => id ? (companies.find(c => sameId(c.id, id))?.name || t('Unknown')) : t('Global / All');
   const getBranchName = (id: number | null) => id ? (branches.find(b => b.id === id)?.name || t('Unknown')) : t('Global / All');
   const getStoreName = (id: number | null) => id ? (stores.find(s => s.id === id)?.name || t('Unknown')) : t('Global / All');
 
@@ -145,7 +146,7 @@ export default function ManageUsers({
   // Hide Super Admins and other companies from regular Admins
   if (!isSuperAdmin) {
     usersToRender = usersToRender.filter(
-      u => u.role !== 'Super Admin' && u.companyId === currentCompanyId
+      u => u.role !== 'Super Admin' && sameId(u.companyId, currentCompanyId)
     );
   }
 
@@ -155,7 +156,7 @@ export default function ManageUsers({
     staffToRender = staffToRender.filter(u => u.username !== 'root_mandate' && u.username !== 'superadmin');
   }
   if (!isSuperAdmin) {
-    staffToRender = staffToRender.filter(u => u.companyId === currentCompanyId);
+    staffToRender = staffToRender.filter(u => sameId(u.companyId, currentCompanyId));
   }
 
   // Categories of modules for cleaner representation
@@ -273,7 +274,7 @@ export default function ManageUsers({
         }
 
         // Company Admin of the company can add/delete his/her own staff
-        if (target.companyId !== currentCompanyId) {
+        if (!sameId(target.companyId, currentCompanyId)) {
           toast.error(t('Cannot delete users from other companies'));
           return;
         }
@@ -352,9 +353,15 @@ export default function ManageUsers({
     if (!editingUser) return;
 
     const data = { ...editingUser };
-    data.companyId = isSuperAdmin ? (data.companyId ? parseInt(data.companyId as any) : null) : currentCompanyId;
+    // BUILD 2026-09-08-18: company ids are STRINGS — parseInt converts a UUID to NaN
+    // and every downstream filter silently targets 'NaN'. Keep the raw string scope.
+    data.companyId = isSuperAdmin
+      ? (data.companyId !== undefined && data.companyId !== null && data.companyId !== '' && String(data.companyId) !== 'NaN'
+          ? String(data.companyId)
+          : null)
+      : (currentCompanyId != null ? String(currentCompanyId) : data.companyId);
     if (isSuperAdmin && !isGlobalSuperAdmin) {
-      data.companyId = currentCompanyId;
+      data.companyId = currentCompanyId != null ? String(currentCompanyId) : data.companyId;
     }
 
     // Restricted Super Admins may ADD new users, but cannot edit existing accounts (block/delete only for existing).
@@ -477,7 +484,7 @@ export default function ManageUsers({
       logs = logs.filter(l => l.username !== 'superadmin');
     }
     if (!isSuperAdmin && !isSuperScopeCtx(currentUser)) {
-      logs = logs.filter(l => l.role !== 'Super Admin' && l.companyId === currentCompanyId);
+      logs = logs.filter(l => l.role !== 'Super Admin' && sameId(l.companyId, currentCompanyId));
     }
     if (auditStaffFilter !== 'All') {
       logs = logs.filter(l => l.username === auditStaffFilter);
@@ -534,7 +541,7 @@ export default function ManageUsers({
                 role: 'Retailer',
                 name: '',
                 email: '',
-                companyId: currentCompanyId,
+                companyId: currentCompanyId != null ? String(currentCompanyId) : null,
                 branchId: null,
                 storeId: null,
                 firstLogin: true,
@@ -1005,7 +1012,7 @@ export default function ManageUsers({
             telemetryLogs = telemetryLogs.filter(l => l.username !== 'superadmin');
           }
           if (!isSuperAdmin) {
-            telemetryLogs = telemetryLogs.filter(l => l.role !== 'Super Admin' && l.companyId === currentCompanyId);
+            telemetryLogs = telemetryLogs.filter(l => l.role !== 'Super Admin' && sameId(l.companyId, currentCompanyId));
           }
 
           // Filter by Category
@@ -1359,11 +1366,11 @@ export default function ManageUsers({
     let roleOpts = ['Admin', 'Store Admin', 'Branch Administrator', 'Retailer', 'Wholesaler'];
     if (isSuperAdmin) roleOpts = ['Super Admin', 'Admin', 'Store Admin', 'Branch Administrator', 'Retailer', 'Wholesaler'];
 
-    const activeCompanyId = isSuperAdmin ? (editingUser.companyId || currentCompanyId || 1) : currentCompanyId;
+    const activeCompanyId = isSuperAdmin ? (editingUser.companyId || currentCompanyId || '1') : currentCompanyId;
 
-    const filteredBranches = branches.filter(b => b.companyId === activeCompanyId && !b.isDeleted);
+    const filteredBranches = branches.filter(b => sameId(b.companyId, activeCompanyId) && !b.isDeleted);
     const branchIds = filteredBranches.map(b => b.id);
-    const filteredStores = stores.filter(s => branchIds.includes(s.branchId) && !s.isDeleted);
+    const filteredStores = stores.filter(s => branchIds.some(bid => sameId(bid, s.branchId)) && !s.isDeleted);
 
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

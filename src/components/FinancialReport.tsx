@@ -3,6 +3,7 @@ import { SalesOrder, Expense, StockItem, Store, Company, Branch, MarketplaceOrde
 import { formatMoney, exportToExcel, translate } from '../utils/format';
 import { handlePrintWithFallback } from '../utils/printHelper';
 import { ConfirmActionModal } from './ConfirmActionModal';
+import { sameId } from '../utils/idUtils';
 import { 
   Printer, FileSpreadsheet, Calendar, Search, ArrowUpRight, ArrowDownRight, 
   DollarSign, TrendingUp, Briefcase, Mail, Send, CheckCircle2, Loader, Sparkles, AlertCircle, X, Building2
@@ -16,9 +17,9 @@ interface FinancialReportProps {
   stores: Store[];
   companies?: Company[];
   branches?: Branch[];
-  currentCompanyId?: number | null;
-  currentBranchId?: number | null;
-  currentStoreId: number | null;
+  currentCompanyId?: string | number | null;
+  currentBranchId?: string | number | null;
+  currentStoreId: string | number | null;
   currency: string;
   exchangeRate: number;
   language?: 'en' | 'sw' | 'fr' | 'es';
@@ -66,18 +67,18 @@ export default function FinancialReport({
   const [targetEmail, setTargetEmail] = useState('globaltradecore@gmail.com');
 
   const getStoreName = (id: number) => {
-    return stores.find(s => s.id === id)?.name || `Store #${id}`;
+    return stores.find(s => sameId(s.id, id))?.name || `Store #${id}`;
   };
 
   // Stores belonging to the currently active company
   const companyStoreIds = React.useMemo(() => {
-    const companyBranchIds = branches.filter(b => b.companyId === currentCompanyId).map(b => b.id);
+    const companyBranchIds = branches.filter(b => sameId(b.companyId, currentCompanyId)).map(b => b.id);
     const companyStores = stores.filter(s => companyBranchIds.includes(s.branchId)).map(s => s.id);
     return companyStores.length > 0 ? companyStores : stores.filter(s => !s.isDeleted).map(s => s.id);
   }, [currentCompanyId, branches, stores]);
 
   const matchesStore = (id: number) => {
-    if (currentStoreId) return id === currentStoreId;
+    if (currentStoreId) return sameId(id, currentStoreId);
     return companyStoreIds.length === 0 || companyStoreIds.includes(id);
   };
 
@@ -107,7 +108,7 @@ export default function FinancialReport({
   // Marketplace order filtering (by company + date, delivered/verified only)
   const getPeriodMpOrders = () => {
     return marketplaceOrders.filter(o => {
-      if (currentCompanyId && o.companyId !== currentCompanyId) return false;
+      if (currentCompanyId && !sameId(o.companyId, currentCompanyId)) return false;
       if (!['delivered', 'verified'].includes(o.status)) return false;
       const d = new Date(o.createdAt);
       const dateStr = d.toISOString().split('T')[0];
@@ -363,7 +364,7 @@ export default function FinancialReport({
   // EXPORT TO EXCEL SHEET (.XLS)
   const handleExportExcel = () => {
     const formattedPeriod = periodType === 'day' ? selectedDate : selectedMonth;
-    const storeText = currentStoreId ? stores.find(s => s.id === currentStoreId)?.name : 'All Stores';
+    const storeText = currentStoreId ? stores.find(s => sameId(s.id, currentStoreId))?.name : 'All Stores';
 
     let tableHtml = `
       <table>
@@ -461,9 +462,9 @@ export default function FinancialReport({
     }, 2000);
   };
 
-  const activeCompanyObj = companies.find(c => c.id === currentCompanyId);
-  const activeBranchObj = branches.find(b => b.id === currentBranchId);
-  const activeStoreObj = stores.find(s => s.id === currentStoreId);
+  const activeCompanyObj = companies.find(c => sameId(c.id, currentCompanyId));
+  const activeBranchObj = branches.find(b => sameId(b.id, currentBranchId));
+  const activeStoreObj = stores.find(s => sameId(s.id, currentStoreId));
 
   return (
     <div className="space-y-6">

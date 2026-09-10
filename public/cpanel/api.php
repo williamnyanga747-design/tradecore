@@ -292,6 +292,19 @@ function tcTableColumns($pdo, $table) {
     return $cache[$table];
 }
 
+// BUILD 2026-09-08-18: validate a decoded company scope ('' = GLOBAL is legit; the
+// degenerate tokens below must NEVER reach a query, or unknown-company rows/empty
+// payloads get served as if they were a real company's state — which is what let a
+// NaN company_id wipe the client's local workspace).
+function tcValidCompanyScope($cid) {
+    $cid = trim((string)$cid);
+    if ($cid === '') return true; // '' = GLOBAL scope (valid for supers / cross-company reads)
+    $l = strtolower($cid);
+    if (in_array($l, ['nan', 'n/a', 'na', 'undefined', 'null', 'none', 'all', '0', 'unknown'], true)) return false;
+    if (!preg_match('/^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/', $cid)) return false;
+    return true;
+}
+
 // Merge a v2 request: POST JSON body first, then GET params (GET wins only when absent
 // in body) so both `?action=v2_list_products&company_id=1` and POST bodies work.
 function tcV2Input($rawInput) {
@@ -1196,6 +1209,16 @@ try {
             }
             unset($snapSuper);
 
+            // BUILD 2026-09-08-18: NEVER snapshot a degenerate scope (NaN/'undefined'/
+            // 'null'/'all'). A NaN company_id returned every zero-row scoped query PLUS
+            // the full GLOBAL blob overlay, which clients applied UNCONDITIONALLY over
+            // their local workspace (categories/stock/branches wiped on every refresh).
+            if ($companyId !== '' && !tcValidCompanyScope($companyId)) {
+                error_log('[TradeCore API] snapshot rejected invalid company scope "' . $companyId . '" -> refusing scoped state');
+                echo json_encode(["success" => true, "state" => [], "stockItems" => [], "error" => null, "server_ts" => $now]);
+                exit();
+            }
+
             // 1. Authoritative blob: version watermark + every blob-backed collection.
             $blobRow = $pdo->query("SELECT json_data, version FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch(PDO::FETCH_ASSOC);
             $blob = $blobRow && $blobRow['json_data'] ? normalizeBlobData(json_decode($blobRow['json_data'], true)) : [];
@@ -1379,6 +1402,14 @@ try {
             $companyId = '';
         }
         unset($getOp);
+
+        // BUILD 2026-09-08-18: reject degenerate scopes so an unknown/N aN company never
+        // gets the GLOBAL blob (its collections then overwrite the staff workspace).
+        if ($companyId !== '' && !tcValidCompanyScope($companyId)) {
+            error_log('[TradeCore API] get_state rejected invalid company scope "' . $companyId . '"');
+            echo json_encode(["success" => false, "error" => "Invalid company scope", "server_ts" => $now]);
+            exit();
+        }
 
         if ($companyId !== '' && $pdo) {
             try {
@@ -3262,6 +3293,21 @@ try {
             $v2company = '';
         }
 
+        // BUILD 2026-09-08-18: DEGENERATE-SCOPE GATE. If a client ever sends a NaN-style
+        // company scope on a v2 action we NEVER let it reach a query (unknown-company
+        // WHERE company_id='NaN' returns ZERO mirror rows -> handlers fell back to the
+        // FULL GLOBAL blob, which the caller then applied over its local data).
+        $v2ScopeBad = $v2company !== '' && !tcValidCompanyScope($v2company);
+        if ($v2ScopeBad) {
+            error_log('[TradeCore API] v2 action ' . $action . ' rejected degenerate scope "' . $v2company . '"');
+            if (preg_match('/^v2_(list|delete|purge)/', $action)) {
+                echo json_encode(["success" => true, "list" => [], "count" => 0, "server_ts" => $now, "warning" => "Invalid company scope"]);
+                exit();
+            }
+            echo json_encode(["success" => false, "error" => "Invalid company scope", "server_ts" => $now]);
+            exit();
+        }
+
         // ---- v2_list_companies --------------------------------------------------
         if ($action === 'v2_list_companies') {
             $list = tcLoadCompanies($pdo);
@@ -3316,14 +3362,70 @@ try {
         }
 
         // ---- v2_delete_company ---------------------------------------------------
+        // BUILD 2026-09-08-18: TRANSACTIONAL CASCADE SOFT-DELETE. The old handler only
+        // marked the companies row deleted_at — the mirror rows (stores/stock_categories/
+        // products/user_accounts) and the legacy tradecore_* rows stayed alive with
+        // deleted_at NULL, so the next authoritative snapshot REBUILT every slice of the
+        // "deleted" company from the normalized tables on every login. This version
+        // soft-deletes EVERY company-scoped row in ONE transaction (rollback on any
+        // failure), hard-deletes its audit rows, strips its collections from the blob,
+        // bumps the version and writes an audit row only on success.
         if ($action === 'v2_delete_company') {
             if (!$pdo) { echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
             $id = (string)($v2in['id'] ?? '');
-            if ($id === '') { echo json_encode(["success" => false, "error" => "Missing company id", "server_ts" => $now]); exit(); }
-            try { $pdo->prepare("UPDATE companies SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_company failed: ' . $e->getMessage()); }
-            tcBlobMerge($pdo, 'companies', null, $id);
-            tcWriteAuditTrail($pdo, $id, '', $v2op, 'Company Delete', 'Company', $id, $id, ['company_id' => $id]);
-            echo json_encode(["success" => $ok, "server_ts" => $now]);
+            if ($id === '' || !tcValidCompanyScope($id)) { echo json_encode(["success" => false, "error" => "Missing/invalid company id", "server_ts" => $now]); exit(); }
+            $ok = false;
+            try {
+                $pdo->beginTransaction();
+                // 1. Children first (no orphaned rows pointing at a deleted parent).
+                foreach (['stores' => 'company_id', 'stock_categories' => 'company_id', 'products' => 'company_id', 'user_accounts' => 'company_id'] as $tbl => $col) {
+                    if (!preg_match('/^[a-z0-9_]+$/', $tbl) || !preg_match('/^[a-z0-9_]+$/', $col)) throw new RuntimeException('Bad table/col name in cascade');
+                    $pdo->prepare("UPDATE {$tbl} SET deleted_at=?, updated_at=? WHERE {$col}=? AND deleted_at IS NULL")->execute([$now, $now, $id]);
+                }
+                // 2. Then the parent company row.
+                $pdo->prepare("UPDATE companies SET deleted_at=?, updated_at=?, is_active=0, status='deleted' WHERE id=?")->execute([$now, $now, $id]);
+                // 3. Legacy per-company atomic tables (classic-build read compat). Their
+                //    deleted_at column exists in every classic schema; tolerate absence.
+                foreach (['tradecore_users', 'tradecore_products', 'tradecore_sales', 'tradecore_marketplace_orders'] as $tbl) {
+                    if (!preg_match('/^[a-z0-9_]+$/', $tbl)) continue;
+                    try { $pdo->prepare("UPDATE {$tbl} SET deleted_at=?, updated_at=? WHERE company_id=? AND deleted_at IS NULL")->execute([$now, $now, $id]); }
+                    catch (Throwable $eL) { error_log('[TradeCore API] v2_delete_company legacy ' . $tbl . ' (deleted_at may be absent): ' . $eL->getMessage()); }
+                }
+                // 4. Audit rows for the company are HARD-deleted (they carry company_id and
+                //    would otherwise leak the deleted company back into the audit lists).
+                try { $pdo->prepare("DELETE FROM audit_trails WHERE company_id=?")->execute([$id]); } catch (Throwable $eA) { error_log('[TradeCore API] v2_delete_company audit_trails cleanup: ' . $eA->getMessage()); }
+                // 5. Strip the company's collections from every blob array + bump version.
+                tcBlobMerge($pdo, 'companies', null, $id);
+                $blobDel = $pdo->query("SELECT json_data, version FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+                if ($blobDel && $blobDel['json_data']) {
+                    $pd = normalizeBlobData(json_decode($blobDel['json_data'], true));
+                    if (is_array($pd)) {
+                        foreach ($pd as $bKey => &$arr) {
+                            if ($bKey === 'companies') {
+                                $arr = array_values(array_filter($arr, function ($c) use ($id) { return !is_array($c) || (string)($c['id'] ?? '') !== $id; }));
+                            } elseif (is_array($arr)) {
+                                $arr = array_values(array_filter($arr, function ($item) use ($id) { return !is_array($item) || (string)($item['companyId'] ?? $item['company_id'] ?? '') !== $id; }));
+                            }
+                        }
+                        unset($arr);
+                        $newVer = (int)($blobDel['version'] ?? 0) + 1;
+                        $jj = json_encode($pd, JSON_UNESCAPED_UNICODE);
+                        $pdo->prepare("INSERT INTO tradecore_system_state (doc_key, json_data, version, updated_at) VALUES ('main_state', ?, ?, NOW()) ON DUPLICATE KEY UPDATE json_data=VALUES(json_data), version=VALUES(version), updated_at=NOW()")->execute([$jj, $newVer]);
+                    }
+                }
+                $pdo->commit();
+                $ok = true;
+            } catch (Throwable $e) {
+                try { if ($pdo->inTransaction()) $pdo->rollBack(); } catch (Throwable $eR) {}
+                $ok = false;
+                error_log('[TradeCore API] v2_delete_company rolled back: ' . $e->getMessage());
+            }
+            if (!$ok) {
+                echo json_encode(["success" => false, "error" => "Company delete failed and was rolled back", "server_ts" => $now]);
+                exit();
+            }
+            try { tcWriteAuditTrail($pdo, $id, '', $v2op, 'Company Delete', 'Company', $id, $id, ['company_id' => $id, 'cascade' => true]); } catch (Throwable $eAudit) { error_log('[TradeCore API] v2_delete_company audit failed: ' . $eAudit->getMessage()); }
+            echo json_encode(["success" => true, "error" => null, "server_ts" => $now]);
             exit();
         }
 

@@ -109,6 +109,7 @@ import SyncStatusIndicator from './components/SyncStatusIndicator';
 
 // Utils
 import { translate, formatMoney, exportToExcel } from './utils/format';
+import { sv, sameId, isValidCompanyScope, isRealCompanyId, safeCompanyId } from './utils/idUtils';
 import { getStoredLanguage, syncDocumentLang, getUserAdminLanguage, setUserAdminLanguage } from './utils/i18n';
 import { handlePrintWithFallback } from './utils/printHelper';
 import { hashPassword, isHashedPassword, verifyPassword } from './utils/hash';
@@ -223,9 +224,13 @@ const normalizePhone = (phone: string): string => phone.replace(/\s+/g, '').repl
 // Persist the ACTIVE company under BOTH keys so boot resolution, the switch guard and the
 // cross-device poll all agree on the single committed company. 'active_company_id' is the
 // canonical "which company am I in right now" key; 'company_id' is kept for legacy readers.
+// BUILD 2026-09-08-18: NEVER write a NaN / 'undefined' / 'null' scope — a numeric id passed
+// through Number() becomes 'NaN' and every subsequent snapshot/poll either wipes local data
+// or commits the wrong scope. 'all' (Global View) is the only non-company value permitted.
 const persistActiveCompany = (cid: string | number | null | undefined): void => {
-  if (cid == null || cid === '' || String(cid) === 'none') return;
-  const s = String(cid);
+  const s = sv(cid);
+  if (s === '' || s.toLowerCase() === 'none') return;
+  if (!isValidCompanyScope(s)) return;
   try {
     localStorage.setItem('company_id', s);
     localStorage.setItem('active_company_id', s);
@@ -761,9 +766,9 @@ export default function App() {
   // --- OPERATIONAL STATES ---
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [currentPage, setCurrentPage] = useState<string>('dashboard');
-  const [currentCompanyId, setCurrentCompanyId] = useState<number | null>(null);
-  const [currentBranchId, setCurrentBranchId] = useState<number | null>(null);
-  const [currentStoreId, setCurrentStoreId] = useState<number | null>(null);
+  const [currentCompanyId, setCurrentCompanyId] = useState<string | null>(null);
+  const [currentBranchId, setCurrentBranchId] = useState<string | null>(null);
+  const [currentStoreId, setCurrentStoreId] = useState<string | null>(null);
 
   // ROOT_MANDATE: "View as Company" impersonation backup (root session while helping a company)
   const [rootSessionBackup, setRootSessionBackup] = useState<User | null>(null);
@@ -1512,7 +1517,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-17');
+    console.log('[TradeCore] build 2026-09-08-18');
   }, []);
 
   useEffect(() => {
@@ -2737,11 +2742,15 @@ export default function App() {
         // effect sees active_company_id === curCid and does NOT schedule a redundant
         // "1 -> 3" resync. NOTE: intentionally never falls back to a hardcoded '1' — that
         // was the source of the wrong-company first boot / panel shake.
-        persistActiveCompany(bootCid);
+        // BUILD 2026-09-08-18: NEVER snapshot against an invalid scope ('NaN'/'undefined'/
+        // 'all') — that returned an unknown-company blob whose empty collections replaced
+        // local categories/stock/branches over every refresh.
+        const safeBoot = safeCompanyId(bootCid);
+        if (safeBoot) persistActiveCompany(safeBoot);
         let phpData: any = null;
-        if (bootCid && bootCid !== 'none') {
-          phpData = await fetchCompanySnapshot(bootCid);
-          if (phpData) console.log('[DB] Booted from authoritative per-company snapshot (company ' + bootCid + ')');
+        if (safeBoot) {
+          phpData = await fetchCompanySnapshot(safeBoot);
+          if (phpData) console.log('[DB] Booted from authoritative per-company snapshot (company ' + safeBoot + ')');
         }
         if (!phpData) phpData = await fetchSystemDataFromPhp();
         // Capture server version immediately
@@ -3038,10 +3047,11 @@ export default function App() {
         const pollCompanyId = (() => {
           try {
             const cid = (currentCompanyId != null ? String(currentCompanyId) : null);
-            if (cid) return cid;
-            const u = JSON.parse(localStorage.getItem('tradecore_user') || 'null');
-            const uid = (u?.company_id ?? u?.companyId ?? u?.companyId) as any;
-            return uid != null ? String(uid) : null;
+            // BUILD 2026-09-08-18: only poll with a CONCRETE company scope. A NaN/
+            // 'undefined' scope would fetch get_state?company_id=NaN — an unknown-company
+            // payload whose empty products/users slice could drown local data.
+            if (cid && isRealCompanyId(cid)) return cid;
+            return null;
           } catch { return null; }
         })();
         if (pollCompanyId) {
@@ -3327,6 +3337,14 @@ export default function App() {
     // automatic trigger (a stale flag would let an automatic flip piggyback a resync).
     const explicitSwitch = explicitCompanySwitchRef.current;
     explicitCompanySwitchRef.current = false;
+    // BUILD 2026-09-08-18 (GUARD 0b / INVALID SCOPE): never treat a degenerate scope
+    // ('NaN' / 'undefined' / 'null' / 'all') as a real company target. A NaN target ran
+    // the destructive snapshot path against `company_id=NaN`, whose empty server payload
+    // then overwrote local categories/stock/items/branches on every switch/refresh.
+    if (curCid && !isRealCompanyId(curCid)) {
+      console.warn('[Scope] Ignoring invalid company switch target "' + curCid + '" (not a real company id)');
+      return;
+    }
     // FIRST-ASSIGNMENT LOCK (silent set): NO company was ever persisted ('none'/missing)
     // and this is the first real company assignment — commit it SILENTLY, no flush + no
     // destructive snapshot resync. The boot snapshot already applied the authoritative
@@ -5761,33 +5779,36 @@ const conflict = consumeConflictData();
       if (globalCompanyView) return;
 
       let parentCo = currentCompanyId;
-      if (!parentCo || !activeCompanies.some(c => c.id === parentCo)) {
+      if (!parentCo || !activeCompanies.some(c => sameId(c.id, parentCo))) {
         // BOOT-SAFE DEFAULT: never fall back to the FIRST company in the list — that
         // force-switched a Super Admin browsing company 2 back to company 1 on every load
         // ("Company switched 2 -> 1 forcing resync" shake). Prefer the PERSISTED COMMITTED
         // company (boot resolution + explicit switches keep it authoritative and it can
         // never be corrupted by a snapshot's users-array re-syncing the live companyId),
         // then the session user's company as a fallback while nothing was persisted yet.
+        // BUILD 2026-09-08-18: ids are STRINGS — Number() on a UUID mints NaN and the
+        // preferred company silently degraded to company #1. Read the raw storage string
+        // and compare with sameId() instead.
         const userCoRaw = (currentUser as any)?.company_id ?? (currentUser as any)?.companyId;
-        const userCo = userCoRaw != null ? Number(userCoRaw) : null;
-        const savedRaw = Number(localStorage.getItem('active_company_id') || localStorage.getItem('company_id') || '0');
-        const preferred = (savedRaw > 0 ? savedRaw : null)
-          ?? (userCo != null && !Number.isNaN(userCo) ? userCo : null);
-        parentCo = (preferred != null && activeCompanies.some(c => c.id === preferred))
-          ? preferred
-          : (activeCompanies[0]?.id || null);
+        const savedRaw = localStorage.getItem('active_company_id') || localStorage.getItem('company_id') || '';
+        const preferred = isRealCompanyId(savedRaw) ? safeCompanyId(savedRaw) : null;
+        const userCo = userCoRaw != null && isRealCompanyId(userCoRaw) ? safeCompanyId(userCoRaw) : null;
+        const cand = preferred ?? userCo;
+        parentCo = (cand && activeCompanies.some(c => sameId(c.id, cand)))
+          ? cand
+          : (activeCompanies[0]?.id != null ? String(activeCompanies[0].id) : null);
       }
 
       let activeBrId = currentBranchId;
-      if (!activeBrId || !activeBranches.some(b => b.id === activeBrId && b.companyId === parentCo)) {
-        const firstActiveBranch = activeBranches.find(b => b.companyId === parentCo);
-        activeBrId = firstActiveBranch ? firstActiveBranch.id : null;
+      if (!activeBrId || !activeBranches.some(b => sameId(b.id, activeBrId) && sameId(b.companyId, parentCo))) {
+        const firstActiveBranch = activeBranches.find(b => sameId(b.companyId, parentCo));
+        activeBrId = firstActiveBranch ? String(firstActiveBranch.id) : null;
       }
 
       let activeStId = currentStoreId;
-      if (!activeStId || !activeStores.some(s => s.id === activeStId && s.branchId === activeBrId)) {
-        const firstActiveStore = activeStores.find(s => s.branchId === activeBrId);
-        activeStId = firstActiveStore ? firstActiveStore.id : null;
+      if (!activeStId || !activeStores.some(s => sameId(s.id, activeStId) && sameId(s.branchId, activeBrId))) {
+        const firstActiveStore = activeStores.find(s => sameId(s.branchId, activeBrId));
+        activeStId = firstActiveStore ? String(firstActiveStore.id) : null;
       }
       
       if (currentCompanyId !== parentCo) setCurrentCompanyId(parentCo);
@@ -5797,33 +5818,33 @@ const conflict = consumeConflictData();
       const activeBranches = branches.filter(b => !b.isDeleted);
       const activeStores = stores.filter(s => !s.isDeleted);
 
-      const parentCo = currentUser.companyId || null;
+      const parentCo = currentUser.companyId != null ? String(currentUser.companyId) : null;
 
       let activeBrId = currentBranchId;
-      if (!activeBrId || !activeBranches.some(b => b.id === activeBrId && b.companyId === parentCo)) {
-        const firstActiveBranch = activeBranches.find(b => b.companyId === parentCo);
-        activeBrId = firstActiveBranch ? firstActiveBranch.id : null;
+      if (!activeBrId || !activeBranches.some(b => sameId(b.id, activeBrId) && sameId(b.companyId, parentCo))) {
+        const firstActiveBranch = activeBranches.find(b => sameId(b.companyId, parentCo));
+        activeBrId = firstActiveBranch ? String(firstActiveBranch.id) : null;
       }
 
       let activeStId = currentStoreId;
-      if (!activeStId || !activeStores.some(s => s.id === activeStId && s.branchId === activeBrId)) {
-        const firstActiveStore = activeStores.find(s => s.branchId === activeBrId);
-        activeStId = firstActiveStore ? firstActiveStore.id : null;
+      if (!activeStId || !activeStores.some(s => sameId(s.id, activeStId) && sameId(s.branchId, activeBrId))) {
+        const firstActiveStore = activeStores.find(s => sameId(s.branchId, activeBrId));
+        activeStId = firstActiveStore ? String(firstActiveStore.id) : null;
       }
 
       if (currentCompanyId !== parentCo) setCurrentCompanyId(parentCo);
       if (currentBranchId !== activeBrId) setCurrentBranchId(activeBrId);
       if (currentStoreId !== activeStId) setCurrentStoreId(activeStId);
     } else {
-      if (currentCompanyId !== currentUser.companyId) setCurrentCompanyId(currentUser.companyId);
-      if (currentBranchId !== currentUser.branchId) setCurrentBranchId(currentUser.branchId);
-      if (currentStoreId !== currentUser.storeId) setCurrentStoreId(currentUser.storeId);
+      if (currentCompanyId !== currentUser.companyId && currentUser.companyId != null) setCurrentCompanyId(String(currentUser.companyId));
+      if (currentBranchId !== currentUser.branchId && currentUser.branchId != null) setCurrentBranchId(String(currentUser.branchId));
+      if (currentStoreId !== currentUser.storeId && currentUser.storeId != null) setCurrentStoreId(String(currentUser.storeId));
     }
   }, [currentUser, companies, branches, stores, currentCompanyId, currentBranchId, currentStoreId, users]);
 
   // Sync state-managed theme color to document element root style properties smoothly
   useEffect(() => {
-    const activeCompany = companies.find(c => c.id === currentCompanyId);
+const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
     const activeColor = currentUser && activeCompany ? (activeCompany.themeColor || '#c41e3a') : '#c41e3a';
     
     const root = document.documentElement;
@@ -10273,11 +10294,11 @@ try {
   };
 
   // --- ROOT_MANDATE: INSTANT VERIFY / ACTIVATE A COMPANY (no subscription-end change) ---
-  const handleRootVerifyCompany = (companyId: number) => {
-    const company = companies.find(c => c.id === companyId);
+  const handleRootVerifyCompany = (companyId: number | string) => {
+    const company = companies.find(c => sameId(c.id, companyId));
     if (!company) return;
     const updatedCompanies = companies.map(c =>
-      c.id === companyId
+      sameId(c.id, companyId)
         ? { ...c, status: 'Active' as const, subscriptionApproved: true, isVerified: true, isMarketplaceActive: true, adminNote: '' }
         : c
     );
@@ -10287,11 +10308,11 @@ try {
   };
 
   // --- ROOT_MANDATE: BAN A COMPANY FROM THE PLATFORM ---
-  const handleRootBanCompany = (companyId: number) => {
-    const company = companies.find(c => c.id === companyId);
+  const handleRootBanCompany = (companyId: number | string) => {
+    const company = companies.find(c => sameId(c.id, companyId));
     if (!company) return;
     const updatedCompanies = companies.map(c =>
-      c.id === companyId
+      sameId(c.id, companyId)
         ? { ...c, status: 'Rejected' as const, isVerified: false, isMarketplaceActive: false }
         : c
     );
@@ -10301,10 +10322,11 @@ try {
   };
 
   // --- ROOT_MANDATE: VIEW AS COMPANY (impersonate a company owner to help them) ---
-  const handleImpersonateCompany = (companyId: number) => {
+  const handleImpersonateCompany = (companyId: number | string) => {
     if (!isRootUser(currentUser)) { toast.error(t('Access Denied')); return; }
-    const owner = users.find(u => u.companyId === companyId && u.role === 'Admin') ||
-                  users.find(u => u.companyId === companyId) || null;
+    const cid = String(companyId);
+    const owner = users.find(u => sameId(u.companyId, cid) && u.role === 'Admin') ||
+                  users.find(u => sameId(u.companyId, cid)) || null;
     if (!owner) { toast.error(t('This company has no staff account to impersonate.')); return; }
     setRootSessionBackup(currentUser);
     localStorage.setItem('tradecore_root_backup', JSON.stringify(currentUser));
@@ -10312,10 +10334,10 @@ try {
     localStorage.setItem('tradecore_user', JSON.stringify(impersonated));
     setCurrentUser(impersonated);
     explicitCompanySwitchRef.current = true;
-    setCurrentCompanyId(companyId);
+    setCurrentCompanyId(cid);
     setCurrentPage('dashboard');
     toast.success(t(`Viewing as ${owner.name} — use "Return to Root" to switch back.`));
-    logAction('Root Impersonation', `ROOT_MANDATE started viewing the system as ${owner.username} of company #${companyId}.`);
+    logAction('Root Impersonation', `ROOT_MANDATE started viewing the system as ${owner.username} of company #${cid}.`);
   };
 
   // --- ROOT_MANDATE: RETURN FROM "VIEW AS COMPANY" BACK TO THE ROOT SESSION ---
@@ -10422,7 +10444,7 @@ try {
     }
   };
 
-  const handleContextChange = (level: 'company' | 'branch' | 'store', val: number) => {
+  const handleContextChange = (level: 'company' | 'branch' | 'store', val: number | string) => {
     if (level === 'company') {
       // GLOBAL VIEW (ALL COMPANIES): only available to global super admins. The company
       // selector uses value 0 for the "Global View (All Companies)" entry. We keep the
@@ -10441,19 +10463,24 @@ try {
         })();
         return;
       }
+      // BUILD 2026-09-08-18: company ids are STRINGS — Number() mints NaN and the whole
+      // workspace silently scopes to 'NaN'. Coerce to string + reject degenerate scopes.
+      const cid = String(val);
+      if (!isRealCompanyId(cid)) { console.warn('[Scope] handleContextChange rejected invalid company "' + cid + '"'); return; }
       setGlobalCompanyView(false);
       explicitCompanySwitchRef.current = true;
-      setCurrentCompanyId(val);
-      const b = branches.find(x => x.companyId === val);
-      setCurrentBranchId(b ? b.id : null);
-      const s = b ? stores.find(x => x.branchId === b.id) : null;
-      setCurrentStoreId(s ? s.id : null);
+      setCurrentCompanyId(cid);
+      const b = branches.find(x => sameId(x.companyId, cid));
+      setCurrentBranchId(b ? String(b.id) : null);
+      const s = b ? stores.find(x => sameId(x.branchId, b.id)) : null;
+      setCurrentStoreId(s ? String(s.id) : null);
     } else if (level === 'branch') {
-      setCurrentBranchId(val);
-      const s = stores.find(x => x.branchId === val);
-      setCurrentStoreId(s ? s.id : null);
+      const bid = val !== null && val !== undefined && val !== '' ? String(val) : null;
+      setCurrentBranchId(bid);
+      const s = stores.find(x => sameId(x.branchId, bid));
+      setCurrentStoreId(s ? String(s.id) : null);
     } else if (level === 'store') {
-      setCurrentStoreId(val);
+      setCurrentStoreId(val !== null && val !== undefined && val !== '' ? String(val) : null);
     }
   };
 
@@ -14091,7 +14118,7 @@ try {
                     companies.length > 1 ? (
                       <select
                         value={targetCompId}
-                        onChange={(e) => { explicitCompanySwitchRef.current = true; setCurrentCompanyId(Number(e.target.value)); }}
+                        onChange={(e) => { explicitCompanySwitchRef.current = true; const v = String(e.target.value); if (isRealCompanyId(v)) setCurrentCompanyId(v); }}
                         className="w-full text-xs font-bold bg-white border border-indigo-200 rounded px-2 py-1 text-indigo-950 outline-none"
                       >
                         {companies.map(c => (

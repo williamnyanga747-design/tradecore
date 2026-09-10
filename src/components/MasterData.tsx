@@ -13,6 +13,7 @@ import { SmartMessagingModal } from './SmartMessagingModal';
 import { performCascadeDelete } from '../utils/cascadeDelete';
 import { toast } from '../utils/toast';
 import { getStoreCategories, getCompanyCategories, formatCompanyCategory, cleanCategoryName } from '../utils/categoryHelper';
+import { sv, sameId } from '../utils/idUtils';
 import LocationPicker from './marketplace/LocationPicker';
 
 interface MasterDataProps {
@@ -26,9 +27,9 @@ interface MasterDataProps {
   taxes: Tax[];
   stockItems: StockItem[];
   users: User[];
-  currentCompanyId: number | null;
-  currentBranchId: number | null;
-  currentStoreId: number | null;
+  currentCompanyId: string | number | null;
+  currentBranchId: string | number | null;
+  currentStoreId: string | number | null;
   isAdmin: boolean;
   isSuperAdmin: boolean;
   currency: string;
@@ -138,7 +139,7 @@ export default function MasterData({
 
   // --- DELETE HANDLERS ---
   const handleDeleteCompany = (id: number) => {
-    const compName = companies.find(c => c.id === id)?.name || `ID ${id}`;
+    const compName = companies.find(c => sameId(c.id, id))?.name || `ID ${id}`;
     setConfirmModal({
       isOpen: true,
       title: t('Delete Company'),
@@ -302,9 +303,9 @@ export default function MasterData({
 
   // --- RESTORE HANDLERS ---
   const handleRestoreCompany = (id: number) => {
-    const updatedCompanies = companies.map(c => c.id === id ? { ...c, isDeleted: false } : c);
-    const companyBranches = branches.filter(b => b.companyId === id).map(b => b.id);
-    const updatedBranches = branches.map(b => b.companyId === id ? { ...b, isDeleted: false } : b);
+    const updatedCompanies = companies.map(c => sameId(c.id, id) ? { ...c, isDeleted: false } : c);
+    const companyBranches = branches.filter(b => sameId(b.companyId, id)).map(b => b.id);
+    const updatedBranches = branches.map(b => sameId(b.companyId, id) ? { ...b, isDeleted: false } : b);
     const updatedStores = stores.map(s => companyBranches.includes(s.branchId) ? { ...s, isDeleted: false } : s);
 
     saveAllData({
@@ -317,7 +318,7 @@ export default function MasterData({
 
   const handleRestoreBranch = (id: number) => {
     const updatedBranches = branches.map(b => b.id === id ? { ...b, isDeleted: false } : b);
-    const updatedStores = stores.map(s => s.branchId === id ? { ...s, isDeleted: false } : s);
+    const updatedStores = stores.map(s => sameId(s.branchId, id) ? { ...s, isDeleted: false } : s);
 
     saveAllData({
       branches: updatedBranches,
@@ -342,7 +343,7 @@ export default function MasterData({
       description: t('Are you sure you want to permanently delete this company? This will also permanently remove all its branches and stores. This action is irreversible.'),
       onConfirm: () => {
         const updatedCompanies = companies.filter(c => c.id !== id);
-        const deletedBranchesInCompany = branches.filter(b => b.companyId === id).map(b => b.id);
+        const deletedBranchesInCompany = branches.filter(b => sameId(b.companyId, id)).map(b => b.id);
         const updatedBranches = branches.filter(b => b.companyId !== id);
         const updatedStores = stores.filter(s => !deletedBranchesInCompany.includes(s.branchId));
         saveAllData({ 
@@ -409,7 +410,7 @@ export default function MasterData({
       if (data.id) {
         // Edit
         const compId = data.id;
-        const updated = companies.map(c => c.id === compId ? cleanCompany : c);
+        const updated = companies.map(c => sameId(c.id, compId) ? cleanCompany : c);
         const nextSettings = {
           ...settings,
           companyLanguages: { ...(settings?.companyLanguages || {}), [compId]: coLang },
@@ -457,10 +458,14 @@ export default function MasterData({
         }
       }
     } else if (type === 'branch') {
-      const parsedCoId = (data.companyId !== undefined && data.companyId !== null && data.companyId !== '') ? (parseInt(data.companyId) || data.companyId) : (currentCompanyId || 1);
+      // BUILD 2026-09-08-18: ids are STRINGS — never parseInt a company id (NaNs the
+      // scope). Keep the raw string from the form or fall back to the active context.
+      const parsedCoId = (data.companyId !== undefined && data.companyId !== null && data.companyId !== '' && String(data.companyId) !== 'NaN')
+        ? String(data.companyId)
+        : (currentCompanyId != null ? String(currentCompanyId) : '1');
       const cleanData = { ...data, companyId: parsedCoId };
       if (data.id) {
-        const updated = branches.map(b => b.id === data.id ? cleanData : b);
+        const updated = branches.map(b => sameId(b.id, data.id) ? cleanData : b);
         saveAllData({ branches: updated });
         logAction('Edit Branch', `Modified Branch details for: ${data.name}`);
       } else {
@@ -470,7 +475,8 @@ export default function MasterData({
         logAction('Create Branch', `Registered new Branch: ${data.name}`);
       }
     } else if (type === 'store') {
-      const parsedBranchId = parseInt(data.branchId) || currentBranchId || 1;
+      // BUILD 2026-09-08-18: branch ids are strings too — parse as string, never NaN.
+      const parsedBranchId = sv(data.branchId) || sv(currentBranchId) || '1';
       // Normalize Multi-Store Location Mapping fields before persisting (saved via the JSON blob).
       const lat = parseFloat(data.latitude);
       const lng = parseFloat(data.longitude);
@@ -485,11 +491,11 @@ export default function MasterData({
         isMarketplaceVisible
       };
       if (data.id) {
-        const updated = stores.map(s => s.id === data.id ? cleanData : s);
+        const updated = stores.map(s => sameId(s.id, data.id) ? cleanData : s);
         saveAllData({ stores: updated });
         logAction('Edit Store', `Modified Store details for: ${data.name}`);
       } else {
-        const nextId = Math.max(0, ...stores.map(s => s.id)) + 1;
+        const nextId = Math.max(0, ...stores.map(s => Number(s.id) || 0)) + 1;
         const newStore = { ...cleanData, id: nextId };
         // Seed store stock value 0 for all items
         const updatedStock = stockItems.map(p => ({
@@ -514,23 +520,25 @@ export default function MasterData({
       delete cleanData.balanceDisplay;
 
       if (data.id) {
-        const updated = customers.map(c => c.id === data.id ? cleanData : c);
+        const updated = customers.map(c => sameId(c.id, data.id) ? cleanData : c);
         saveAllData({ customers: updated });
         logAction('Edit Customer', `Modified Customer parameters for: ${data.name}`);
       } else {
-        const nextId = Math.max(0, ...customers.map(c => c.id)) + 1;
-        const newCust = { ...cleanData, id: nextId };
+        const nextId = Math.max(0, ...customers.map(c => Number(c.id) || 0)) + 1;
+        // BUILD 2026-09-08-18: tag the record with its owning company id as a string so
+        // cross-company globals never host orphaned customer rows reachable by no scope.
+        const newCust = { ...cleanData, id: nextId, company_id: sv(currentCompanyId) || '1' };
         saveAllData({ customers: [...customers, newCust] });
         logAction('Create Customer', `Registered new Customer: ${data.name}`);
       }
     } else if (type === 'supplier') {
       if (data.id) {
-        const updated = suppliers.map(s => s.id === data.id ? data : s);
+        const updated = suppliers.map(s => sameId(s.id, data.id) ? data : s);
         saveAllData({ suppliers: updated });
         logAction('Edit Supplier', `Modified Supplier parameters for: ${data.name}`);
       } else {
-        const nextId = Math.max(0, ...suppliers.map(s => s.id)) + 1;
-        const newSupplier = { ...data, id: nextId };
+        const nextId = Math.max(0, ...suppliers.map(s => Number(s.id) || 0)) + 1;
+        const newSupplier = { ...data, id: nextId, company_id: sv(currentCompanyId) || '1' };
         saveAllData({ suppliers: [...suppliers, newSupplier] });
         logAction('Create Supplier', `Registered new Supplier: ${data.name}`);
       }
@@ -630,7 +638,7 @@ export default function MasterData({
               <tbody className="divide-y divide-gray-100">
                 {companies.filter(c => !c.isDeleted && (!showOnlyNoTin || !c.tinNumber)).map(c => {
                   const admins = users
-                    .filter(u => u.role === 'Admin' && u.companyId === c.id)
+                    .filter(u => u.role === 'Admin' && sameId(u.companyId, c.id))
                     .map(u => u.name)
                     .join(', ') || t('No admins assigned');
                   
@@ -714,7 +722,7 @@ export default function MasterData({
     case 'branches':
       const branchData = (isSuperAdmin
         ? branches
-        : branches.filter(b => b.companyId === currentCompanyId)
+        : branches.filter(b => sameId(b.companyId, currentCompanyId))
       ).filter(b => !b.isDeleted);
 
       return (
@@ -743,8 +751,8 @@ export default function MasterData({
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {branchData.map(b => {
-                  const compName = companies.find(c => c.id === b.companyId)?.name || 'N/A';
-                  const storeCount = stores.filter(s => s.branchId === b.id).length;
+                  const compName = companies.find(c => sameId(c.id, b.companyId))?.name || 'N/A';
+                  const storeCount = stores.filter(s => sameId(s.branchId, b.id)).length;
                   return (
                     <tr key={b.id} className="hover:bg-gray-50/50">
                       <td className="px-6 py-4 font-bold text-gray-900">{b.name}</td>
@@ -782,7 +790,7 @@ export default function MasterData({
 
     case 'stores':
       const allowedBranches = branches
-        .filter(b => !b.isDeleted && (isSuperAdmin || b.companyId === currentCompanyId))
+        .filter(b => !b.isDeleted && (isSuperAdmin || sameId(b.companyId, currentCompanyId)))
         .map(b => b.id);
       const storeData = stores.filter(s => !s.isDeleted && allowedBranches.includes(s.branchId));
 
@@ -815,7 +823,7 @@ export default function MasterData({
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {storeData.map(s => {
-                  const branchName = branches.find(b => b.id === s.branchId)?.name || 'N/A';
+                  const branchName = branches.find(b => sameId(b.id, s.branchId))?.name || 'N/A';
                   const totalItems = stockItems.reduce((acc, p) => acc + (p.stock?.[s.id] || 0), 0);
                   const stockValue = stockItems.reduce((acc, p) => {
                     const rawQty = p.stock?.[s.id] || 0;
@@ -1392,7 +1400,7 @@ export default function MasterData({
                       <tr key={b.id} className="hover:bg-gray-50/50">
                         <td className="px-6 py-4 font-bold text-gray-900">{b.name}</td>
                         <td className="px-6 py-4 text-gray-500 font-semibold">
-                          {companies.find(c => c.id === b.companyId)?.name || 'N/A'}
+                          {companies.find(c => sameId(c.id, b.companyId))?.name || 'N/A'}
                         </td>
                         <td className="px-6 py-4 text-center">
                           <button
@@ -1723,11 +1731,11 @@ export default function MasterData({
 
       const visibleExchangeCompanies = isSuperAdmin
         ? companies.filter(c => !c.isDeleted)
-        : companies.filter(c => !c.isDeleted && c.id === activeUserCompId);
+        : companies.filter(c => !c.isDeleted && sameId(c.id, activeUserCompId));
 
       const visibleExchangeUsers = isSuperAdmin
         ? users.filter(u => u.status === 'Active')
-        : users.filter(u => u.status === 'Active' && u.companyId === activeUserCompId);
+        : users.filter(u => u.status === 'Active' && sameId(u.companyId, activeUserCompId));
 
       const handleUpdateGlobalSettings = (newCurrency: string, newRate: number) => {
         const nextSettings = {
@@ -1896,7 +1904,7 @@ export default function MasterData({
                     const userCurrency = settings?.userCurrencies?.[u.username] || '';
                     const userRate = settings?.userExchangeRates?.[u.username];
                     const rateInputVal = localUserRates[u.username] !== undefined ? localUserRates[u.username] : (userRate !== undefined ? String(userRate) : '');
-                    const belongsToCompany = companies.find(c => c.id === u.companyId)?.name || t('Global / Super');
+                    const belongsToCompany = companies.find(c => sameId(c.id, u.companyId))?.name || t('Global / Super');
 
                     return (
                       <tr key={u.id} className="hover:bg-gray-50/30">
@@ -2352,7 +2360,7 @@ export default function MasterData({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand bg-white font-semibold"
                     >
                       {branches
-                        .filter(b => isSuperAdmin || b.companyId === currentCompanyId)
+                        .filter(b => isSuperAdmin || sameId(b.companyId, currentCompanyId))
                         .map(b => (
                           <option key={b.id} value={b.id}>{b.name}</option>
                         ))}

@@ -6,6 +6,7 @@ import LanguageSwitcher from '../utils/LanguageSwitcher';
 import { Settings as SettingsIcon, Menu, Bell, Sun, Moon, Store as StoreIcon, Globe, Printer } from 'lucide-react';
 import { isBluetoothPrinterConnected } from '../utils/escposPrinter';
 import SyncStatusDot from './SyncStatusDot';
+import { sameId } from '../utils/idUtils';
 
 interface HeaderProps {
   currentPage: string;
@@ -13,12 +14,12 @@ interface HeaderProps {
   companies: Company[];
   branches: Branch[];
   stores: Store[];
-  currentCompanyId: number | null;
-  currentBranchId: number | null;
-  currentStoreId: number | null;
+  currentCompanyId: string | number | null;
+  currentBranchId: string | number | null;
+  currentStoreId: string | number | null;
   settings: Settings;
   globalView?: boolean;
-  onContextChange: (level: 'company' | 'branch' | 'store', val: number) => void;
+  onContextChange: (level: 'company' | 'branch' | 'store', val: number | string) => void;
   onOpenSettings: () => void;
   onToggleMobileSidebar: () => void;
   pageTitle: string;
@@ -67,7 +68,7 @@ export default function Header({
   // branch and store selectors aggregate across EVERY company in the system.
   const inGlobalView = !!globalView && isSuperAdmin;
 
-  const activeComp = companies.find(c => c.id === currentCompanyId);
+  const activeComp = companies.find(c => sameId(c.id, currentCompanyId));
   const activeCompCurrency = activeComp?.currency || settings.companyCurrencies?.[currentCompanyId || 1] || settings.currency || 'USD';
   // Tenant-isolated language: company preference, otherwise the browser's
   // stored site language (what the visitor picked on the marketplace homepage).
@@ -82,14 +83,14 @@ export default function Header({
   // Global View aggregates branches/stores across ALL companies (grouped by company).
   const availableCompanies = (isSuperAdmin 
     ? companies 
-    : companies.filter(c => c.id === currentCompanyId)
+    : companies.filter(c => sameId(c.id, currentCompanyId))
   ).filter(c => !c.isDeleted);
 
   const availableBranches = (inGlobalView
     ? branches.filter(b => !b.isDeleted)
     : (isSuperAdmin 
-      ? branches.filter(b => b.companyId === currentCompanyId)
-      : branches.filter(b => b.companyId === (currentUser?.companyId || currentCompanyId))
+      ? branches.filter(b => sameId(b.companyId, currentCompanyId))
+      : branches.filter(b => sameId(b.companyId, (currentUser?.companyId || currentCompanyId)))
     )
   ).filter(b => !b.isDeleted);
 
@@ -111,14 +112,14 @@ export default function Header({
   let availableStores = inGlobalView
     ? stores.filter(s => !s.isDeleted)
     : stores.filter(s => {
-        if (currentBranchId) return s.branchId === currentBranchId && !s.isDeleted;
-        const branch = branches.find(b => b.id === s.branchId);
-        return branch && branch.companyId === (currentUser?.companyId || currentCompanyId) && !s.isDeleted;
+        if (currentBranchId) return sameId(s.branchId, currentBranchId) && !s.isDeleted;
+        const branch = branches.find(b => sameId(b.id, s.branchId));
+        return branch && sameId(branch.companyId, (currentUser?.companyId || currentCompanyId)) && !s.isDeleted;
       });
 
   if (!inGlobalView && currentUser && !isSuperScopeUser(currentUser)) {
     const userCompanyBranchIds = branches
-      .filter(b => b.companyId === (currentUser.companyId || currentCompanyId) && !b.isDeleted)
+      .filter(b => sameId(b.companyId, (currentUser.companyId || currentCompanyId)) && !b.isDeleted)
       .map(b => b.id);
     availableStores = availableStores.filter(s => userCompanyBranchIds.includes(s.branchId));
 
@@ -127,16 +128,16 @@ export default function Header({
     const isUnlockedRole = roleLower === 'wholesaler' || ['admin', 'administrator', 'company administrator', 'super admin'].includes(roleLower);
     if (!isUnlockedRole) {
       if (currentUser.storeId) {
-        availableStores = availableStores.filter(s => s.id === currentUser.storeId);
+        availableStores = availableStores.filter(s => sameId(s.id, currentUser.storeId));
       } else if (currentUser.branchId) {
         // Store=None → Branch/Store administrators access ALL stores in their branch.
-        availableStores = availableStores.filter(s => s.branchId === currentUser.branchId);
+        availableStores = availableStores.filter(s => sameId(s.branchId, currentUser.branchId));
       }
     }
   }
 
   // --- SUBSCRIPTION / DEMO ALERT BANNERS ---
-  const activeUserCompany = companies.find(c => c.id === (currentCompanyId || currentUser?.companyId));
+  const activeUserCompany = companies.find(c => sameId(c.id, (currentCompanyId || currentUser?.companyId)));
   const isDemoCompany = !!activeUserCompany?.isDemo;
   const subDaysLeft = activeUserCompany?.subscriptionEnd
     ? Math.ceil((new Date(activeUserCompany.subscriptionEnd + 'T23:59:59').getTime() - Date.now()) / 86400000)
@@ -238,7 +239,7 @@ export default function Header({
           {isSuperAdmin && (
             <select
               value={inGlobalView ? 0 : (currentCompanyId || '')}
-              onChange={(e) => onContextChange('company', Number(e.target.value))}
+              onChange={(e) => onContextChange('company', e.target.value)}
               className="bg-transparent text-white text-xs px-2 py-1 outline-none border-none cursor-pointer font-medium shrink-0"
             >
               {inGlobalView ? (
@@ -260,7 +261,7 @@ export default function Header({
           {(isAdmin || currentUser?.role === 'Wholesaler') && (
             <select
               value={currentBranchId || ''}
-              onChange={(e) => onContextChange('branch', Number(e.target.value))}
+              onChange={(e) => onContextChange('branch', e.target.value)}
               className="bg-transparent text-white text-xs px-2 py-1 outline-none border-none cursor-pointer font-medium shrink-0"
             >
               {availableBranches.map(b => (
@@ -278,7 +279,7 @@ export default function Header({
                 type="button"
                 onClick={() => onContextChange('store', s.id)}
                 className={`px-2 py-0.5 rounded text-[11px] font-bold transition shrink-0 whitespace-nowrap ${
-                  s.id === currentStoreId
+                  sameId(s.id, currentStoreId)
                     ? 'bg-emerald-500 text-white shadow-xs border border-emerald-400'
                     : 'bg-white/10 hover:bg-white/20 text-gray-200'
                 }`}

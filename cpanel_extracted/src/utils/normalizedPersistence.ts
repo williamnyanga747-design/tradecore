@@ -25,6 +25,7 @@ import {
   buildSessionToken,
   discoverApiUrl
 } from './api';
+import { sv, isValidCompanyScope } from './idUtils';
 
 export interface Company {
   id: string | number;
@@ -73,7 +74,8 @@ export interface UserAccount {
 
 export interface Category {
   key: string;
-  companyId: number;
+  // BUILD 2026-09-08-18: company ids are STRING UUIDs — companyId stays a string.
+  companyId: string | number;
   name: string;
 }
 
@@ -284,10 +286,13 @@ export async function v2ListCategories(companyId?: string | number): Promise<Cat
   return res.list
     .filter((c): c is string => typeof c === 'string' && c.trim() !== '')
     .map((key) => {
-      const m = /^co_(\d+):(.+)$/s.exec(key.trim());
+      // BUILD 2026-09-08-18: company ids are STRING UUIDs — parseInt mints NaN. Keep the
+      // raw string from the "co_<id>:<name>" prefix so Category.companyId is the actual
+      // company the category belongs to (used for ranking + scoping).
+      const m = /^co_([^:]+):(.+)$/s.exec(key.trim());
       return m
-        ? { key, companyId: parseInt(m[1], 10) || 1, name: m[2] }
-        : { key, companyId: (companyId ? Number(companyId) : 1) || 1, name: key.trim() };
+        ? { key, companyId: sv(m[1]) || '1', name: m[2] }
+        : { key, companyId: sv(companyId) || '1', name: key.trim() };
     });
 }
 
@@ -358,6 +363,18 @@ export interface V2CompanyState {
 }
 
 export async function v2FetchCompanyState(companyId: string | number): Promise<V2CompanyState | null> {
+  // BUILD 2026-09-08-18: never assemble state for a degenerate scope. companyID=NaN
+  // produced a "null" state that the caller treated as authoritative and REPLACED the
+  // local workspace with an empty one (categories/stock stripped, branches gone).
+  const scope = sv(companyId);
+  if (scope === '' || scope.toLowerCase() === 'all') {
+    // Global scope: nothing per-row here is meaningful; signal "no scoped state".
+    return null;
+  }
+  if (!isValidCompanyScope(scope)) {
+    console.warn('[PBS v2] v2FetchCompanyState cancelled — invalid company scope "' + scope + '"');
+    return null;
+  }
   try {
     const [companies, stores, products, categories, users] = await Promise.all([
       v2ListCompanies(),

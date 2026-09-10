@@ -9,6 +9,7 @@ import { ConfirmActionModal } from './ConfirmActionModal';
 import { handlePrintWithFallback } from '../utils/printHelper';
 import { TaxVatReport } from './TaxVatReport';
 import { PredictiveForecasting } from './PredictiveForecasting';
+import { sameId } from '../utils/idUtils';
 
 interface ReportsProps {
   currentPage: string;
@@ -21,9 +22,9 @@ interface ReportsProps {
   companies?: Company[];
   branches?: Branch[];
   expenses?: Expense[];
-  currentCompanyId?: number | null;
-  currentBranchId?: number | null;
-  currentStoreId: number | null;
+  currentCompanyId?: string | number | null;
+  currentBranchId?: string | number | null;
+  currentStoreId: string | number | null;
   currency: string;
   exchangeRate: number;
   translate: (text: string) => string;
@@ -54,7 +55,7 @@ export default function Reports({
   // Stores belonging to the currently active company (via company -> branches), only non-deleted (active) ones.
   const companyStores = useMemo(() => {
     if (currentCompanyId) {
-      const companyBranchIds = branches.filter(b => b.companyId === currentCompanyId).map(b => b.id);
+      const companyBranchIds = branches.filter(b => sameId(b.companyId, currentCompanyId)).map(b => b.id);
       return stores.filter(s => companyBranchIds.includes(s.branchId) && !s.isDeleted);
     }
     return stores.filter(s => !s.isDeleted);
@@ -64,7 +65,7 @@ export default function Reports({
 
   // Store match: explicit store wins; otherwise restrict to the active company's stores
   const matchesStore = (id: number) => {
-    if (currentStoreId) return id === currentStoreId;
+    if (currentStoreId) return sameId(id, currentStoreId);
     return companyStoreIds.length === 0 || companyStoreIds.includes(id);
   };
 
@@ -1605,9 +1606,9 @@ export default function Reports({
     }
   };
 
-  const activeCompanyObj = companies.find(c => c.id === currentCompanyId);
-  const activeBranchObj = branches.find(b => b.id === currentBranchId);
-  const activeStoreObj = stores.find(s => s.id === currentStoreId);
+  const activeCompanyObj = companies.find(c => sameId(c.id, currentCompanyId));
+  const activeBranchObj = branches.find(b => sameId(b.id, currentBranchId));
+  const activeStoreObj = stores.find(s => sameId(s.id, currentStoreId));
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 w-full">

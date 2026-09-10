@@ -1,40 +1,46 @@
+import { sv } from './idUtils';
+
 export function getCompanyCategories(
   categories: string[],
-  companyId: number | null,
-  storeId?: number | null
+  companyId: string | number | null,
+  storeId?: string | number | null
 ): string[] {
   if (!categories || categories.length === 0) return [];
-  const targetCoId = companyId || 1;
+  // BUILD 2026-09-08-18: company ids are STRING UUIDs — a Number() here mints NaN and
+  // every co_ filter silently matched nothing. Compare the raw string scopes.
+  const targetCo = sv(companyId) || '1';
+  const targetSt = sv(storeId);
 
   return categories.filter(c => {
     if (!c) return false;
     // Check if category is scoped to a company
     if (c.startsWith('co_')) {
-      const prefix = `co_${targetCoId}:`;
+      const prefix = `co_${targetCo}:`;
       return c.startsWith(prefix);
     }
     // Check if category is scoped to a store
     if (c.startsWith('st_')) {
-      if (!storeId) return false;
-      return c.startsWith(`st_${storeId}:`);
+      if (!targetSt) return false;
+      return c.startsWith(`st_${targetSt}:`);
     }
     // Backward compatibility for numeric store prefix e.g. "1:Electronics"
     if (/^\d+:/.test(c)) {
-      if (!storeId) return true;
-      return c.startsWith(`${storeId}:`);
+      if (!targetSt) return true;
+      return c.startsWith(`${targetSt}:`);
     }
     // Plain legacy category names default to Company 1
-    return targetCoId === 1;
+    return targetCo === '1';
   });
 }
 
-export function getStoreCategories(categories: string[], storeId: number | null): string[] {
+export function getStoreCategories(categories: string[], storeId: string | number | null): string[] {
   if (!categories || categories.length === 0) return [];
-  if (!storeId) return categories;
+  const targetSt = sv(storeId);
+  if (!targetSt) return categories;
   return categories.filter(c => {
     if (!c) return false;
-    if (c.startsWith('st_')) return c.startsWith(`st_${storeId}:`);
-    if (/^\d+:/.test(c)) return c.startsWith(`${storeId}:`);
+    if (c.startsWith('st_')) return c.startsWith(`st_${targetSt}:`);
+    if (/^\d+:/.test(c)) return c.startsWith(`${targetSt}:`);
     return true;
   });
 }
@@ -55,9 +61,8 @@ export function cleanCategoryName(category: string): string {
   return category;
 }
 
-export function formatCompanyCategory(categoryName: string, companyId: number | null): string {
+export function formatCompanyCategory(categoryName: string, companyId: string | number | null): string {
   const clean = cleanCategoryName(categoryName.trim());
-  const coId = companyId || 1;
+  const coId = sv(companyId) || '1';
   return `co_${coId}:${clean}`;
 }
-

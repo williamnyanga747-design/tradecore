@@ -4,11 +4,12 @@ import { formatMoney, exportToExcel } from '../utils/format';
 import { handlePrintWithFallback } from '../utils/printHelper';
 import { Plus, Trash2, Pencil, Search, Calendar, CreditCard, Receipt, AlertCircle, FileSpreadsheet, Printer } from 'lucide-react';
 import { ConfirmActionModal } from './ConfirmActionModal';
+import { sameId } from '../utils/idUtils';
 
 interface ExpensesProps {
   expenses: Expense[];
   stores: Store[];
-  currentStoreId: number | null;
+  currentStoreId: string | number | null;
   currency: string;
   exchangeRate: number;
   isAdmin: boolean;
@@ -48,7 +49,7 @@ export default function Expenses({
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const activeStores = stores.filter(s => !s.isDeleted);
-  const [storeId, setStoreId] = useState<number>(currentStoreId || (activeStores[0]?.id || 1));
+  const [storeId, setStoreId] = useState<string | number | null>(currentStoreId || (activeStores[0]?.id ?? null));
   const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Bank' | 'Mobile Money'>('Cash');
 
   // Filters
@@ -144,13 +145,13 @@ export default function Expenses({
     });
   };
 
-  const getStoreName = (id: number) => {
-    return stores.find(s => s.id === id)?.name || `Store #${id}`;
+  const getStoreName = (id: number | string | null) => {
+    return stores.find(s => sameId(s.id, id))?.name || `Store #${id}`;
   };
 
   // Filter local store and queries
   const filteredExpenses = expenses.filter(exp => {
-    const matchStore = currentStoreId ? exp.storeId === currentStoreId : true;
+    const matchStore = currentStoreId ? sameId(exp.storeId, currentStoreId) : true;
     const matchCat = filterCategory ? exp.category === filterCategory : true;
     const matchSearch = searchQuery
       ? exp.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -317,7 +318,7 @@ export default function Expenses({
                 <label className="text-xs font-semibold text-gray-700 mb-1 block">Assigned Store</label>
                 <select
                   value={storeId}
-                  onChange={(e) => setStoreId(Number(e.target.value))}
+                  onChange={(e) => setStoreId(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium"
                 >
                   {activeStores.map(s => (

@@ -7,10 +7,11 @@ import {
   CheckCircle, RefreshCw, Send, Printer, Copy,
   Brain, BarChart3, HelpCircle, Layers, Lightbulb, Zap, ShieldCheck
 } from 'lucide-react';
+import { sameId } from '../utils/idUtils';
 
 interface AICopilotProps {
   currentUser: User | null;
-  currentCompanyId: number | null;
+  currentCompanyId: string | number | null;
   companies: Company[];
   branches: Branch[];
   stores: Store[];
@@ -46,17 +47,17 @@ export default function AICopilot({
   // Resolve active company scope based on signed-in user and context
   const activeCompany = useMemo(() => {
     if (currentCompanyId) {
-      return companies.find(c => c.id === currentCompanyId) || companies[0] || { id: 1, name: 'Active Company' };
+      return companies.find(c => sameId(c.id, currentCompanyId)) || companies[0] || { id: 1, name: 'Active Company' };
     }
     if (currentUser?.companyId) {
-      return companies.find(c => c.id === currentUser.companyId) || companies[0] || { id: 1, name: 'Active Company' };
+      return companies.find(c => sameId(c.id, currentUser.companyId)) || companies[0] || { id: 1, name: 'Active Company' };
     }
     return companies[0] || { id: 1, name: 'Active Company' };
   }, [currentCompanyId, currentUser, companies]);
 
   // Company stores filtering
   const companyBranchIds = useMemo(() => {
-    return branches.filter(b => b.companyId === activeCompany.id).map(b => b.id);
+    return branches.filter(b => sameId(b.companyId, activeCompany.id)).map(b => b.id);
   }, [branches, activeCompany]);
 
   const companyStoreIds = useMemo(() => {
@@ -65,7 +66,7 @@ export default function AICopilot({
 
   // Scoped data for this active company
   const companyProducts = useMemo(() => {
-    return stockItems.filter(p => !p.companyId || p.companyId === activeCompany.id);
+    return stockItems.filter(p => !p.companyId || sameId(p.companyId, activeCompany.id));
   }, [stockItems, activeCompany]);
 
   const companySales = useMemo(() => {

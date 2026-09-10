@@ -11,7 +11,7 @@ interface PurchaseOrderModalProps {
   suppliers: Supplier[];
   stockItems: StockItem[];
   purchaseOrders: PurchaseOrder[];
-  currentStoreId: number | null;
+  currentStoreId: string | number | null;
   stores: Store[];
   saveAllData: (updatedFields: Partial<{
     purchaseOrders: PurchaseOrder[];

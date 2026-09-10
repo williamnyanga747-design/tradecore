@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { Affiliate, AffiliateClick, AffiliateSale, AffiliateWithdrawal, Company, User } from '../types';
 import { TZS } from './marketplace/MarketplaceShared';
+import { sameId } from '../utils/idUtils';
 
 interface AffiliateProgramPanelProps {
   user: User | null;
@@ -31,7 +32,7 @@ const SALE_STATUS_LABEL: Record<string, string> = {
 };
 
 function companyNameFor(companies: Company[], id: number): string {
-  return companies.find(c => c.id === id)?.name || `Company #${id}`;
+  return companies.find(c => sameId(c.id, id))?.name || `Company #${id}`;
 }
 
 export default function AffiliateProgramPanel({

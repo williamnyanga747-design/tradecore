@@ -3,9 +3,10 @@ import { Package, CheckCircle2, XCircle, Truck, Search, ChevronDown, Store, Phon
 import { Company, MarketplaceOrder, MarketplaceOrderStatus, User } from '../types';
 import StatusStepper from './marketplace/StatusStepper';
 import { TZS, orderStatusLabel } from './marketplace/MarketplaceShared';
+import { sameId } from '../utils/idUtils';
 
 interface Props {
-  currentCompanyId?: number;
+  currentCompanyId?: string | number;
   orders: MarketplaceOrder[];
   companies: Company[];
   translate: (text: string) => string;
@@ -38,10 +39,10 @@ export default function MarketplaceOrdersPanel({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [confirmOp, setConfirmOp] = useState<{ op: MutateOp; ids: number[] } | null>(null);
 
-  const companyFor = (id: number) => companies.find(c => c.id === id);
+  const companyFor = (id: number) => companies.find(c => sameId(c.id, id));
 
   const canManage = (order: MarketplaceOrder) =>
-    !!currentUser && (currentUser.role === 'Super Admin' || currentUser.companyId === order.companyId);
+    !!currentUser && (currentUser.role === 'Super Admin' || sameId(currentUser.companyId, order.companyId));
 
   const matchesView = (o: MarketplaceOrder, v: ViewTab) => {
     switch (v) {
@@ -55,7 +56,7 @@ export default function MarketplaceOrdersPanel({
   const scopedOrders = useMemo(() => {
     const q = search.trim().toLowerCase();
     return orders
-      .filter(o => !currentCompanyId || o.companyId === currentCompanyId)
+      .filter(o => !currentCompanyId || sameId(o.companyId, currentCompanyId))
       .filter(o => matchesView(o, viewTab))
       .filter(o => filter === 'All' || o.status === filter)
       .filter(o => !q || o.orderNumber.toLowerCase().includes(q) || o.customerName.toLowerCase().includes(q) || o.customerPhone.replace(/\s/g, '').includes(q.replace(/\s/g, '')))
@@ -63,7 +64,7 @@ export default function MarketplaceOrdersPanel({
   }, [orders, currentCompanyId, filter, search, viewTab]);
 
   const viewCounts = useMemo(() => {
-    const base = currentCompanyId ? orders.filter(o => o.companyId === currentCompanyId) : orders;
+    const base = currentCompanyId ? orders.filter(o => sameId(o.companyId, currentCompanyId)) : orders;
     return {
       all: base.filter(o => !o.deletedAt).length,
       active: base.filter(o => !o.archivedAt && !o.deletedAt).length,
@@ -73,7 +74,7 @@ export default function MarketplaceOrdersPanel({
   }, [orders, currentCompanyId]);
 
   const stats = useMemo(() => {
-    const base = currentCompanyId ? orders.filter(o => o.companyId === currentCompanyId && !o.deletedAt) : orders.filter(o => !o.deletedAt);
+    const base = currentCompanyId ? orders.filter(o => sameId(o.companyId, currentCompanyId) && !o.deletedAt) : orders.filter(o => !o.deletedAt);
     return {
       pending: base.filter(o => o.status === 'pending_verification').length,
       active: base.filter(o => ['verified', 'processing', 'out_for_delivery'].includes(o.status)).length,

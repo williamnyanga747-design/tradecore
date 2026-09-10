@@ -10,6 +10,7 @@ import { calculateFIFOCost, getFIFOBatchBreakdown } from '../utils/fifo';
 import { connectBluetoothPrinter, isBluetoothPrinterConnected, sendEscPosBytes, buildReceiptEscPosBuffer } from '../utils/escposPrinter';
 import { enqueueOfflineSale } from '../utils/offlinePersistence';
 import { SmartMessagingModal } from './SmartMessagingModal';
+import { sameId } from '../utils/idUtils';
 
 interface POSModalProps {
   isOpen: boolean;
@@ -17,7 +18,7 @@ interface POSModalProps {
   customers: Customer[];
   stockItems: StockItem[];
   salesOrders: SalesOrder[];
-  currentStoreId: number | null;
+  currentStoreId: string | number | null;
   stores: Store[];
   saveAllData: (updatedFields: Partial<{
     salesOrders: SalesOrder[];
@@ -56,7 +57,7 @@ export default function POSModal({
   const activeCurrency = currency || settings.currency || 'USD';
   const activeExchangeRate = exchangeRate || settings.exchangeRate || 1;
   const activeCustomersForStore = useMemo(() => {
-    return customers.filter(c => !c.storeId || c.storeId === currentStoreId);
+    return customers.filter(c => !c.storeId || sameId(c.storeId, currentStoreId));
   }, [customers, currentStoreId]);
 
   const [selectedCustomerId, setSelectedCustomerId] = useState<number>(activeCustomersForStore[0]?.id || 1);
@@ -70,11 +71,11 @@ export default function POSModal({
   const activeStores = useMemo(() => {
     const rawActive = stores.filter(s => !s.isDeleted);
     if (currentUser && currentUser.storeId) {
-      return rawActive.filter(s => s.id === currentUser.storeId);
+      return rawActive.filter(s => sameId(s.id, currentUser.storeId));
     }
     return rawActive;
   }, [stores, currentUser]);
-  const [selectedStoreId, setSelectedStoreId] = useState<number>(currentStoreId || activeStores[0]?.id || 1);
+  const [selectedStoreId, setSelectedStoreId] = useState<string | number | null>(currentStoreId || (activeStores[0]?.id ?? null));
 
   useEffect(() => {
     if (currentStoreId) {
@@ -138,7 +139,7 @@ export default function POSModal({
       return;
     }
     const cust = customers.find(c => c.id === completedOrder?.customerId);
-    const storeObj = stores.find(s => s.id === completedOrder?.storeId);
+    const storeObj = stores.find(s => sameId(s.id, completedOrder?.storeId));
     const companyName = storeObj?.name || 'Store';
     const totalDisplay = formatMoney(completedOrder?.total || 0, activeCurrency, activeExchangeRate);
 
@@ -297,7 +298,7 @@ export default function POSModal({
 
   const activeShift = useMemo(() => {
     return (posShifts || []).find(
-      s => s.status === 'Open' && s.storeId === selectedStoreId
+      s => s.status === 'Open' && sameId(s.storeId, selectedStoreId)
     );
   }, [posShifts, selectedStoreId]);
 
@@ -359,8 +360,8 @@ export default function POSModal({
   };
 
   // Helper to check stock in current store
-  const getStockQty = (item: StockItem, storeId: number) => {
-    return (item && item.stock ? item.stock[storeId] : 0) || 0;
+  const getStockQty = (item: StockItem, storeId: string | number | null) => {
+    return (item && item.stock ? item.stock[storeId as number] : 0) || 0;
   };
 
   const formatStockQty = (qty: number, item: StockItem) => {
@@ -538,7 +539,7 @@ export default function POSModal({
       const productId = Number(pIdStr);
       const item = stockItems.find(p => p.id === productId);
       if (item) {
-        const fifoResult = calculateFIFOCost(item, selectedStoreId, requiredBaseUnits);
+        const fifoResult = calculateFIFOCost(item, selectedStoreId as number, requiredBaseUnits);
         totalCost += fifoResult.totalCost;
       }
     });
@@ -587,7 +588,7 @@ export default function POSModal({
   // Active shift sales metrics & statistics for empty cart panel and audit
   const shiftOrders = useMemo(() => {
     return salesOrders.filter(so => {
-      if (so.storeId !== selectedStoreId || so.status === 'Voided') return false;
+      if (!sameId(so.storeId, selectedStoreId) || so.status === 'Voided') return false;
       if (activeShift && activeShift.startTime) {
         return new Date(so.date) >= new Date(activeShift.startTime);
       }
@@ -676,7 +677,7 @@ export default function POSModal({
       id: maxId + 1,
       soNumber: `SO-2024-${String(5004 + maxId).padStart(4, '0')}`,
       customerId: selectedCustomerId,
-      storeId: selectedStoreId,
+      storeId: selectedStoreId as number,
       date: new Date().toISOString().split('T')[0],
       priceType: priceType,
       items: cart.map(c => {
@@ -710,12 +711,12 @@ export default function POSModal({
         });
 
         // Deduct from FIFO batch queue
-        const fifoResult = calculateFIFOCost(p, selectedStoreId, totalDeductionInBaseUnits);
+        const fifoResult = calculateFIFOCost(p, selectedStoreId as number, totalDeductionInBaseUnits);
         const updatedBatchesMap = { ...(p.batches || {}) };
-        updatedBatchesMap[selectedStoreId] = fifoResult.updatedBatches;
+        updatedBatchesMap[selectedStoreId as number] = fifoResult.updatedBatches;
 
-        const currentStockVal = nextStockObj[selectedStoreId] || 0;
-        nextStockObj[selectedStoreId] = allowNegativeStock ? (currentStockVal - totalDeductionInBaseUnits) : Math.max(0, currentStockVal - totalDeductionInBaseUnits);
+        const currentStockVal = nextStockObj[selectedStoreId as number] || 0;
+        nextStockObj[selectedStoreId as number] = allowNegativeStock ? (currentStockVal - totalDeductionInBaseUnits) : Math.max(0, currentStockVal - totalDeductionInBaseUnits);
         return { ...p, stock: nextStockObj, batches: updatedBatchesMap };
       }
       return p;
@@ -759,7 +760,7 @@ export default function POSModal({
     if (isOfflineNow) {
       const companyId = currentUser?.company_id ?? currentUser?.companyId ?? '';
       enqueueOfflineSale(
-        { ...newSO, customerName: selectedCustomer?.name ?? '', storeName: activeStores.find(s => s.id === selectedStoreId)?.name ?? '' },
+        { ...newSO, customerName: selectedCustomer?.name ?? '', storeName: activeStores.find(s => sameId(s.id, selectedStoreId))?.name ?? '' },
         companyId
       );
     }
@@ -775,7 +776,7 @@ export default function POSModal({
       id: posShifts.length > 0 ? Math.max(...posShifts.map(s => s.id)) + 1 : 1,
       userId: currentUser?.id || 1,
       username: currentUser?.name || 'Cashier',
-      storeId: selectedStoreId,
+      storeId: selectedStoreId as number,
       openTime: new Date().toISOString(),
       openingFloat: floatAmount,
       expectedCashSales: 0,
@@ -833,7 +834,7 @@ export default function POSModal({
 
   // Render finalized shift summary slip
   if (reconciledShiftSummary) {
-    const storeObj = stores.find(s => s.id === reconciledShiftSummary.storeId);
+    const storeObj = stores.find(s => sameId(s.id, reconciledShiftSummary.storeId));
     const expectedTotal = reconciledShiftSummary.openingFloat + (reconciledShiftSummary.expectedCashSales || 0);
     const varAmount = reconciledShiftSummary.variance || 0;
     
@@ -933,7 +934,7 @@ export default function POSModal({
 
   // Render open register screen if session is closed
   if (!activeShift) {
-    const storeObj = stores.find(s => s.id === selectedStoreId);
+    const storeObj = stores.find(s => sameId(s.id, selectedStoreId));
 
     if (!isAdminUser) {
       return (
@@ -965,7 +966,7 @@ export default function POSModal({
                   <label className="text-[10px] font-black uppercase tracking-wider text-gray-400 block">{t('Switch POS Depot / Store')}</label>
                   <select
                     value={selectedStoreId}
-                    onChange={(e) => setSelectedStoreId(Number(e.target.value))}
+                    onChange={(e) => setSelectedStoreId(e.target.value)}
                     className="w-full px-3 py-2 border rounded-lg text-xs font-semibold outline-none bg-white"
                   >
                     {activeStores.map(s => (
@@ -1035,7 +1036,7 @@ export default function POSModal({
               <label className="text-[10px] font-black uppercase tracking-wider text-gray-400 block">{t('Select POS Depot / Store')}</label>
               <select
                 value={selectedStoreId}
-                onChange={(e) => setSelectedStoreId(Number(e.target.value))}
+                onChange={(e) => setSelectedStoreId(e.target.value)}
                 className="w-full px-3 py-2 border rounded-lg text-xs font-semibold outline-none bg-white"
               >
                 {activeStores.map(s => (
@@ -1123,7 +1124,7 @@ export default function POSModal({
 
   if (completedOrder) {
     const cust = customers.find(c => c.id === completedOrder.customerId);
-    const storeObj = stores.find(s => s.id === completedOrder.storeId);
+    const storeObj = stores.find(s => sameId(s.id, completedOrder.storeId));
 
     // Use store data directly (receipt branding from server)
     const companyName = storeObj?.name || 'Store';
@@ -1167,7 +1168,7 @@ export default function POSModal({
               </div>
               <div className="flex justify-between">
                 <span>STORE:</span>
-                <span className="font-bold">{stores.find(s => s.id === completedOrder.storeId)?.name || 'Main Store'}</span>
+                <span className="font-bold">{stores.find(s => sameId(s.id, completedOrder.storeId))?.name || 'Main Store'}</span>
               </div>
               <div className="flex justify-between">
                 <span>DATE:</span>
@@ -1307,7 +1308,7 @@ export default function POSModal({
                   if (!isBluetoothPrinterConnected()) {
                     await connectBluetoothPrinter();
                   }
-                  const storeObj = stores.find(s => s.id === completedOrder.storeId) || { name: 'Store' };
+                  const storeObj = stores.find(s => sameId(s.id, completedOrder.storeId)) || { name: 'Store' };
                   const custObj = customers.find(c => c.id === completedOrder.customerId) || { name: 'Walk-in' };
                   const buffer = buildReceiptEscPosBuffer(completedOrder, storeObj, custObj, activeCurrency || '$');
                   await sendEscPosBytes(buffer);
@@ -1471,13 +1472,13 @@ export default function POSModal({
                           key={st.id}
                           type="button"
                           onClick={() => {
-                            if (selectedStoreId !== st.id) {
+                            if (!sameId(selectedStoreId, st.id)) {
                               setSelectedStoreId(st.id);
                               setCart([]);
                             }
                           }}
                           className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition shrink-0 border ${
-                            selectedStoreId === st.id
+                            sameId(selectedStoreId, st.id)
                               ? 'bg-brand text-white border-brand shadow-xs'
                               : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
                           }`}
@@ -1551,10 +1552,10 @@ export default function POSModal({
                     >
                       <div className="p-3">
                         <div className="h-28 bg-gray-50 rounded-lg overflow-hidden border border-gray-100 flex items-center justify-center relative">
-                          {item.batches?.[selectedStoreId]?.some(b => b.qty > 0) && (
+                          {item.batches?.[selectedStoreId as number]?.some(b => b.qty > 0) && (
                             <span className="absolute top-2 left-2 text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase bg-purple-600 text-white flex items-center gap-1 shadow-2xs z-10" title={t('Uses FIFO Batch Stocking')}>
                               <Layers className="w-2.5 h-2.5" />
-                              FIFO ({item.batches[selectedStoreId].filter(b => b.qty > 0).length})
+                              FIFO ({item.batches[selectedStoreId as number].filter(b => b.qty > 0).length})
                             </span>
                           )}
                           {item.imageUrl ? (
@@ -1880,7 +1881,7 @@ export default function POSModal({
                     <div className="w-full pt-2.5 border-t border-gray-100 text-left text-[11px] space-y-1.5 text-gray-600">
                       <div className="flex justify-between items-center bg-gray-50 px-2.5 py-1.5 rounded-lg border border-gray-200/60">
                         <span className="font-bold text-gray-400 uppercase tracking-wider text-[8px]">{t('Active Store')}</span>
-                        <span className="font-extrabold text-gray-800 truncate max-w-[150px]">{stores.find(s => s.id === selectedStoreId)?.name || t('Not Assigned')}</span>
+                        <span className="font-extrabold text-gray-800 truncate max-w-[150px]">{stores.find(s => sameId(s.id, selectedStoreId))?.name || t('Not Assigned')}</span>
                       </div>
                       <div className="flex justify-between items-center bg-gray-50 px-2.5 py-1.5 rounded-lg border border-gray-200/60">
                         <span className="font-bold text-gray-400 uppercase tracking-wider text-[8px]">{t('Shift Operator')}</span>
@@ -2321,7 +2322,7 @@ export default function POSModal({
                         const conversion = isSubUnit ? 1 : (item.useSubUnitPricing ? (item.subUnitConversion || 1) : 1);
                         const baseQtyRequired = c.qty * conversion;
 
-                        const fifoBreakdown = getFIFOBatchBreakdown(item, selectedStoreId, baseQtyRequired);
+                        const fifoBreakdown = getFIFOBatchBreakdown(item, selectedStoreId as number, baseQtyRequired);
                         const lineRevenue = c.price * c.qty;
                         const lineCost = fifoBreakdown.totalCost;
                         const lineProfit = lineRevenue - lineCost;

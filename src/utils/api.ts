@@ -10,6 +10,8 @@ export interface PhpConfig {
   apiKey?: string;
 }
 
+import { sv, isValidCompanyScope, safeCompanyId } from './idUtils';
+
 const DEFAULT_API_URL = '/cpanel/api.php';
 
 // Monotonic server version — authoritative cross-device change detector
@@ -593,7 +595,10 @@ export async function getAuditLogsFromPhp(opts: { limit?: number; action?: strin
  * database's view, never undermined by stale localStorage. Returns the canonical
  * company state object (or null on failure so callers can fall back).
  */
-export async function fetchCompanySnapshot(companyId: string | number): Promise<any | null> {
+// BUILD 2026-09-08-18: shared global (cross-company, company_id='') snapshot fetch so
+// the invalid-scope guard in fetchCompanySnapshot has a single path back to the
+// cross-company payload instead of silently hitting company_id=all/NaN.
+export async function fetchGlobalSnapshotBody(): Promise<any | null> {
   let { apiUrl, apiKey } = getPhpConfig();
   if (!apiUrl || apiUrl === DEFAULT_API_URL) {
     if (_discoveredApiUrl) apiUrl = _discoveredApiUrl;
@@ -605,7 +610,49 @@ export async function fetchCompanySnapshot(companyId: string | number): Promise<
     if (apiKey) headers['X-API-Key'] = apiKey;
     Object.assign(headers, getOperatorHeaders());
     const response = await fetchWithTimeout(
-      `${apiUrl}?action=snapshot&company_id=${encodeURIComponent(String(companyId))}&t=${Date.now()}`,
+      `${apiUrl}?action=snapshot&t=${Date.now()}`,
+      { method: 'GET', headers, cache: 'no-store' },
+      20000,
+      { ignoreOuterSignal: true }
+    );
+    if (!response.ok) return null;
+    const result = await response.json().catch(() => null);
+    if (!result || !result.success) return null;
+    const data = result.state ?? result.data ?? result;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    const v = Number(data._version ?? data.version ?? result.version ?? result.server_ts ?? 0);
+    if (!Number.isNaN(v) && v > 0) _lastServerVersion = Math.max(_lastServerVersion, v);
+    return data;
+  } catch (error) {
+    console.warn('[PHP API] fetchCompanySnapshot (global) error — falling back to blob fetch:', error);
+    return null;
+  }
+}
+
+export async function fetchCompanySnapshot(companyId: string | number): Promise<any | null> {
+  // BUILD 2026-09-08-18: NEVER snapshot against an invalid / non-concrete scope
+  // ('NaN'/'undefined'/'null'/'all'). Fetching company_id=NaN returns an unknown-company
+  // blob whose empty collections replaced local categories/stock/branches on every
+  // switch and refresh. '' and 'all' both mean "global" and fetch the cross-company state.
+  const rawScope = sv(companyId);
+  if (rawScope === '' || rawScope.toLowerCase() === 'all') return fetchGlobalSnapshotBody();
+  if (!isValidCompanyScope(rawScope)) {
+    console.warn('[PHP API] fetchCompanySnapshot cancelled — invalid company scope "' + rawScope + '"');
+    return null;
+  }
+  const scope = safeCompanyId(rawScope);
+  let { apiUrl, apiKey } = getPhpConfig();
+  if (!apiUrl || apiUrl === DEFAULT_API_URL) {
+    if (_discoveredApiUrl) apiUrl = _discoveredApiUrl;
+    else { const f = await discoverApiUrl(); if (f) apiUrl = f; }
+  }
+  if (!apiUrl) return null;
+  try {
+    const headers: Record<string, string> = { 'Accept': 'application/json' };
+    if (apiKey) headers['X-API-Key'] = apiKey;
+    Object.assign(headers, getOperatorHeaders());
+    const response = await fetchWithTimeout(
+      `${apiUrl}?action=snapshot&company_id=${encodeURIComponent(scope)}&t=${Date.now()}`,
       { method: 'GET', headers, cache: 'no-store' },
       20000,
       { ignoreOuterSignal: true }
