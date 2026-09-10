@@ -1433,7 +1433,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-8');
+    console.log('[TradeCore] build 2026-09-08-9');
   }, []);
 
   useEffect(() => {

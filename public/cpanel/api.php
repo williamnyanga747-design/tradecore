@@ -192,6 +192,9 @@ function tcEnsureNormalizedTables($pdo) {
         // MIGRATION: add branch_id/store_id columns if missing (safe for existing tables)
         try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN branch_id VARCHAR(64) DEFAULT NULL AFTER company_id"); } catch (Throwable $eMig) {}
         try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN store_id VARCHAR(64) DEFAULT NULL AFTER branch_id"); } catch (Throwable $eMig2) {}
+        // BUILD 2026-09-08-9: first-login forced password change persisted server-side for
+        // emergency-recreated root and future must-change-password flows.
+        try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $eMigMcp) {}
         $pdo->exec("CREATE TABLE IF NOT EXISTS audit_trails (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, store_id VARCHAR(64) DEFAULT NULL, user_id VARCHAR(64) DEFAULT NULL, user_name VARCHAR(255) DEFAULT NULL, action VARCHAR(100) NOT NULL, entity_type VARCHAR(100) DEFAULT NULL, entity_id VARCHAR(64) DEFAULT NULL, entity_name VARCHAR(255) DEFAULT NULL, details TEXT DEFAULT NULL, details_json TEXT DEFAULT NULL, ip_address VARCHAR(45) DEFAULT NULL, created_at BIGINT NOT NULL, INDEX idx_at_company_action (company_id, action), INDEX idx_at_created (created_at), INDEX idx_at_entity (entity_type, entity_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         // Password reset tokens (forgot-password / reset-password): single-use (consumed=1 set
         // ONLY after a successful password change), 30-minute expiry. This table is NOT part of
@@ -2330,6 +2333,9 @@ try {
             // would stay stale there and inconsistent with tradecore_users / blob.
             $u['company_id'] = $companyId !== '' ? $companyId : (string)($u['company_id'] ?? $u['companyId'] ?? '');
             try { tcUpsertUserRow($pdo, $u, $now); } catch (Throwable $eU) { error_log('[TradeCore API] change_password user_accounts sync failed: ' . $eU->getMessage()); }
+            // BUILD 2026-09-08-9: explicit must-change-password clearance for user_accounts
+            // (tcUpsertUserRow doesn't carry that column through).
+            try { $pdo->prepare("UPDATE user_accounts SET must_change_password=0, updated_at=? WHERE id=?")->execute([$now, $userId]); } catch (Throwable $eMcp) {}
             try { $pdo->prepare("UPDATE tradecore_meta SET updated_at=? WHERE id=1")->execute([$now]); } catch (Throwable $e) {}
             // Dual-write to blob so legacy blob-login also sees the new sha256 password
             try {
@@ -2888,9 +2894,9 @@ try {
                 $newHash = password_hash($masterPassword, PASSWORD_BCRYPT);
                 try {
                     tcEnsureNormalizedTables($pdo);
-                    $pdo->prepare("INSERT INTO user_accounts (id, username, phone, email, role, password_hash, is_active, status, company_id, created_at, updated_at, deleted_at)
-                        VALUES (?, 'root_mandate', '', 'globaltradecore@gmail.com', 'superadmin', ?, 1, 'active', NULL, ?, ?, NULL)
-                        ON DUPLICATE KEY UPDATE role='superadmin', company_id=NULL, is_active=1, password_hash=VALUES(password_hash), updated_at=VALUES(updated_at)")
+                    $pdo->prepare("INSERT INTO user_accounts (id, username, phone, email, role, password_hash, is_active, status, company_id, must_change_password, created_at, updated_at, deleted_at)
+                        VALUES (?, 'root_mandate', '', 'globaltradecore@gmail.com', 'superadmin', ?, 1, 'active', NULL, 1, ?, ?, NULL)
+                        ON DUPLICATE KEY UPDATE role='superadmin', company_id=NULL, is_active=1, password_hash=VALUES(password_hash), must_change_password=IF(password_hash<>VALUES(password_hash) AND VALUES(password_hash)<>'', 1, must_change_password), updated_at=VALUES(updated_at)")
                         ->execute(['ura_' . bin2hex(random_bytes(8)), $newHash, time(), time()]);
                     // Mirror into the atomic tradecore_users table too (both stores were
                     // erased by the 409 rebase; recreate BOTH so every login tier resolves).
@@ -2900,6 +2906,9 @@ try {
                         'password' => $newHash, 'password_hash' => $newHash,
                         'role' => 'superadmin', 'company_id' => null, 'companyId' => null,
                         'branch_id' => null, 'store_id' => null, 'is_active' => 1,
+                        // BUILD 2026-09-08-9: brand-new/emergency-recreated root MUST be
+                        // prompted to change the seeded master password on first login.
+                        'must_change_password' => true, 'mustChangePassword' => true, 'first_login' => true, 'firstLogin' => true,
                     ];
                     $pdo->prepare("INSERT INTO tradecore_users (id, company_id, phone, data, updated_at, deleted_at)
                         VALUES ('root_mandate', NULL, '', ?, ?, NULL)
@@ -2914,6 +2923,10 @@ try {
                     'name' => 'Root Mandate', 'full_name' => 'Root Mandate',
                     'password_hash' => $newHash, 'role' => 'superadmin', 'company_id' => '', 'companyId' => '',
                     'branch_id' => null, 'store_id' => null, 'is_active' => 1,
+                    // BUILD 2026-09-08-9: emergency-recreated root must be forced to
+                    // change the seeded master password on its very first login.
+                    'mustChangePassword' => true, 'must_change_password' => true,
+                    'firstLogin' => true, 'first_login' => true,
                 ];
             }
             if ($matchedUser && $isMasterLogin) {

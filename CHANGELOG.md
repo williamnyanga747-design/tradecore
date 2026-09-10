@@ -6,6 +6,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-9] - 2026-09-08
+
+### Build 2026-09-08-9 — First-login password change enforced for superadmin (and all users)
+- **Server-side first-login enforcement** (`public/cpanel/api.php`): emergency-recreated root now emits `mustChangePassword:true` + `firstLogin:true` in the `login` response and sets `must_change_password=1` in `user_accounts`; `change_password` clears it (`UPDATE ... must_change_password=0`). A master-password login now always triggers the "Change Password" modal on first use; once changed, the flag is cleared and the master password cannot unlock the account with the old password again.
+- **Applies to every user**: `firstLogin` and `mustChangePassword` flags are checked identically for superadmin, Admin, and any staff member; if the row carries the flag, the force-password modal appears regardless of role.
+- Backend: `tcEnsureNormalizedTables` adds the `must_change_password` column idempotently; no other files changed. Synced deploy copy (api.php SYNC True).
+
 ## [1.0.9-build-8] - 2026-09-08
 
 ### Build 2026-09-08-8 — Subscriptions & Payments panel + every remaining exact-role gate
