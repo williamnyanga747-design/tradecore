@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-11] - 2026-09-08
+
+### Build 2026-09-08-11 — New Company added via System Companies now survives reload (fixes "added a Company, then it vanished")
+- **Record-shape parity for Add Company** (`src/components/MasterData.tsx`): a company created through the System Companies form (`newCo`) previously shipped as `{...cleanCompany, id: nextId}` with NO `company_id` / `is_default` / `created_by`. The registration path stamps `company_id: newCompanyId` (App.tsx L7003) — so a company-scoped snapshot/filter (client or server) could "skip" the new record as company-id mismatched while the two seed default Companies always matched. It now carries `company_id: nextId`, `is_default: false`, `created_by: 'root_mandate'`, exactly like a registration-created company.
+- **Reboot-safe companies fallback** (`src/App.tsx` `applyData`): the boot path fetches a per-company snapshot FIRST (`fetchCompanySnapshot(bootCid)`); a per-company snapshot can be served without a top-level `companies` array, and the old `parsed.companies || defaultCompanies` then silently REPLACED the live company list (including a just-created 3rd company) with the two seed defaults. `applyData` now keeps the existing local companies when an incoming payload omits the `companies` key but the client already holds a (non-empty) list; seeds are only used on genuinely first boot.
+- **409-rebase belt-and-braces companies union** (`src/App.tsx` 409 rebase): after `protectDirtyCollections(conflict.serverData)` (which already overlays local dirty collections wholesale + unions local-only records for non-dirty ones), the rebased state now re-unions the LOCAL companies by id — local records missing from the server blob are appended (server wins ties, deleted local rows excluded) so a brand-new Company created this session can never be dropped from the rebased state even if the local dirty snapshot for `companies` was already consumed.
+- Verified no API change needed: `get_state`/`snapshot`/`tcLoadCompanies` already serve the FULL global companies list to a super admin (`company_id=''` super override, master blob overlay); `public/cpanel/api.php` + deploy copy remain hash-synced; System Companies list (`MasterData.tsx` case 'companies') already renders ALL non-deleted companies globally.
+- Backend: `public/cpanel/api.php` untouched (SYNC True, braces 932/932, parens 4288/4288).
+
 ## [1.0.9-build-10] - 2026-09-08
 
 ### Build 2026-09-08-10 �?" CRITICAL: CRUD not persisting — flush loop + superadmin global scope

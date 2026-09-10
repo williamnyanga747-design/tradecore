@@ -407,7 +407,20 @@ export default function MasterData({
       } else {
         // Create
         const nextId = Math.max(0, ...companies.map(c => c.id)) + 1;
-        const newCo = { ...cleanCompany, id: nextId };
+        // RECORD-SHAPE PARITY (2026-09-08-11): a new Company must carry the same
+        // identity fields as the registration path's newCompany (company_id,
+        // is_default, created_by). Any company-scoped snapshot/filter (client or
+        // server) matches on company_id — a record with an undefined company_id is
+        // "skipped as mismatched", which is exactly how a just-created Company
+        // vanished while the two seed default Companies stayed. Super Admin global
+        // scope + this shape guarantee the new record survives snapshots/reloads.
+        const newCo: any = {
+          ...cleanCompany,
+          id: nextId,
+          company_id: nextId,
+          is_default: false,
+          created_by: 'root_mandate'
+        };
         const nextSettings = {
           ...settings,
           companyLanguages: { ...(settings?.companyLanguages || {}), [nextId]: coLang },

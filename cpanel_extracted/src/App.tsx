@@ -1442,7 +1442,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-10');
+    console.log('[TradeCore] build 2026-09-08-11');
   }, []);
 
   useEffect(() => {
@@ -2119,7 +2119,26 @@ export default function App() {
     // This catches corrupted localStorage, malformed server responses, and any other
     // source of array-with-holes.
     parsed = sanitizeStateData(parsed);
-    const loadedCompaniesRaw = (parsed.companies || defaultCompanies).map((c: any) => {
+    // REBOOT-SAFE COMPANIES FALLBACK (2026-09-08-11): NEVER let a payload that merely
+    // OMITS the `companies` key silently reset the company list back to the two seed
+    // defaultCompanies (Alpha/Beta). The boot path first tries fetchCompanySnapshot — a
+    // per-company snapshot can be served without a companies array, and the old
+    // `parsed.companies || defaultCompanies` fallback then REPLACED the live company
+    // list (including a just-created 3rd company) with the seeds, which is exactly how
+    // "added a Company, then it vanished after reload" happened. Keep the existing
+    // local companies (dbStateRef) when the incoming payload has no companies key but
+    // the client already has a (larger) list. Only genuine first-boot uses seeds.
+    const preCompanies = Array.isArray(dbStateRef.current?.companies) ? dbStateRef.current.companies : [];
+    const serverHasCompanies = Array.isArray(parsed.companies)
+      ? parsed.companies.length > 0
+      : false;
+    const incomingCompanies = serverHasCompanies ? parsed.companies : [];
+    const loadedCompaniesRaw = (serverHasCompanies
+      ? incomingCompanies
+      : preCompanies.length > 0
+        ? preCompanies
+        : defaultCompanies)
+      .map((c: any) => {
       if (!c.themeColor) {
         const matchedDefault = defaultCompanies.find((dc: any) => dc.id === c.id);
         return {
@@ -4383,6 +4402,24 @@ const conflict = consumeConflictData();
               // unflushed new record can never be erased by a 409 rebase.
               const localPending = dirtyValuesRef.current as Record<string, any>;
               const merged: any = protectDirtyCollections(conflict.serverData);
+              // BELT-AND-BRACES COMPANIES UNION (2026-09-08-11): protectDirtyCollections
+              // overlays dirty collections wholesale (local wins) and unions local-only
+              // records for non-dirty collections — but as a final safety net re-union
+              // the LOCAL companies by id so a brand-new Company created this session can
+              // never be dropped from the rebased state, even if the local dirty snapshot
+              // for `companies` was already consumed by an earlier overlay pass. Local
+              // records missing from the server blob are appended (server wins ties).
+              const localCos = Array.isArray(dbStateRef.current?.companies) ? dbStateRef.current.companies : [];
+              const mergedCos = Array.isArray(merged.companies) ? merged.companies : [];
+              if (localCos.length > 0) {
+                const byId = new Map<string, any>();
+                mergedCos.forEach((c: any) => { if (c && c.id != null) byId.set(String(c.id), c); });
+                const localOnly = localCos.filter((c: any) => c && c.id != null && !byId.has(String(c.id)) && !c.isDeleted && !c.deletedAt);
+                if (localOnly.length > 0) {
+                  localOnly.forEach((c: any) => byId.set(String(c.id), c));
+                  merged.companies = sanitizeArray(Array.from(byId.values()));
+                }
+              }
               applyData(merged, true);
             localStorage.setItem('tradecore_data', JSON.stringify(merged));
             // CRITICAL: Wrap version write in guard — same loop risk as the flush path.
