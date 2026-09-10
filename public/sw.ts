@@ -65,7 +65,7 @@ import { clientsClaim } from 'workbox-core';
 // SKIP_WAITING message) does the new SW activate and purge stale caches, so
 // unsaved work / open sessions are never lost to a silent forced reload.
 // ---------------------------------------------------------------------------
-const BUILD_VERSION = '2026-09-08-7';
+const BUILD_VERSION = '2026-09-08-8';
 const BUILD_META_CACHE = 'build-meta';
 const readBuildVersion = async (): Promise<string | null> => {
   try {

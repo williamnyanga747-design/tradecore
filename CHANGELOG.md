@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-8] - 2026-09-08
+
+### Build 2026-09-08-8 — Subscriptions & Payments panel + every remaining exact-role gate
+- **FIXED THE REPORTED MISSING PANEL — Subscriptions & Payments**: the sidebar button rendered (build -7) but navigating still hit an exact-string guard in `App.tsx` `case 'subscriptions'` (`currentUser?.role !== 'Super Admin'` → **Access Denied**). The recreated root / master-login account ships `role:'superadmin'` (lowercase), so the whole Subscriptions Plans panel was blocked. Gate now uses `isSuperScopeUser(currentUser)`.
+- **Every remaining exact-role gate in the app was converted to the tolerant scope helpers** `isSuperScopeUser`/'isAdminScopeUser' (new helper: supers-of-any-spelling + root usernames + `Admin`):
+  - System Settings modal (`handleOpenSettings`), Marketplace Store Settings global flag, marketplace order management, **Secure Database Backup & Restore** section, new-payment-awaiting toast, super-only company selector, Super Admin Admin/Manage/Delete buttons across stock/transfers/orders/expiries, Mind Refresh Game Break toggle, per-user currency override.
+  - `allowedPages` memo: `activeRole === 'Super Admin'` checks now accept every super spelling, so a recreated root (full access list) can never be pruned.
+  - Session/role-change supervision (`isCoreAdmin`, `isSuperScope`, terminate-if-role-changed) accepted the root account's lowercase role instead of treating a role-string drift as "logout".
+  - Self/global block protection (`User` row: Supers can never be blocked) now matches by username OR role spelling.
+- No backend change; api.php untouched (SYNC True). Bundle rebuild only.
+
 ## [1.0.9-build-7] - 2026-09-08
 
 ### Build 2026-09-08-7 — Missing-panel fix for global supers (sidebar + Manage Users)

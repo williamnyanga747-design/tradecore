@@ -711,6 +711,15 @@ export default function App() {
     !!u && (isRootUser(u) ||
       ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(u.role || '').trim()));
 
+  // BUILD 2026-09-08-8: Admin-capability scope — global supers (any spelling / root
+  // username) PLUS the 'Admin' role (server emits 'Admin'; tolerant to 'admin').
+  // Replaces every `currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin'`
+  // gate that previously hid manage/delete buttons and panels from a recreated root.
+  const isAdminScopeUser = (u: User | null): boolean =>
+    !!u &&
+    (isSuperScopeUser(u) ||
+      ['Admin', 'admin'].includes(String(u.role || '').trim()));
+
   // GLOBAL VIEW (ALL COMPANIES) — company-less workspace flag, ON only for global
   // super admins. active_company_id is set to 'all'; every company/branch/store list
   // and the dashboard aggregate across ALL companies in the system.
@@ -755,7 +764,7 @@ export default function App() {
       }
     }
     // Only Super Admin/Admin can override currency; other roles follow company currency strictly
-    if (currentUser && (currentUser.role === 'Super Admin' || currentUser.role === 'Admin') && settings.userCurrencies && settings.userCurrencies[currentUser.username]) {
+    if (currentUser && isAdminScopeUser(currentUser) && settings.userCurrencies && settings.userCurrencies[currentUser.username]) {
       return settings.userCurrencies[currentUser.username];
     }
     return settings.currency || 'USD';
@@ -1424,7 +1433,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-7');
+    console.log('[TradeCore] build 2026-09-08-8');
   }, []);
 
   useEffect(() => {
@@ -3300,7 +3309,7 @@ export default function App() {
               const co = u?.company_id ?? u?.companyId;
               sessionCo = co != null && String(co) !== 'none' && String(co) !== '' ? String(co) : '';
             } catch {}
-            const isSuperSession = sessionRole === 'Super Admin' || sessionRole === 'root_mandate' || sessionRole === 'superadmin';
+            const isSuperSession = ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(sessionRole || '').trim()) || sessionRole === 'root_mandate';
             if (!isSuperSession && sessionCo !== '' && sessionCo !== targetCid) {
               console.warn('[Sync] Stale company snapshot ignored (session user belongs to company ' + sessionCo + ', snapshot was for ' + targetCid + ')');
               return;
@@ -5529,7 +5538,7 @@ const conflict = consumeConflictData();
       }
       
       // Live sync properties (like allowedPages) to currently active session
-      const isCoreAdmin = (isCoreSuperAdmin || currentUser.role === 'Super Admin');
+      const isCoreAdmin = (isCoreSuperAdmin || ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(currentUser.role || '').trim()));
       let liveAllowedPages = liveUser.allowedPages;
       if (isCoreAdmin && !Array.isArray(liveAllowedPages)) {
         // Requirement 2: a truncated/null allowedPages from a background sync must
@@ -5540,7 +5549,7 @@ const conflict = consumeConflictData();
       if (
         (isCoreAdmin ? JSON.stringify(liveAllowedPages) : JSON.stringify(liveUser.allowedPages)) !== JSON.stringify(currentUser.allowedPages) ||
         liveUser.name !== currentUser.name ||
-        (currentUser.role !== 'Super Admin' ? liveUser.role !== currentUser.role : false) ||
+        (currentUser && !isSuperScopeUser(currentUser) ? liveUser.role !== currentUser.role : false) ||
         liveUser.companyId !== currentUser.companyId ||
         liveUser.branchId !== currentUser.branchId ||
         liveUser.storeId !== currentUser.storeId
@@ -5565,7 +5574,7 @@ const conflict = consumeConflictData();
       // Super Admins (and the 'root_mandate'/impersonation equivalent).
       const nowRole = (currentUser as any)?.role;
       const nowUsername = String((currentUser as any)?.username ?? '').toLowerCase();
-      const isSuperScope = nowRole === 'Super Admin' || nowRole === 'root_mandate' || nowRole === 'superadmin'
+      const isSuperScope = ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(nowRole || '').trim())
         || nowUsername === 'root_mandate' || nowUsername === 'superadmin';
       const isImpersonating = !!localStorage.getItem('tradecore_root_backup');
       if (isSuperScope || isImpersonating) {
@@ -6045,7 +6054,8 @@ const conflict = consumeConflictData();
         // permission registry — a DB/legacy truncated allowedPages must never be
         // persisted back into localStorage/React state during login.
         const adminResolvedUser =
-          (isCoreSuperAdmin || resolvedUser.role === 'Super Admin')
+          (isCoreSuperAdmin ||
+            ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String((resolvedUser as any)?.role || '').trim()))
             ? { ...resolvedUser, allowedPages: Array.from(ADMIN_FULL_ACCESS_PAGES) }
             : resolvedUser;
         localStorage.setItem('tradecore_user', JSON.stringify(adminResolvedUser));
@@ -6385,7 +6395,9 @@ try {
   };
 
   const handleOpenSettings = () => {
-    if (currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin') {
+    // BUILD 2026-09-08-8: tolerant admin scope — a recreated root (role 'superadmin')
+    // must open System Settings through the sidebar gear.
+    if (isAdminScopeUser(currentUser)) {
       setShowSettingsModal(true);
     } else {
       toast.error(t('Access Denied: System Settings are restricted to Super Admin and Admin roles only.'));
@@ -9284,7 +9296,7 @@ try {
 
   const canManageOrder = (order: MarketplaceOrder) => {
     if (!currentUser) return false;
-    if (currentUser.role === 'Super Admin') return true;
+    if (isSuperScopeUser(currentUser)) return true;
     return currentUser.companyId === order.companyId;
   };
 
@@ -10254,7 +10266,10 @@ try {
     // any sync-derived `currentUser.allowedPages`, role default, or mutation logic
     // can truncate/empty/null the menu. These accounts ALWAYS see every module,
     // immune to php_sync.php blob syncs and ManageUsers assignment races.
-    if (activeUserIsRoot || activeRole === 'Super Admin') {
+    // building the tolerant set inline: the server may persist any super spelling.
+    const activeRoleNorm = String(activeRole || '').trim();
+    const activeRoleIsSuper = ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(activeRoleNorm);
+    if (activeUserIsRoot || activeRoleIsSuper) {
       return Array.from(ADMIN_FULL_ACCESS_PAGES);
     }
 
@@ -10264,7 +10279,7 @@ try {
       ? currentUser.allowedPages
       : (defaultPages.length > 0 ? defaultPages : ALL_CORE_PAGES);
 
-    if (activeRole === 'Admin' || activeRole === 'Super Admin') {
+    if (activeRoleIsSuper || String(activeRole || '').trim().toLowerCase() === 'admin' || activeRole === 'Admin') {
       const adminPages = new Set(pages);
       adminPages.add('user-info');
       adminPages.add('user-access');
@@ -10287,7 +10302,7 @@ try {
 
     // Marketplace panels are available to every company staff member and Super Admin,
     // regardless of legacy stored allowedPages values.
-    if (activeRole === 'Super Admin' || activeCompanyId) {
+    if (activeRoleIsSuper || activeCompanyId) {
       pages = Array.from(new Set([...pages, 'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'affiliate-program', 'seller-phase2c', 'qr-code-yangu', 'sauti-search', 'tra-report']));
     }
 
@@ -10392,7 +10407,7 @@ try {
         // In-app toast (only when a Super Admin is signed in on this tab)
         try {
           const stored = JSON.parse(localStorage.getItem('tradecore_user') || 'null');
-          if (stored && stored.role === 'Super Admin') {
+          if (stored && isSuperScopeUser(stored)) {
             toast.info(`${newOnes.length} new payment submission${newOnes.length > 1 ? 's' : ''} awaiting verification in Subscriptions & Payments.`);
           }
         } catch (e) {}
@@ -11552,7 +11567,7 @@ try {
                               >
                                 <Pencil className="w-3.5 h-3.5" />
                               </button>
-                              {(currentUser?.role === 'Admin' || currentUser?.role === 'Super Admin') && (
+                              {isAdminScopeUser(currentUser) && (
                                 <button
                                   onClick={() => {
                                     setConfirmModal({
@@ -11845,7 +11860,7 @@ try {
                                 {t('Reconciled')}
                               </span>
                             )}
-                            {(currentUser?.role === 'Admin' || currentUser?.role === 'Super Admin') && (
+                            {isAdminScopeUser(currentUser) && (
                               <button
                                 type="button"
                                 onClick={() => handleDeleteTransfer(transfer.id)}
@@ -12003,7 +12018,7 @@ try {
                             {t('Receive')}
                           </button>
                         )}
-                        {(currentUser?.role === 'Admin' || currentUser?.role === 'Super Admin') && (
+                        {isAdminScopeUser(currentUser) && (
                           <button
                             onClick={() => {
                               setConfirmModal({
@@ -12181,7 +12196,7 @@ try {
                           <FileText className="w-3.5 h-3.5" />
                           {t('View Details')}
                         </button>
-                        {(currentUser?.role === 'Admin' || currentUser?.role === 'Super Admin') && (
+                        {isAdminScopeUser(currentUser) && (
                           <button
                             onClick={() => {
                               setConfirmModal({
@@ -12246,7 +12261,7 @@ try {
               currentStoreId={currentStoreId}
               currency={activeCurrency}
               exchangeRate={activeExchangeRate}
-              isAdmin={currentUser?.role === 'Admin' || currentUser?.role === 'Super Admin'}
+              isAdmin={isAdminScopeUser(currentUser)}
               logAction={logAction}
               onUpdateExpenses={(newExpenses) => saveAllData({ expenses: newExpenses })}
               translate={t}
@@ -12343,8 +12358,8 @@ try {
             currentCompanyId={currentCompanyId}
             currentBranchId={currentBranchId}
             currentStoreId={currentStoreId}
-            isAdmin={currentUser?.role === 'Admin' || currentUser?.role === 'Super Admin'}
-            isSuperAdmin={currentUser?.role === 'Super Admin'}
+            isAdmin={isAdminScopeUser(currentUser)}
+            isSuperAdmin={!!currentUser && isSuperScopeUser(currentUser)}
             currency={activeCurrency}
             exchangeRate={activeExchangeRate}
             translate={t}
@@ -12468,7 +12483,7 @@ try {
             logAction={logAction}
             onPasswordChange={handleProfilePasswordChange}
             onOpenGame={() => {
-              if (currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin' || settings.allowGamesEnabled !== false) {
+              if (isAdminScopeUser(currentUser) || settings.allowGamesEnabled !== false) {
                 setShowGameModal(true);
               } else {
                 toast.info('Mind Refresh Game Breaks are currently disabled by Admin.');
@@ -12477,7 +12492,9 @@ try {
           />
         );
       case 'subscriptions':
-        if (currentUser?.role !== 'Super Admin') {
+        // BUILD 2026-09-08-8: recreated root gets role 'superadmin' (lowercase) — the
+        // exact-string gate above denied the Subscriptions & Payments panel.
+        if (!currentUser || !isSuperScopeUser(currentUser)) {
           return (
             <div className="p-4 bg-red-100 text-red-800 rounded-lg">
               {t('Access Denied')} — {t('Subscription management is restricted to Super Administrators only.')}
@@ -12600,7 +12617,7 @@ try {
         // actually re-renders THIS panel's storefront for the newly selected company.
         // Prefer currentCompanyId (navbar) -> currentUser.companyId -> first active
         // company so it never collapses to "No company linked".
-        const msIsGlobal = isRootUser(currentUser) || currentUser?.role === 'Super Admin';
+        const msIsGlobal = isSuperScopeUser(currentUser);
         const msCompanyId =
           currentCompanyId != null
             ? currentCompanyId
@@ -13251,7 +13268,7 @@ try {
 
   const isSubscriptionBlocked = (() => {
     if (!currentUser) return false;
-    if (currentUser.role === 'Super Admin') return false; // Super Admins can never be blocked
+    if (currentUser && isSuperScopeUser(currentUser)) return false; // Super Admins can never be blocked
     if (!currentUser.companyId) return false;
 
     const userCompany = gateCompany;
@@ -13696,7 +13713,7 @@ try {
           theme={theme}
           onToggleTheme={handleToggleTheme}
           onOpenGame={() => {
-            if (currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin' || settings.allowGamesEnabled !== false) {
+            if (isAdminScopeUser(currentUser) || settings.allowGamesEnabled !== false) {
               setShowGameModal(true);
             } else {
               toast.info('Mind Refresh Game Breaks are currently disabled by Admin.');
@@ -13824,7 +13841,7 @@ try {
                     </div>
                     <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded font-mono font-bold">Independent Unit</span>
                   </div>
-                  {currentUser?.role === 'Super Admin' ? (
+                  {isSuperScopeUser(currentUser) ? (
                     companies.length > 1 ? (
                       <select
                         value={targetCompId}
@@ -13943,7 +13960,7 @@ try {
                 </div>
 
                 {/* Mind Refresh Game Break Permission Toggle */}
-                {(currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin') && (
+                {isAdminScopeUser(currentUser) && (
                   <div className="pt-3 border-t border-gray-100 flex items-center justify-between">
                     <div>
                       <span className="text-xs font-bold text-gray-800 block">🎮 Mind Refresh Game Break</span>
@@ -13963,7 +13980,7 @@ try {
                 )}
 
                 {/* Available ONLY to Founder Super Admin */}
-                {currentUser?.role === 'Super Admin' && (
+                {isSuperScopeUser(currentUser) && (
                   <>
                     {/* Secure Database Backup and Restore */}
                     <div className="pt-4 border-t border-gray-100 space-y-3">
@@ -14957,7 +14974,7 @@ try {
                 />
               </div>
 
-              {(currentUser?.role === 'Admin' || currentUser?.role === 'Super Admin') && visibleStores.length > 0 && (
+              {isAdminScopeUser(currentUser) && visibleStores.length > 0 && (
                 <div className="space-y-2 border border-gray-200 rounded-xl p-3 bg-slate-50/50 mt-3">
                   <div className="text-[11px] font-bold text-gray-700 tracking-wide uppercase flex items-center gap-1.5">
                     <ShieldAlert className="w-3.5 h-3.5 text-brand" />
