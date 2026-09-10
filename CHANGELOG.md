@@ -6,6 +6,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-16] - 2026-09-10
+
+### Build 2026-09-08-16 — CRITICAL SQL 1054 FIX: `Unknown column 'owner_user_id' in 'INSERT INTO'` + schema auto-migration guard
+Screenshot `2026-09-10 210311` showed `v2_upsert_company` failing with `SQLSTATE[42S22]: Column not found: 1054 Unknown column 'owner_user_id' in 'INSERT INTO'`.
+
+**Root cause**: `owner_user_id` exists in the `CREATE TABLE IF NOT EXISTS companies` statement, but that statement is a **no-op on tables created by older builds**. No `ALTER` migration ever added `owner_user_id` to those legacy tables, so the INSERT targeted a column that physically did not exist — and because `tcEnsureNormalizedTables` only ALTERs `theme_color`/`subscription_end`/`logo`, the column was never created.
+
+**Backend fixes** (`public/cpanel/api.php`):
+1. **Migration guard** in `tcEnsureNormalizedTables`: idempotent `ALTER TABLE companies ADD COLUMN owner_user_id VARCHAR(64) DEFAULT NULL AFTER id` (try/catch — MySQL 8.0 does not support `ADD COLUMN IF NOT EXISTS`). Legacy `companies` tables are auto-repaired on the first request.
+2. **Dynamic column filtering** — new `tcTableColumns($pdo, $table)`: memoized `INFORMATION_SCHEMA.COLUMNS` lookup returning the LIVE column set. `tcUpsertCompanyRow` now builds `INSERT INTO companies (...col...) VALUES (...?) ON DUPLICATE KEY UPDATE ...` from the **intersection** of the normalized field map and the real schema, so a missing column (`owner_user_id`, `theme_color`, `logo`, ...) is skipped rather than aborting the upsert with 42S22. Values stay bound positionally; `id`/`created_at` are never overwritten on duplicate; `deleted_at=NULL` on duplicate preserves the 2026-09-07 soft-delete guard (delete-touches are handled before this path).
+3. Existing `tcLoadCompanies` uses `SELECT *` (already schema-safe); error surfacing from build-15 (`[v2_upsert_company] FAILED SQL:` log + `v2UpsertCompanyDetailed`) is unchanged.
+
+**Acceptance**: deploy head commit → hard refresh → add company → console shows `[Direct MySQL] v2_upsert_company RESPONSE {success:true,...}` → `SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY created_at DESC;` shows the row → refresh and a second browser see it. On legacy DBs, `owner_user_id` is auto-added on first request (verify `SHOW COLUMNS FROM companies;`). Table is still **`companies`** — `tradecore_companies` is not created.
+
 ## [1.0.9-build-15] - 2026-09-10
 
 ### Build 2026-09-08-15 — COMPANY-ADD ROOT-CAUSE FIX: subscription_end types + exact server error surfaced (fixes "v2_upsert_company still returns false even with correct payload")

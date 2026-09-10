@@ -195,6 +195,12 @@ function tcEnsureNormalizedTables($pdo) {
         // BUILD 2026-09-08-9: first-login forced password change persisted server-side for
         // emergency-recreated root and future must-change-password flows.
         try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $eMigMcp) {}
+        // BUILD 2026-09-08-16: owner_user_id is part of the base CREATE TABLE but that
+        // statement is a NO-OP on tables created by older builds — so legacy companies
+        // tables never received the column, aborting every upsert with
+        // 'SQLSTATE[42S22]: Column not found: 1054 Unknown column owner_user_id in INSERT INTO'.
+        // MySQL 8.0 has no 'ADD COLUMN IF NOT EXISTS'; the try/catch is the idempotent equivalent.
+        try { $pdo->exec("ALTER TABLE companies ADD COLUMN owner_user_id VARCHAR(64) DEFAULT NULL AFTER id"); } catch (Throwable $eMigOw) {}
         // BUILD 2026-09-08-14: add theme_color, subscription_end, logo to companies for
         // full round-trip of MasterData company fields via MySQL (no more local-only loss).
         try { $pdo->exec("ALTER TABLE companies ADD COLUMN theme_color VARCHAR(16) DEFAULT NULL AFTER locale"); } catch (Throwable $eMigTc) {}
@@ -213,6 +219,21 @@ function tcEnsureNormalizedTables($pdo) {
     } catch (Throwable $e) {
         error_log('[TradeCore API] tcEnsureNormalizedTables failed: ' . $e->getMessage());
     }
+}
+
+// Cached set of physical columns for a table (memoized per request). Used as the
+// authoritative whitelist so INSERT/UPDATE statements only ever reference columns that
+// actually exist in the deployed schema — legacy tables that predate a column (e.g.
+// owner_user_id, theme_color, logo) simply skip it instead of throwing SQLSTATE 42S22.
+function tcTableColumns($pdo, $table) {
+    static $cache = [];
+    if (isset($cache[$table])) return $cache[$table];
+    $cache[$table] = [];
+    try {
+        $st = $pdo->query("SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = " . $pdo->quote($table));
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $col) $cache[$table][(string)$col] = true;
+    } catch (Throwable $e) { error_log('[TradeCore API] tcTableColumns failed: ' . $e->getMessage()); }
+    return $cache[$table];
 }
 
 // Merge a v2 request: POST JSON body first, then GET params (GET wins only when absent
@@ -290,10 +311,26 @@ function tcUpsertCompanyRow($pdo, $c, $now, &$err = '') {
         'settings_json' => (isset($c['settings_json']) && is_string($c['settings_json'])) ? $c['settings_json'] : (is_array($c['settings_json'] ?? $c['settings'] ?? null) ? json_encode($c['settings_json'] ?? $c['settings'], JSON_UNESCAPED_UNICODE) : null),
     ];
     try {
-        $pdo->prepare("INSERT INTO companies (id, owner_user_id, name, code, currency_code, country, phone, email, tin_number, address, latitude, longitude, is_verified, is_active, status, locale, theme_color, subscription_end, logo, settings_json, created_at, updated_at, deleted_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
-            ON DUPLICATE KEY UPDATE owner_user_id=VALUES(owner_user_id), name=VALUES(name), code=VALUES(code), currency_code=VALUES(currency_code), country=VALUES(country), phone=VALUES(phone), email=VALUES(email), tin_number=VALUES(tin_number), address=VALUES(address), latitude=VALUES(latitude), longitude=VALUES(longitude), is_verified=VALUES(is_verified), is_active=VALUES(is_active), status=VALUES(status), locale=VALUES(locale), theme_color=VALUES(theme_color), subscription_end=VALUES(subscription_end), logo=VALUES(logo), settings_json=VALUES(settings_json), updated_at=VALUES(updated_at), deleted_at=NULL")
-            ->execute([$id, $data['owner_user_id'], $data['name'], $data['code'], $data['currency_code'], $data['country'], $data['phone'], $data['email'], $data['tin_number'], $data['address'], $data['latitude'], $data['longitude'], $data['is_verified'], $data['is_active'], $data['status'], $data['locale'], $data['theme_color'], $data['subscription_end'], $data['logo'], $data['settings_json'], $now, $now]);
+        // BUILD 2026-09-08-16: generate the INSERT dynamically and whitelist every column
+        // against the LIVE schema (tcTableColumns + the ALTER guard in tcEnsureNormalizedTables).
+        // A column absent from the deployed table — e.g. owner_user_id on legacy schemas —
+        // is simply skipped, so one stale column can never abort the whole upsert again.
+        $cols = tcTableColumns($pdo, 'companies');
+        $row = array_merge($data, ['id' => $id, 'created_at' => $now, 'updated_at' => $now, 'deleted_at' => null]);
+        $insCols = []; $insVals = [];
+        foreach ($row as $col => $val) {
+            if (!isset($cols[$col])) continue; // column does not exist in this deployment — drop it
+            $insCols[] = $col;
+            $insVals[] = $val;
+        }
+        if (count($insCols) < 3) { $err = 'No writable columns resolved for companies table'; error_log('[TradeCore API] upsert company failed: ' . $err); return false; }
+        $updates = [];
+        foreach ($insCols as $col) {
+            if ($col === 'id' || $col === 'created_at') continue; // never overwrite PK / birth timestamp
+            $updates[] = ($col === 'deleted_at') ? "deleted_at=NULL" : $col . "=VALUES(" . $col . ")";
+        }
+        $sql = "INSERT INTO companies (" . implode(', ', $insCols) . ") VALUES (" . rtrim(str_repeat('?,', count($insCols)), ',') . ") ON DUPLICATE KEY UPDATE " . implode(', ', $updates);
+        $pdo->prepare($sql)->execute($insVals);
         $err = '';
         return true;
     } catch (Throwable $e) { $err = 'INSERT failed: ' . $e->getMessage(); error_log('[TradeCore API] upsert company failed: ' . $err); return false; }
