@@ -62,9 +62,20 @@ function SidebarInner({
   // Read stable user from localStorage — never re-read on applyData
   const stableUser = useMemo(() => readStableUser(), []);
   const userRole = stableUser?.role ?? currentUser?.role ?? 'User';
-  const isSuperAdmin = userRole === 'Super Admin';
-  const isAdmin = userRole === 'Admin' || isSuperAdmin;
-  const isRoot = stableUser?.isRoot ?? currentUser?.isRoot === true ?? currentUser?.username === 'root_mandate' ?? currentUser?.username === 'superadmin';
+  const stableUsername = String(stableUser?.username ?? currentUser?.username ?? '').toLowerCase();
+  const userRoleNorm = String(userRole || '').trim().toLowerCase();
+  // BUILD 2026-09-08-6: role detection must accept every global-super spelling the
+  // server emits ('Super Admin', 'superadmin', 'super_admin', 'super admin') and the
+  // root usernames — otherwise the freshly recreated root (role 'superadmin',
+  // no isRoot flag) silently loses the User Access / Settings / Subscriptions /
+  // Data Recovery / ROOT MANDATE sidebar entries ("missing panels").
+  const isSuperAdmin =
+    userRole === 'Super Admin' ||
+    ['super admin', 'superadmin', 'super_admin'].includes(userRoleNorm) ||
+    stableUsername === 'root_mandate' || stableUsername === 'superadmin';
+  const isAdmin = isSuperAdmin || userRoleNorm === 'admin';
+  const isRoot = stableUser?.isRoot === true || currentUser?.isRoot === true
+    || stableUsername === 'root_mandate' || stableUsername === 'superadmin';
 
   // Use allowedPages prop (computed in App.tsx via useMemo) — this is stable
   // because App.tsx memoizes it. Only re-computes if role/permissions actually change.
@@ -832,7 +843,7 @@ function SidebarInner({
                 >
                   {t('User Info')}
                 </button>
-                {(currentUser?.role === 'Super Admin' || currentUser?.role === 'Admin') && (
+                {(isSuperAdmin || isAdmin || String(currentUser?.role ?? '').trim().toLowerCase() === 'admin') && (
                   <button
                     onClick={() => onNavigate('user-access')}
                     className={`w-full text-left px-3 py-1.5 rounded transition ${

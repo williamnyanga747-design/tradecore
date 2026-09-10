@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-7] - 2026-09-08
+
+### Build 2026-09-08-7 — Missing-panel fix for global supers (sidebar + Manage Users)
+- **ROOT CAUSE**: the login server issues recreated roots `role:'superadmin'` (lowercase) with **no `isRoot` flag**, but `Sidebar.tsx` gated on the exact string `userRole === 'Super Admin'` and used a precedence-broken `stableUser?.isRoot ?? currentUser?.isRoot === true ?? ...` chain (the `=== true` results in `false` bind before `??`), so `isRoot` collapsed to a boolean instead of falling through. Result: the freshly mastered root logged in and the panels were "missing" — User Access submenu, Settings, Super Admin Subscriptions & Payments, Data Recovery, and the whole ROOT MANDATE dashboard / ROOT TRA Reports / ROOT Dispute Center section never rendered.
+- **`Sidebar.tsx` now detects supers tolerantly**: accepts `'Super Admin'` / `'superadmin'` / `'super_admin'` / `'super admin'` and the root usernames (`root_mandate`, `superadmin`) from BOTH `stableUser` (localStorage) and `currentUser`; `isRoot` short-circuits on `isRoot===true` from either source OR the username before any boolean-coercion; `isAdmin` includes the tolerant super check. `user-access` submenu gate no longer compares `currentUser?.role === 'Super Admin'` exactly.
+- **`App.tsx` passes a tolerant `isSuperAdmin` to ManageUsers** (`isSuperScopeUser(currentUser)`, root included) replacing `currentUser?.role === 'Super Admin'`, so the Manage Users **User Access / Access Matrix** tab is no longer "Access Denied" for the recreated root; `isGlobalSuperAdmin` now uses the same `isRootUser` helper as the rest of the app.
+- **`ManageUsers.tsx` hierarchy is case-tolerant**: `canAccessPassword`/`canBlockUser` treat any super spelling (and root usernames) as protected-global so a lowercased-role super can never be demoted/blocked by a company admin; super rows (any spelling) are excluded from the editable staff list; the Audit Trail / Security Telemetry filters no longer hide `superadmin` rows from a recreated root.
+- No backend change; api.php untouched (deploy copy stays hash-synced from build -6).
+
 ## [1.0.9-build-6] - 2026-09-08
 
 ### Build 2026-09-08-6 — Login fail-open to server + get_my_role user_accounts tier

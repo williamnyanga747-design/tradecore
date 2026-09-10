@@ -1424,7 +1424,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-6');
+    console.log('[TradeCore] build 2026-09-08-7');
   }, []);
 
   useEffect(() => {
@@ -12440,8 +12440,8 @@ try {
             currentBranchId={currentBranchId}
             currentStoreId={currentStoreId}
             settings={settings}
-            isSuperAdmin={currentUser?.role === 'Super Admin'}
-            isGlobalSuperAdmin={currentUser?.username === 'superadmin' || currentUser?.username === 'root_mandate'}
+            isSuperAdmin={!!currentUser && isSuperScopeUser(currentUser)}
+            isGlobalSuperAdmin={isRootUser(currentUser)}
             translate={t}
             logAction={logAction}
             saveAllData={saveAllData}

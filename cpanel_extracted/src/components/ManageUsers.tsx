@@ -53,6 +53,15 @@ export default function ManageUsers({
   onNavigate,
   onResetPassword
 }: ManageUsersProps) {
+  // BUILD 2026-09-08-6: tolerant global-super detection — the login server can
+  // emit the role as 'Super Admin' / 'superadmin' / 'super_admin' / 'super admin'
+  // and the recreated root may carry no isRoot flag. None of the exact-string
+  // gates below may hide User Access / the Access Matrix / audit rows from a real
+  // global super.
+  const isSuperRole = (r?: string): boolean =>
+    !!r && ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(r).trim());
+  const isSuperScopeCtx = (u: any): boolean =>
+    !!u && (u.username === 'root_mandate' || u.username === 'superadmin' || isSuperRole(u?.role));
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [selectedStaffId, setSelectedStaffId] = useState<number | null>(null);
   const [selectedStaffPages, setSelectedStaffPages] = useState<string[]>([]);
@@ -102,7 +111,7 @@ export default function ManageUsers({
     }
     if (target.username === 'root_mandate' || target.username === 'superadmin') return false;
     if (target.role === 'Super Admin') return false;
-    return currentUser?.role === 'Admin';
+    return isGlobalSuperAdmin || isSuperScopeCtx(currentUser) || currentUser?.role === 'Admin';
   };
 
   // Restricted Super Admin: a Super Admin who is not the global superadmin/root_mandate.
@@ -115,9 +124,9 @@ export default function ManageUsers({
     if (target.id === currentUser.id) return false;
     if (target.username === 'root_mandate') return false;
     if (target.username === 'superadmin') return isGlobalSuperAdmin;
-    if (target.role === 'Super Admin') return isGlobalSuperAdmin;
+    if (isSuperRole(target.role)) return isGlobalSuperAdmin;
     if (!isGlobalSuperAdmin && target.companyId !== null && currentUser.companyId !== null && target.companyId !== currentUser.companyId) return false;
-    return currentUser.role === 'Super Admin' || currentUser.role === 'Admin';
+    return isSuperScopeCtx(currentUser) || currentUser.role === 'Admin';
   };
 
   // Filter users based on logged-in user's administrative level
@@ -140,8 +149,8 @@ export default function ManageUsers({
     );
   }
 
-  // Filter staff to render (exclude Super Admins)
-  let staffToRender = users.filter(u => u.role !== 'Super Admin');
+  // Filter staff to render (exclude Supers — any spelling, so lowercased super rows never appear as editable targets)
+  let staffToRender = users.filter(u => u.role !== 'Super Admin' && !isSuperRole(u.role) && u.username !== 'root_mandate' && u.username !== 'superadmin');
   if (currentUser?.username !== 'root_mandate') {
     staffToRender = staffToRender.filter(u => u.username !== 'root_mandate' && u.username !== 'superadmin');
   }
@@ -464,10 +473,10 @@ export default function ManageUsers({
     if (currentUser?.username !== 'root_mandate') {
       logs = logs.filter(l => l.username !== 'root_mandate');
     }
-    if (currentUser?.role !== 'Super Admin') {
+    if (!isSuperScopeCtx(currentUser)) {
       logs = logs.filter(l => l.username !== 'superadmin');
     }
-    if (!isSuperAdmin) {
+    if (!isSuperAdmin && !isSuperScopeCtx(currentUser)) {
       logs = logs.filter(l => l.role !== 'Super Admin' && l.companyId === currentCompanyId);
     }
     if (auditStaffFilter !== 'All') {
@@ -769,7 +778,7 @@ export default function ManageUsers({
   }
 
   if (currentPage === 'user-access') {
-    if (!isSuperAdmin && currentUser?.role !== 'Admin') {
+    if (!isSuperAdmin && !isSuperScopeCtx(currentUser) && currentUser?.role !== 'Admin') {
       return <div className="p-4 bg-red-100 text-red-800 rounded-lg">{t('Access Denied')}</div>;
     }
 
@@ -992,7 +1001,7 @@ export default function ManageUsers({
           if (currentUser?.username !== 'root_mandate') {
             telemetryLogs = telemetryLogs.filter(l => l.username !== 'root_mandate');
           }
-          if (currentUser?.role !== 'Super Admin') {
+          if (currentUser?.role !== 'Super Admin' && !isSuperScopeCtx(currentUser)) {
             telemetryLogs = telemetryLogs.filter(l => l.username !== 'superadmin');
           }
           if (!isSuperAdmin) {
