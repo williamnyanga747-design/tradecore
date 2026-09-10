@@ -6,6 +6,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-17] - 2026-09-10
+
+### Build 2026-09-08-17 — CRITICAL SQL 1292 FIX: `Incorrect datetime value: '1789066134' for column 'created_at'` + epoch-schema self-healing
+Screenshot `2026-09-10 212657` showed `v2_upsert_company` failing with `SQLSTATE[22007]: Invalid datetime format: 1292 Incorrect datetime value: '1789066134' for column 'created_at'`.
+
+**Root cause**: the whole TradeCore stack persists `created_at`/`updated_at` as **BIGINT epoch-seconds** (`$now = time()`; all of `database.sql`, migrations `002/003/004`, and every upsert/load). But the deployed `companies` table was created by a legacy schema that declared those columns as DATETIME (same for `stores`, which `001_multi_store_location.sql` created with `DATETIME DEFAULT CURRENT_TIMESTAMP`). `CREATE TABLE IF NOT EXISTS` is a no-op on those tables, so the epoch int `1789066134` was handed to a DATETIME column and MySQL rejected it with 1292.
+
+**Backend fixes** (`public/cpanel/api.php`):
+1. **`tcEnsureEpochTimestamps($pdo, $tables)`** — new migration, invoked from `tcEnsureNormalizedTables` for `companies, stores, stock_categories, products, user_accounts, audit_trails`. It queries `INFORMATION_SCHEMA.COLUMNS` for `created_at`/`updated_at` whose `DATA_TYPE` is not BIGINT, then per affected table: converts existing `YYYY-MM-DD HH:MM:SS` rows to epoch-seconds via `UNIX_TIMESTAMP()` (a `REGEXP '^[0-9]+$'` guard leaves genuine epoch values untouched, NULLs stay NULL, `< 10000000000` bounds the numeric-coerced string match to < year 2286), then `ALTER TABLE ... MODIFY COLUMN created_at BIGINT NOT NULL, MODIFY COLUMN updated_at BIGINT NOT NULL` (+ `deleted_at BIGINT DEFAULT NULL`). Memoized per request; only touches tables actually on the wrong type.
+2. **`tcEpochTs($value, $fallback)`** — the requested PHP sanitizer, adapted to the epoch-seconds contract so the frontend's numeric `created_at`/`updated_at` handling never breaks: numeric → `(int)` (13-digit ms auto-detected and divided by 1000), ISO/date strings → `strtotime()`, empty/bool/invalid → `$fallback` (`time()` for created/updated, `null` for deleted). Wired into `tcUpsertCompanyRow` and `tcUpsertStoreRow` timestamps.
+3. Build-16's dynamic column whitelist (`tcTableColumns`) and build-15's error surfacing remain intact; the fix is type-agnostic — it works whether the deployed column is DATETIME (legacy), TIMESTAMP, or BIGINT.
+
+**Acceptance**: deploy head commit → hard refresh → add company → console shows `[Direct MySQL] v2_upsert_company RESPONSE {success:true,...}` → `SHOW COLUMNS FROM companies;` now reports `created_at`/`updated_at` as `bigint` → `SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY created_at DESC;` shows the row. Table is still **`companies`** (`tradecore_companies` is not created).
+
 ## [1.0.9-build-16] - 2026-09-10
 
 ### Build 2026-09-08-16 — CRITICAL SQL 1054 FIX: `Unknown column 'owner_user_id' in 'INSERT INTO'` + schema auto-migration guard

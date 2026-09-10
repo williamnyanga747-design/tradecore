@@ -215,10 +215,66 @@ function tcEnsureNormalizedTables($pdo) {
         // ONLY after a successful password change), 30-minute expiry. This table is NOT part of
         // the state blob — full-state flushes / 409 rebases can never overwrite a token.
         $pdo->exec("CREATE TABLE IF NOT EXISTS password_reset_tokens (id VARCHAR(64) PRIMARY KEY, token_hash CHAR(64) NOT NULL, user_id VARCHAR(64) NOT NULL, company_id VARCHAR(64) DEFAULT NULL, email VARCHAR(190) NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, consumed TINYINT(1) NOT NULL DEFAULT 0, UNIQUE KEY uniq_prt_hash (token_hash), INDEX idx_prt_hash_consumed (token_hash, consumed)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        // BUILD 2026-09-08-17: legacy schemas (e.g. 001_multi_store_location.sql stores,
+        // and the deployed companies table) defined created_at/updated_at as DATETIME/TIMESTAMP
+        // while the ENTIRE stack writes BIGINT epoch-seconds ($now = time()). An epoch int like
+        // 1789066134 into a DATETIME column dies with 'SQLSTATE[22007]: 1292 Incorrect datetime
+        // value for column created_at'. Detect such columns, convert existing string rows to
+        // epoch-seconds, then MODIFY to BIGINT so the epoch contract holds on every table.
+        tcEnsureEpochTimestamps($pdo, ['companies', 'stores', 'stock_categories', 'products', 'user_accounts', 'audit_trails']);
         $done = true;
     } catch (Throwable $e) {
         error_log('[TradeCore API] tcEnsureNormalizedTables failed: ' . $e->getMessage());
     }
+}
+
+// BUILD 2026-09-08-17: normalize any timestamp VALUE to integer epoch-seconds before it
+// reaches a BIGINT created_at/updated_at/deleted_at column. Accepts epoch-seconds (or
+// milliseconds, auto-detected), 'Y-m-d H:i:s' / ISO-8601 strings (via strtotime), empty,
+// and invalid values. This is the PHP-side guard the stack relies on — the companion
+// schema migration is tcEnsureEpochTimestamps() in tcEnsureNormalizedTables().
+function tcEpochTs($value, $fallback = null) {
+    if (is_bool($value) || $value === null || $value === '' ) return $fallback;
+    if (is_numeric($value)) {
+        $n = (float)$value;
+        if ($n > 99999999999) $n = $n / 1000.0; // epoch MILLISECONDS -> seconds
+        return (int)$n;
+    }
+    $ts = strtotime((string)$value);
+    return ($ts === false) ? $fallback : $ts;
+}
+
+// BUILD 2026-09-08-17: find every normalized table whose created_at/updated_at is NOT
+// BIGINT (legacy DATETIME/TIMESTAMP) and repair it in place: convert existing rows to
+// epoch-seconds, then MODIFY the column types to BIGINT. Memoized per PHP request and
+// only ever touches tables that are actually on the wrong type, so it runs once.
+function tcEnsureEpochTimestamps($pdo, $tables = []) {
+    static $done = false;
+    if ($done || !$pdo) return;
+    $done = true;
+    if (!is_array($tables) || !$tables) return;
+    $list = implode(',', array_map(function ($t) { return "'" . str_replace(["\\", "'"], '', (string)$t) . "'"; }, $tables));
+    try {
+        $st = $pdo->query("SELECT TABLE_NAME, COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME IN ($list)
+              AND COLUMN_NAME IN ('created_at','updated_at')
+              AND DATA_TYPE NOT IN ('bigint','int')");
+        $toFix = [];
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) $toFix[$r['TABLE_NAME']] = true;
+        foreach (array_keys($toFix) as $tbl) {
+            // Convert legacy 'YYYY-MM-DD HH:MM:SS' rows to epoch-seconds BEFORE changing the
+            // column type. The REGEXP guard keeps real epoch values untouched and NULL stays
+            // NULL; '< 10000000000' selects numeric-coerced datetime strings (< year 2286).
+            $pdo->exec("UPDATE `$tbl` SET
+                created_at = IF(created_at REGEXP '^[0-9]+$', created_at, UNIX_TIMESTAMP(created_at)),
+                updated_at = IF(updated_at REGEXP '^[0-9]+$', updated_at, UNIX_TIMESTAMP(updated_at))
+                WHERE (created_at IS NOT NULL AND created_at < 10000000000)
+                   OR (updated_at IS NOT NULL AND updated_at < 10000000000)");
+            $pdo->exec("ALTER TABLE `$tbl` MODIFY COLUMN created_at BIGINT NOT NULL, MODIFY COLUMN updated_at BIGINT NOT NULL");
+            try { $pdo->exec("ALTER TABLE `$tbl` MODIFY COLUMN deleted_at BIGINT DEFAULT NULL"); } catch (Throwable $eDelTs) {}
+        }
+    } catch (Throwable $e) { error_log('[TradeCore API] tcEnsureEpochTimestamps failed: ' . $e->getMessage()); }
 }
 
 // Cached set of physical columns for a table (memoized per request). Used as the
@@ -316,7 +372,15 @@ function tcUpsertCompanyRow($pdo, $c, $now, &$err = '') {
         // A column absent from the deployed table — e.g. owner_user_id on legacy schemas —
         // is simply skipped, so one stale column can never abort the whole upsert again.
         $cols = tcTableColumns($pdo, 'companies');
-        $row = array_merge($data, ['id' => $id, 'created_at' => $now, 'updated_at' => $now, 'deleted_at' => null]);
+        // BUILD 2026-09-08-17: every timestamp leaving this function is normalized to
+        // integer epoch-seconds (tcEpochTs) — never a literal datetime string — so it is
+        // valid whether the column is BIGINT (correct, post-migration) on any deployment.
+        $row = array_merge($data, [
+            'id' => $id,
+            'created_at' => tcEpochTs($c['created_at'] ?? null, $now),
+            'updated_at' => tcEpochTs($c['updated_at'] ?? null, $now),
+            'deleted_at' => tcEpochTs($c['deleted_at'] ?? null, null),
+        ]);
         $insCols = []; $insVals = [];
         foreach ($row as $col => $val) {
             if (!isset($cols[$col])) continue; // column does not exist in this deployment — drop it
@@ -366,7 +430,7 @@ function tcUpsertStoreRow($pdo, $s, $now) {
         $pdo->prepare("INSERT INTO stores (id, company_id, branch_id, name, code, phone, email, address, city, is_active, settings_json, created_at, updated_at, deleted_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
             ON DUPLICATE KEY UPDATE company_id=VALUES(company_id), branch_id=VALUES(branch_id), name=VALUES(name), code=VALUES(code), phone=VALUES(phone), email=VALUES(email), address=VALUES(address), city=VALUES(city), is_active=VALUES(is_active), settings_json=VALUES(settings_json), updated_at=VALUES(updated_at), deleted_at=NULL")
-            ->execute([$id, $data['company_id'], $data['branch_id'], $data['name'], $data['code'], $data['phone'], $data['email'], $data['address'], $data['city'], $data['is_active'], $data['settings_json'], $now, $now]);
+            ->execute([$id, $data['company_id'], $data['branch_id'], $data['name'], $data['code'], $data['phone'], $data['email'], $data['address'], $data['city'], $data['is_active'], $data['settings_json'], tcEpochTs($s['created_at'] ?? null, $now), tcEpochTs($s['updated_at'] ?? null, $now)]);
         return true;
     } catch (Throwable $e) { error_log('[TradeCore API] upsert store failed: ' . $e->getMessage()); return false; }
 }
