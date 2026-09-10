@@ -195,6 +195,11 @@ function tcEnsureNormalizedTables($pdo) {
         // BUILD 2026-09-08-9: first-login forced password change persisted server-side for
         // emergency-recreated root and future must-change-password flows.
         try { $pdo->exec("ALTER TABLE user_accounts ADD COLUMN must_change_password TINYINT(1) NOT NULL DEFAULT 0"); } catch (Throwable $eMigMcp) {}
+        // BUILD 2026-09-08-14: add theme_color, subscription_end, logo to companies for
+        // full round-trip of MasterData company fields via MySQL (no more local-only loss).
+        try { $pdo->exec("ALTER TABLE companies ADD COLUMN theme_color VARCHAR(16) DEFAULT NULL AFTER locale"); } catch (Throwable $eMigTc) {}
+        try { $pdo->exec("ALTER TABLE companies ADD COLUMN subscription_end BIGINT DEFAULT NULL AFTER theme_color"); } catch (Throwable $eMigSe) {}
+        try { $pdo->exec("ALTER TABLE companies ADD COLUMN logo TEXT DEFAULT NULL AFTER subscription_end"); } catch (Throwable $eMigLo) {}
         $pdo->exec("CREATE TABLE IF NOT EXISTS audit_trails (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, store_id VARCHAR(64) DEFAULT NULL, user_id VARCHAR(64) DEFAULT NULL, user_name VARCHAR(255) DEFAULT NULL, action VARCHAR(100) NOT NULL, entity_type VARCHAR(100) DEFAULT NULL, entity_id VARCHAR(64) DEFAULT NULL, entity_name VARCHAR(255) DEFAULT NULL, details TEXT DEFAULT NULL, details_json TEXT DEFAULT NULL, ip_address VARCHAR(45) DEFAULT NULL, created_at BIGINT NOT NULL, INDEX idx_at_company_action (company_id, action), INDEX idx_at_created (created_at), INDEX idx_at_entity (entity_type, entity_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         // Password reset tokens (forgot-password / reset-password): single-use (consumed=1 set
         // ONLY after a successful password change), 30-minute expiry. This table is NOT part of
@@ -244,8 +249,8 @@ function tcBlobMerge($pdo, $field, $entity = null, $removeId = null) {
     } catch (Throwable $eBlob) { error_log('[TradeCore API] tcBlobMerge failed: ' . $eBlob->getMessage()); }
 }
 
-function tcUpsertCompanyRow($pdo, $c, $now) {
-    if (!$pdo || !is_array($c) || !isset($c['id'])) return false;
+function tcUpsertCompanyRow($pdo, $c, $now, &$err = '') {
+    if (!$pdo || !is_array($c) || !isset($c['id'])) { $err = 'Missing company.id or no PDO'; return false; }
     $id = (string)$c['id'];
     // DELETED-ENTITY GUARD (2026-09-07): honor the client's soft-delete flag so a blob
     // flush can never resurrect a company the user deleted. Previously the ON DUPLICATE
@@ -254,8 +259,9 @@ function tcUpsertCompanyRow($pdo, $c, $now) {
     if (!empty($c['isDeleted']) || !empty($c['deleted_at']) || !empty($c['deletedAt'])) {
         try {
             $pdo->prepare("UPDATE companies SET deleted_at=?, is_active=0, status='deleted', updated_at=? WHERE id=?")->execute([$now, $now, $id]);
-        } catch (Throwable $eDel) { error_log('[TradeCore API] company delete-touch failed: ' . $eDel->getMessage()); return false; }
-        return true;
+            $err = '';
+            return true;
+        } catch (Throwable $eDel) { $err = 'delete-touch: ' . $eDel->getMessage(); error_log('[TradeCore API] company delete-touch failed: ' . $err); return false; }
     }
     $data = [
         'owner_user_id' => isset($c['owner_user_id']) ? (string)$c['owner_user_id'] : (isset($c['ownerUserId']) ? (string)$c['ownerUserId'] : null),
@@ -265,23 +271,27 @@ function tcUpsertCompanyRow($pdo, $c, $now) {
         'country' => (string)($c['country'] ?? 'Tanzania'),
         'phone' => isset($c['phone']) ? (string)$c['phone'] : null,
         'email' => isset($c['email']) ? (string)$c['email'] : null,
-        'tin_number' => isset($c['tin_number']) ? (string)$c['tin_number'] : (isset($c['tinNumber']) ? (string)$c['tinNumber'] : null),
+        'tin_number' => isset($c['tin_number']) ? (string)$c['tin_number'] : (isset($c['tinNumber']) ? (string)$c['tinNumber'] : (isset($c['tin']) ? (string)$c['tin'] : null)),
         'address' => isset($c['address']) ? (string)$c['address'] : (isset($c['addressText']) ? (string)$c['addressText'] : null),
         'latitude' => tcNum($c['latitude'] ?? $c['lat'] ?? null),
         'longitude' => tcNum($c['longitude'] ?? $c['lng'] ?? null),
         'is_verified' => tcBool($c['is_verified'] ?? $c['isVerified'] ?? 0),
         'is_active' => tcBool($c['is_active'] ?? $c['active'] ?? 1),
-        'status' => (string)($c['status'] ?? ($c['is_active'] ?? $c['active'] ?? 1) ? 'active' : 'inactive'),
-        'locale' => (string)($c['locale'] ?? 'en'),
+        'status' => (string)($c['status'] ?? (tcBool($c['is_active'] ?? $c['active'] ?? 1) ? 'active' : 'inactive')),
+        'locale' => (string)($c['locale'] ?? $c['language'] ?? 'en'),
+        'theme_color' => isset($c['theme_color']) ? (string)$c['theme_color'] : (isset($c['themeColor']) ? (string)$c['themeColor'] : null),
+        'subscription_end' => isset($c['subscription_end']) ? (string)$c['subscription_end'] : (isset($c['subscriptionEnd']) ? (string)$c['subscriptionEnd'] : null),
+        'logo' => isset($c['logo']) ? (string)$c['logo'] : (isset($c['logoUrl']) ? (string)$c['logoUrl'] : null),
         'settings_json' => (isset($c['settings_json']) && is_string($c['settings_json'])) ? $c['settings_json'] : (is_array($c['settings_json'] ?? $c['settings'] ?? null) ? json_encode($c['settings_json'] ?? $c['settings'], JSON_UNESCAPED_UNICODE) : null),
     ];
     try {
-        $pdo->prepare("INSERT INTO companies (id, owner_user_id, name, code, currency_code, country, phone, email, tin_number, address, latitude, longitude, is_verified, is_active, status, locale, settings_json, created_at, updated_at, deleted_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
-            ON DUPLICATE KEY UPDATE owner_user_id=VALUES(owner_user_id), name=VALUES(name), code=VALUES(code), currency_code=VALUES(currency_code), country=VALUES(country), phone=VALUES(phone), email=VALUES(email), tin_number=VALUES(tin_number), address=VALUES(address), latitude=VALUES(latitude), longitude=VALUES(longitude), is_verified=VALUES(is_verified), is_active=VALUES(is_active), status=VALUES(status), locale=VALUES(locale), settings_json=VALUES(settings_json), updated_at=VALUES(updated_at), deleted_at=NULL")
-            ->execute([$id, $data['owner_user_id'], $data['name'], $data['code'], $data['currency_code'], $data['country'], $data['phone'], $data['email'], $data['tin_number'], $data['address'], $data['latitude'], $data['longitude'], $data['is_verified'], $data['is_active'], $data['status'], $data['locale'], $data['settings_json'], $now, $now]);
+        $pdo->prepare("INSERT INTO companies (id, owner_user_id, name, code, currency_code, country, phone, email, tin_number, address, latitude, longitude, is_verified, is_active, status, locale, theme_color, subscription_end, logo, settings_json, created_at, updated_at, deleted_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
+            ON DUPLICATE KEY UPDATE owner_user_id=VALUES(owner_user_id), name=VALUES(name), code=VALUES(code), currency_code=VALUES(currency_code), country=VALUES(country), phone=VALUES(phone), email=VALUES(email), tin_number=VALUES(tin_number), address=VALUES(address), latitude=VALUES(latitude), longitude=VALUES(longitude), is_verified=VALUES(is_verified), is_active=VALUES(is_active), status=VALUES(status), locale=VALUES(locale), theme_color=VALUES(theme_color), subscription_end=VALUES(subscription_end), logo=VALUES(logo), settings_json=VALUES(settings_json), updated_at=VALUES(updated_at), deleted_at=NULL")
+            ->execute([$id, $data['owner_user_id'], $data['name'], $data['code'], $data['currency_code'], $data['country'], $data['phone'], $data['email'], $data['tin_number'], $data['address'], $data['latitude'], $data['longitude'], $data['is_verified'], $data['is_active'], $data['status'], $data['locale'], $data['theme_color'], $data['subscription_end'], $data['logo'], $data['settings_json'], $now, $now]);
+        $err = '';
         return true;
-    } catch (Throwable $e) { error_log('[TradeCore API] upsert company failed: ' . $e->getMessage()); return false; }
+    } catch (Throwable $e) { $err = 'INSERT failed: ' . $e->getMessage(); error_log('[TradeCore API] upsert company failed: ' . $err); return false; }
 }
 
 function tcUpsertStoreRow($pdo, $s, $now) {
@@ -428,7 +438,7 @@ function tcLoadCompanies($pdo) {
     if (!$pdo) return $out;
     tcEnsureNormalizedTables($pdo);
     try {
-        $rows = $pdo->query("SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY name ASC")->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $pdo->query("SELECT * FROM companies WHERE deleted_at IS NULL ORDER BY created_at DESC, name ASC")->fetchAll(PDO::FETCH_ASSOC);
         foreach ($rows as $r) {
             $out[] = [
                 'id' => $r['id'], 'company_id' => $r['id'], 'name' => $r['name'], 'code' => $r['code'],
@@ -438,7 +448,9 @@ function tcLoadCompanies($pdo) {
                 'latitude' => $r['latitude'] === null ? null : (float)$r['latitude'],
                 'longitude' => $r['longitude'] === null ? null : (float)$r['longitude'],
                 'isVerified' => (int)$r['is_verified'], 'is_active' => (int)$r['is_active'], 'active' => (int)$r['is_active'],
-                'status' => $r['status'], 'locale' => $r['locale'],
+                'status' => $r['status'], 'locale' => $r['locale'], 'language' => $r['locale'],
+                'themeColor' => $r['theme_color'] ?? null, 'subscriptionEnd' => $r['subscription_end'] ?? null,
+                'logo' => $r['logo'] ?? null,
                 'created_at' => $r['created_at'], 'updated_at' => $r['updated_at'],
             ];
         }
@@ -3161,13 +3173,38 @@ try {
         // ---- v2_upsert_company ---------------------------------------------------
         if ($action === 'v2_upsert_company') {
             if (!$pdo) { echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
+            // BUILD 2026-09-08-14: robust entity extraction — accept the payload from
+            // {entity}, {company}, or bare top-level (both camelCase and snake_case).
             $company = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['company'] ?? null) ? $v2in['company'] : null);
-            if (!$company || !isset($company['id'])) { echo json_encode(["success" => false, "error" => "Missing company.id", "server_ts" => $now]); exit(); }
-            $ok = tcUpsertCompanyRow($pdo, $company, $now);
-            if ($ok) tcBlobMerge($pdo, 'companies', $company);
+            if (!is_array($company)) {
+                // Fallback: treat the entire payload as the company (strip action/GET-only keys)
+                $candidate = $v2in;
+                unset($candidate['action']);
+                if (isset($candidate['name']) || isset($candidate['id'])) $company = $candidate;
+            }
+            if (!is_array($company) || !isset($company['id'])) {
+                // Auto-generate id when name is present but id is missing
+                if (is_array($company) && !isset($company['id']) && isset($company['name'])) {
+                    $company['id'] = 'co_' . bin2hex(random_bytes(8));
+                } else {
+                    echo json_encode(["success" => false, "error" => "Missing company.id — send entity.id or top-level id", "server_ts" => $now, "received_keys" => array_keys($v2in)]);
+                    exit();
+                }
+            }
+            $err = '';
+            try {
+                $ok = tcUpsertCompanyRow($pdo, $company, $now, $err);
+            } catch (Throwable $eUpsert) {
+                $ok = false;
+                $err = 'PDO Exception: ' . $eUpsert->getMessage();
+                error_log('[TradeCore API] v2_upsert_company PDO exception: ' . $err);
+            }
+            if ($ok) {
+                try { tcBlobMerge($pdo, 'companies', $company); } catch (Throwable $eBlob) { error_log('[TradeCore API] v2_upsert_company blob merge failed: ' . $eBlob->getMessage()); }
+            }
             $name = (string)($company['name'] ?? $company['id']);
-            tcWriteAuditTrail($pdo, (string)$company['id'], '', $v2op, 'Company Upsert', 'Company', (string)$company['id'], $name, ['company_id' => $company['id']]);
-            echo json_encode(["success" => $ok, "id" => (string)$company['id'], "server_ts" => $now]);
+            try { tcWriteAuditTrail($pdo, (string)$company['id'], '', $v2op, 'Company Upsert', 'Company', (string)$company['id'], $name, ['company_id' => $company['id']]); } catch (Throwable $eAudit) { error_log('[TradeCore API] v2_upsert_company audit failed: ' . $eAudit->getMessage()); }
+            echo json_encode(["success" => (bool)$ok, "id" => (string)$company['id'], "error" => $ok ? null : ($err ?: 'unknown'), "server_ts" => $now]);
             exit();
         }
 
