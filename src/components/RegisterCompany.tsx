@@ -47,7 +47,7 @@ interface RegisterCompanyProps {
     vrnNumber?: string;
     isVatRegistered?: boolean;
     businessLicense?: string;
-  }) => string | void;
+  }) => string | void | Promise<string | void>;
   onBackToLogin: () => void;
 }
 

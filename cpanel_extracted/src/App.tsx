@@ -143,7 +143,10 @@ import {
   v2UpsertCompany, v2UpsertCompanyDetailed, v2DeleteCompany, v2ListCompanies,
   v2UpsertStore, v2DeleteStore, v2ListStores,
   v2ListBranches, v2UpsertBranch, v2DeleteBranch,
-  v2UpsertProduct, v2DeleteProduct
+  v2UpsertProduct, v2DeleteProduct,
+  v2UpsertCategory, v2DeleteCategory, v2ListCategories,
+  v2ListUserAccounts, v2UpsertUserAccount, v2DeleteUserAccount,
+  v2FetchCompanyState
 } from './utils/normalizedPersistence';
 // @ts-ignore - virtual module provided by vite-plugin-pwa
 import { registerSW } from 'virtual:pwa-register';
@@ -259,7 +262,13 @@ const MASTER_SYNC_KEYS = new Set(['categories']);
 // so save_state no longer ships a 13.4KB blob delta, no version bump, no 409 Conflict, and a
 // deleted row stays deleted (the old per-record upsert-of-survivors resurrected it). IDB
 // stays a pure offline read cache; MySQL is the only source of truth.
-const DIRECT_SYNC_KEYS = new Set(['companies', 'branches', 'stores', 'customers', 'suppliers', 'marketplaceProducts']);
+// BUILD 2026-09-08-20 (Direct MySQL CRUD): 'users' and 'categories' now ALSO commit over
+// the normalized v2 endpoints. users -> v2_upsert_user_account / v2_delete_user_account
+// (the server upserts BOTH user_accounts AND the legacy tradecore_users mirror, so a newly
+// created account is authable on any device immediately). categories are stored in state as
+// company-scoped STRING keys ('co_<companyId>:<name>') so they are diffed string-wise in
+// the saveAllData DIRECT branch and posted via v2_upsert_category / v2_delete_category.
+const DIRECT_SYNC_KEYS = new Set(['companies', 'branches', 'stores', 'customers', 'suppliers', 'marketplaceProducts', 'users', 'categories']);
 
 // DIRECT-MYSQL DELTA DISPATCH (2026-09-08-12): diff the PREVIOUS array (dbStateRef before
 // this save) against the incoming one so ONLY actually-changed records hit the wire — a
@@ -369,6 +378,18 @@ const DIRECT_DELTA_HANDLERS: Record<string, (u: any[], r: string[], nextMap: Map
     const ops: Promise<unknown>[] = [];
     for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; if (cid != null && cid !== '') ops.push(v2UpsertProduct(rec, cid).catch(() => {})); }
     for (const id of r) { const rec = prevMap.get(id); const cid = rec?.company_id ?? rec?.companyId ?? companyId; if (cid != null && cid !== '') ops.push(v2DeleteProduct(id, cid).catch(() => {})); }
+    return ops;
+  },
+  // BUILD 2026-09-08-20 (Direct MySQL CRUD): user accounts now commit one-record-at-a-time
+  // over v2_upsert_user_account / v2_delete_user_account instead of riding the save_state
+  // blob. The server handler upserts user_accounts AND the legacy tradecore_users mirror in
+  // one request, so a user created here is immediately present on MySQL and authable on a
+  // fresh device — no waiting for the debounced blob flush (which is what caused "created
+  // user logs in, then gets auto-logged-out because the server snapshot didn't know them").
+  users: (u, r, _nextMap, companyId, prevMap) => {
+    const ops: Promise<unknown>[] = [];
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; ops.push(v2UpsertUserAccount(rec, cid).catch((e) => console.warn('[Direct MySQL] v2_upsert_user_account delta failed', e))); }
+    for (const id of r) { const rec = prevMap.get(id); const cid = rec?.company_id ?? rec?.companyId ?? companyId; ops.push(v2DeleteUserAccount(id, cid).catch((e) => console.warn('[Direct MySQL] v2_delete_user_account delta failed', e))); }
     return ops;
   }
 };
@@ -1607,7 +1628,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-19');
+    console.log('[TradeCore] build 2026-09-08-20');
   }, []);
 
   useEffect(() => {
@@ -2861,11 +2882,66 @@ export default function App() {
         const safeBoot = safeCompanyId(bootCid);
         if (safeBoot) persistActiveCompany(safeBoot);
         let phpData: any = null;
+        let v2BootState: Awaited<ReturnType<typeof v2FetchCompanyState>> = null;
         if (safeBoot) {
-          phpData = await fetchCompanySnapshot(safeBoot);
+          // BUILD 2026-09-08-20 (Direct MySQL CRUD): boot now fetches the per-company
+          // snapshot AND the normalized MySQL lists (companies / branches / stores /
+          // categories / users) IN PARALLEL, then hydrates the local state from both —
+          // so a record a second device created straight into MySQL (companies worked
+          // this way; branches/stores/categories/users previously only reached MySQL
+          // through the debounced blob flush) shows up on THIS device immediately,
+          // without waiting for a blob-delta poll.
+          const [snapData, v2State] = await Promise.all([
+            fetchCompanySnapshot(safeBoot).catch(() => null),
+            v2FetchCompanyState(safeBoot)
+          ]);
+          phpData = snapData;
+          v2BootState = v2State;
           if (phpData) console.log('[DB] Booted from authoritative per-company snapshot (company ' + safeBoot + ')');
         }
         if (!phpData) phpData = await fetchSystemDataFromPhp();
+        // MySQL-authoritative overlay (2026-09-08-20): part what the v2 reads returned
+        // over the snapshot WITHOUT wiping snapshot contents the v2 list simply didn't
+        // carry (fresh DB / offline) — every key is overridden only when the parallel
+        // MySQL fetch actually returned rows for it.
+        if (phpData && v2BootState) {
+          try {
+            const overlay: any = { ...phpData };
+            if (v2BootState.companies && v2BootState.companies.length > 0) overlay.companies = v2BootState.companies;
+            if (v2BootState.branches && v2BootState.branches.length > 0) {
+              overlay.branches = v2BootState.branches;
+            }
+            // The normalized stores table holds BOTH branch rows (branch_id === own id)
+            // and plain store rows; the frontend model keeps them in separate arrays, so
+            // partition the full v2 store list the same way the server's v2_list_branches
+            // view does before overlaying either.
+            const branchIds = new Set((v2BootState.branches || []).map((b: any) => sv(b.id)));
+            const plainStores = ((v2BootState.stores || []) as any[]).filter((s: any) => s && !branchIds.has(sv(s.id)));
+            if (plainStores.length > 0) overlay.stores = plainStores;
+            const v2CatStrings = (v2BootState.categories || [])
+              .map((c: any) => (c && typeof c === 'object' && c.key) ? String(c.key) : String(c ?? ''))
+              .filter((s: string) => s && s.trim() !== '');
+            if (v2CatStrings.length > 0) overlay.categories = v2CatStrings;
+            if (v2BootState.users && v2BootState.users.length > 0) {
+              // Union users by id — keep the (possibly richer) snapshot records and APPEND
+              // any MySQL-only accounts so a freshly-created user is never missing from this
+              // device's boot state (and thus never flagged missing by the session guard).
+              const snapUsers = Array.isArray(phpData.users) ? phpData.users : [];
+              const byId = new Map<string, any>();
+              for (const u of snapUsers) if (u && u.id != null) byId.set(sv(u.id), u);
+              const extra: any[] = [];
+              for (const u of (v2BootState.users as any[])) {
+                if (!u || u.id == null) continue;
+                if (!byId.has(sv(u.id))) extra.push(u);
+              }
+              overlay.users = extra.length > 0 ? [...snapUsers, ...extra] : snapUsers;
+            }
+            phpData = overlay;
+            console.log('[DB] Reconciliated boot state with parallel MySQL v2 reads (companies/branches/stores/categories/users)');
+          } catch (e) {
+            console.warn('[DB] v2 boot overlay skipped:', e);
+          }
+        }
         // Capture server version immediately
         noteServerVersion(getLastServerVersion());
         if (phpData?._version) noteServerVersion(phpData._version);
@@ -4087,6 +4163,36 @@ export default function App() {
         // atomic endpoints. Diffed delta (create/edit/delete), never the state blob, so
         // there is NO 13.4KB flush + version bump + 409 Conflict for these records.
         if (DIRECT_SYNC_KEYS.has(key)) {
+          // BUILD 2026-09-08-20 (Direct MySQL CRUD): categories are stored in state as
+          // company-scoped STRING keys ('co_<companyId>:<name>'), NOT id-objects — the
+          // id-keyed directDeltaParts diff would never see a change. Diff the raw string
+          // arrays and post the added/removed names to v2_upsert_category /
+          // v2_delete_category (both are company-scoped MySQL writes + server blob merge).
+          // Plain/non-co_ legacy strings are left alone (they have no MySQL row to own).
+          if (key === 'categories') {
+            const prevCats = (Array.isArray((current as any)[key]) ? (current as any)[key] : []) as unknown[];
+            const nextCats = (Array.isArray(val) ? val : []) as unknown[];
+            const prevSet = new Set(prevCats.map(c => String(c)));
+            const nextSet = new Set(nextCats.map(c => String(c)));
+            const catOps: Promise<unknown>[] = [];
+            for (const cat of nextCats) {
+              const s = String(cat);
+              if (prevSet.has(s)) continue;
+              const cm = /^co_([^:]+):(.*)$/s.exec(s);
+              if (cm) catOps.push(v2UpsertCategory(cm[1], cm[2]).catch((e) => console.warn('[Direct MySQL] v2_upsert_category delta failed', e)));
+            }
+            for (const cat of prevCats) {
+              const s = String(cat);
+              if (nextSet.has(s)) continue;
+              const cm = /^co_([^:]+):(.*)$/s.exec(s);
+              if (cm) catOps.push(v2DeleteCategory(cm[1], cm[2]).catch((e) => console.warn('[Direct MySQL] v2_delete_category delta failed', e)));
+            }
+            if (catOps.length > 0) {
+              markDirectDeltaDirty(key, (Array.isArray(val) ? val : []).slice());
+              void Promise.allSettled(catOps).then(() => clearDirectDeltaDirty(key)).catch(() => clearDirectDeltaDirty(key));
+            }
+            continue;
+          }
           const delta = directDeltaParts((current as any)[key], val);
           const dh = DIRECT_DELTA_HANDLERS[key];
           if (dh) {
@@ -5891,6 +5997,21 @@ const conflict = consumeConflictData();
       if (!usersSyncedRef.current || (users || []).length === 0 || Date.now() < sessionGraceUntilRef.current) {
         return;
       }
+      // BUILD 2026-09-08-20 (Auto-logout prevention): FRESH-ACCOUNT EXEMPTION. A user
+      // created moments ago (Admin "Add User", brand-new registration) can be legitimately
+      // missing from THIS device's in-memory list when the server snapshot has not yet
+      // re-read MySQL — but their row DOES already exist there (the create write is now
+      // awaited before the form closes). Never terminate a still-firstLogin account or one
+      // that is under 20 minutes old; only a genuinely old, absent row is treated as
+      // "terminated by system administration".
+      const freshAccount =
+        (currentUser as any)?.firstLogin === true ||
+        ((currentUser as any)?.createdAt != null &&
+          Math.abs(Date.now() - new Date(String((currentUser as any)?.createdAt)).getTime()) < 1200000);
+      if (freshAccount) {
+        console.log('[Scope] Freshly-created account — skipping missing-row termination (snapshot lag safe)');
+        return;
+      }
       // User was deleted/terminated from the database by Admin/Super Admin
       localStorage.removeItem('tradecore_user');
       localStorage.removeItem('tradecore_data');
@@ -7152,7 +7273,7 @@ try {
   };
 
   // --- PUBLIC REGISTRATION (creates company + branch administrator + payment request) ---
-  const handleRegister = (data: {
+  const handleRegister = async (data: {
     name: string;
     username: string;
     email: string;
@@ -7184,12 +7305,12 @@ try {
   }) => {
     try {
       const cleanUsername = data.username.trim().toLowerCase();
-    const duplicateUser = users.find(u => u.username.trim().toLowerCase() === cleanUsername);
-    if (duplicateUser) {
-      const msg = t('That username is already registered. Please sign in or choose another username.');
-      toast.error(msg);
-      return msg;
-    }
+      const duplicateUser = users.find(u => u.username.trim().toLowerCase() === cleanUsername);
+      if (duplicateUser) {
+        const msg = t('That username is already registered. Please sign in or choose another username.');
+        toast.error(msg);
+        return msg;
+      }
     const duplicateEmail = users.find(u => u.email && u.email.toLowerCase() === data.email.toLowerCase());
     if (duplicateEmail) {
       const msg = t('An account with that email address already exists.');
@@ -7340,7 +7461,12 @@ try {
     // instead of waiting for the debounced blob flush — so the assignment exists the
     // instant the registration succeeds and is fetched correctly on the very next
     // login (trades seconds of "new user not recognized" delay for zero).
-    void apiUpsertUser({ ...newUser, companyId: newCompanyId, company_id: newCompanyId }).catch(() => {});
+    // BUILD 2026-09-08-20: AWAITED. A public registration is a one-shot flow — if the
+    // user row write fails silently here, the newly approved admin's first login hits
+    // "session not found in the server snapshot" and the session guard logs them out.
+    // apiUpsertUser never throws (returns false), so awaiting is failure-safe here.
+    const userWriteOk = await apiUpsertUser({ ...newUser, companyId: newCompanyId, company_id: newCompanyId });
+    if (!userWriteOk) console.warn('[Register] apiUpsertUser failed — new user row stayed local only');
 
     // IMMEDIATE DB ASSIGNMENT (company): mirror the just-created company row straight to
     // MySQL (atomic companies table via tcUpsertCompanyRow + blob) through mutate_record,

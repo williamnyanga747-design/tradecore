@@ -6,6 +6,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-20] - 2026-09-11
+
+### Build 2026-09-08-20 — DIRECT MYSQL CRUD PERSISTENCE FOR ALL MASTER ENTITIES (Branches/Stores/Categories/Users)
+Reported: Companies survive across devices (direct MySQL), but Branches/Stores/Categories/Users only persisted in IndexedDB, deleted users reappeared after a refresh (no SQL DELETE), and a newly created user was logged out immediately after login during background flush (their row was not yet in the server snapshot).
+
+**Root causes**:
+1. **Blob-only persistence** — branches/stores/categories/users reached MySQL only through the debounced `save_state` blob flush (`schedulePhpFlush`), so records created on one device were missing on another until the next flush, and a deleted user's row could reliably resurrect (blob mirror `REPLACE INTO tradecore_users` even set `deleted_at NULL`).
+2. **No dual-write on create** — new/edited users were written with fire-and-forget (`void apiUpsertUser(...)`), so a same-second login could hit "session not found in the server snapshot" and the scope-guard logged the fresh account straight back out.
+3. **No boot reconciliation** — boot used the blob snapshot only; MySQL-first reads (v2 `v2FetchCompanyState`, parallel `v2_list_*`) were exported but never imported.
+
+**Backend fixes** (`public/cpanel/api.php`, synced to `cpanel_extracted/cpanel/api.php`):
+1. **Canonical v2 action aliases** at the v2 gate (before the super-scope whitelist, so global lists still widen):
+   - `v2_upsert_user` / `v2_update_user` → `v2_upsert_user_account`; `v2_list_users` → `v2_list_user_accounts`; `v2_delete_user` → `v2_delete_user_account`.
+   - `v2_upsert_branch` → `v2_upsert_store`; `v2_delete_branch` → `v2_delete_store`.
+2. **Users are already dual-written** — `tcUpsertUserRow` writes `user_accounts` AND the legacy `tradecore_users` mirror in one request (so login/auth on a fresh device finds the account immediately); `v2_delete_user_account` soft-deletes BOTH tables (`user_accounts` + `tradecore_users` by `company_id`), so deleted users cannot resurrect through any v2 read (`deleted_at IS NULL` filtered) or re-login.
+
+**Frontend fixes** (`src/`, mirrored through the `cpanel_extracted/src` junction):
+1. **`users` + `categories` joined `DIRECT_SYNC_KEYS`** — committed one-record-at-a-time instead of riding the blob:
+   - `users` → new `DIRECT_DELTA_HANDLERS.users` (per-record scope `rec.company_id ?? rec.companyId ?? activeScope`, delete resolves the scope from the PREV map) via `v2_upsert_user_account` / `v2_delete_user_account`.
+   - `categories` → stored in state as company-scoped STRING keys (`co_<companyId>:<name>`), so `saveAllData`'s DIRECT branch diffs the raw string arrays and posts each added/removed `co_*` key via `v2_upsert_category` / `v2_delete_category` (plain legacy strings untouched). In-flight batches still pin the optimistic snapshot via `markDirectDeltaDirty`/`clearDirectDeltaDirty`.
+2. **Boot reconciliation (parallel)** — `initPhpSync` now fetches the per-company snapshot AND `v2FetchCompanyState(safeBoot)` in parallel, then hydrates: companies/branches/stores (partitioned from the stores table exactly like `v2_list_branches`), categories mapped back to `co_*` string keys, and users unioned by id (snapshot rows preferred, MySQL-only rows appended). Every key is overridden only when the v2 read actually returned rows.
+3. **Awaited user creation (auto-logout prevention)** — `ManageUsers.handleSaveUser` (create + edit) and the public registration flow now `await apiUpsertUser(...)` before the form/screen closes (`apiUpsertUser` never throws — false returns are logged), so a newly-created account's row exists in MySQL the moment creation finishes.
+4. **Delete ordering** — `MasterData.handleDeleteCategory` now executes `v2DeleteCategory` (SQL) FIRST and purges the local collection only on success.
+5. **Session scope-guard fresh-account exemption** — a `firstLogin === true` account (or a row under 20 minutes old) is never treated as "terminated by system administration" even when a lagging snapshot does not list it yet (Super Admin/root/impersonation exemptions unchanged).
+
+**Acceptance**: deploy head commit → hard refresh → Add User / Add Category / Add Branch / Add Store on device A → device B refresh must show all immediately (boot parallel v2 fetch) → `SELECT * FROM user_accounts/stock_categories/stores/user_accounts+legacy WHERE deleted_at IS NULL` confirms rows; Delete User/Category → rows get `deleted_at`, never resurrect after refresh; create a user then log in from a second device instantly — no auto-logout. Master tables remain `stores` (branch rows with `branch_id == id`), `stock_categories`, `user_accounts`.
+
 ## [1.0.9-build-19] - 2026-09-10
 
 ### Build 2026-09-08-19 — CRITICAL CRUD PERSISTENCE & MULTI-COMPANY SCOPE FIX

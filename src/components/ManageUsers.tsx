@@ -360,7 +360,7 @@ export default function ManageUsers({
   };
 
   // Modal Save handler
-  const handleSaveUser = (e?: React.FormEvent) => {
+  const handleSaveUser = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!editingUser) return;
 
@@ -434,7 +434,11 @@ export default function ManageUsers({
       // IMMEDIATE DB ASSIGNMENT: push the edited row to the atomic tradecore_users
       // table right away (REPLACE INTO + blob dual-write), so the assignment is
       // durable before the debounced blob flush runs.
-      void apiUpsertUser(data).catch(() => {});
+      // BUILD 2026-09-08-20: AWAITED — the SQL must complete before this handler can
+      // be considered done, so a "edited user, logged out instantly" race can never
+      // happen (the account row was already materially deeper than the session check).
+      const remoteEditOk = await apiUpsertUser(data);
+      if (!remoteEditOk) console.warn('[ManageUsers] apiUpsertUser (edit) failed — row kept local, next sync retries');
       logAction('Edited User', `Modified user details for ${data.username}`);
       toast.success(t('User saved'));
     } else {
@@ -450,7 +454,12 @@ export default function ManageUsers({
       // IMMEDIATE DB ASSIGNMENT for brand-new accounts — the user exists in MySQL
       // the moment they are created, so a same-second login from another device is
       // recognized instead of stuck in the pre-login sync window.
-      void apiUpsertUser(newUser).catch(() => {});
+      // BUILD 2026-09-08-20: AWAITED for the same reason — a created user must be in
+      // user_accounts + tradecore_users BEFORE the form closes, or their very first
+      // login on the new device hits "session not found in server snapshot" and the
+      // scope-guard logs them straight back out.
+      const remoteCreateOk = await apiUpsertUser(newUser);
+      if (!remoteCreateOk) console.warn('[ManageUsers] apiUpsertUser (create) failed — user kept local, next sync retries');
       logAction('Added User', `Registered platform account: ${data.username}`);
       toast.success(t('User saved'));
     }

@@ -251,18 +251,25 @@ export default function MasterData({
       isOpen: true,
       title: t('Delete Category'),
       description: `${t('Are you sure you want to permanently delete category')} "${cleanName}"?`,
-      onConfirm: () => {
+      onConfirm: async () => {
+        // BUILD 2026-09-08-20 (Direct MySQL CRUD — delete ordering): execute the SQL
+        // endpoint FIRST and only purge the local collection on success, so a failed
+        // server delete can never leave a desk that still shows the category while the
+        // DB (and every other device) has already dropped it.
+        const cid = currentCompanyId != null ? String(currentCompanyId) : (currentUser?.companyId != null ? String(currentUser.companyId) : '');
+        if (cid) {
+          // Deletes the row from the normalized stock_categories MySQL table AND removes
+          // it from the shared blob — no ghost category can resurrect on the next
+          // v2ListCategories re-read.
+          const sqlOk = await v2DeleteCategory(cid, cleanName).catch((e) => { console.warn('[MasterData] v2DeleteCategory failed', e); return false; });
+          if (!sqlOk) {
+            toast.error(t('Delete failed — category was not removed. Please try again.'));
+            return;
+          }
+        }
         const updatedCategories = categories.filter(c => c !== catName);
         saveAllData({ categories: updatedCategories });
         logAction('Delete Category', `Deleted Category: ${cleanName}`);
-        // BUILD 2026-09-08-19 (Required Fix 3): ALSO delete the row from the normalized
-        // stock_categories MySQL table so the category cannot resurrect from the DB on
-        // the next v2ListCategories re-read (the blob-only path left a ghost category
-        // behind that reappeared after every reload).
-        const cid = currentCompanyId != null ? String(currentCompanyId) : (currentUser?.companyId != null ? String(currentUser.companyId) : '');
-        if (cid) {
-          void v2DeleteCategory(cid, cleanName).catch((e) => console.warn('[MasterData] v2DeleteCategory failed', e));
-        }
       }
     });
   };

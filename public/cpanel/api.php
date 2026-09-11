@@ -3281,6 +3281,20 @@ try {
     if ($action === 'delete_company') { $action = 'v2_delete_company'; }
     if (strpos($action, 'v2_') === 0) {
         $v2in = tcV2Input($rawInput);
+        // BUILD 2026-09-08-20 (Direct MySQL CRUD standard): canonical action-name
+        // aliases so callers can use the generic CRUD vocabulary regardless of which
+        // normalized table backs the entity. Branches ARE store rows whose branch_id
+        // equals their own id (no separate branches table — tcMirrorNormalized +
+        // v2_upsert_store write them that way), so v2_upsert_branch / v2_delete_branch
+        // delegate to the store handlers; users are backed by the user_accounts table
+        // (+ legacy tradecore_users mirror), so the user aliases delegate to the
+        // user-account handlers. This keeps ONE canonical implementation per entity
+        // while exposing the endpoint names every sync layer expects.
+        if ($action === 'v2_upsert_user' || $action === 'v2_update_user') $action = 'v2_upsert_user_account';
+        if ($action === 'v2_list_users') $action = 'v2_list_user_accounts';
+        if ($action === 'v2_delete_user') $action = 'v2_delete_user_account';
+        if ($action === 'v2_upsert_branch') $action = 'v2_upsert_store';
+        if ($action === 'v2_delete_branch') $action = 'v2_delete_store';
         list($v2op, $v2role) = tcCurrentOperator($rawInput);
         $v2company = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
         // SUPERADMIN GLOBAL SCOPE: read endpoints assert the caller's real scope. A global

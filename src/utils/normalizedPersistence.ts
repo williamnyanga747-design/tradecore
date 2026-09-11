@@ -356,6 +356,7 @@ export async function v2GetAuditTrails(companyId?: string | number, opts?: { lim
 // ----------------------------------------------------------------------------
 export interface V2CompanyState {
   companies: Company[];
+  branches: Store[];
   stores: Store[];
   products: Product[];
   categories: Category[];
@@ -376,8 +377,9 @@ export async function v2FetchCompanyState(companyId: string | number): Promise<V
     return null;
   }
   try {
-    const [companies, stores, products, categories, users] = await Promise.all([
+    const [companies, branches, stores, products, categories, users] = await Promise.all([
       v2ListCompanies(),
+      v2ListBranches(companyId),
       v2ListStores(companyId),
       v2ListProducts(companyId),
       v2ListCategories(companyId),
@@ -388,7 +390,7 @@ export async function v2FetchCompanyState(companyId: string | number): Promise<V
     if (companies.length === 0 && stores.length === 0 && products.length === 0 && categories.length === 0 && users.length === 0) {
       return null;
     }
-    return { companies, stores, products, categories, users };
+    return { companies, branches, stores, products, categories, users };
   } catch (error) {
     console.warn('[PBS v2] v2FetchCompanyState failed:', error);
     return null;
