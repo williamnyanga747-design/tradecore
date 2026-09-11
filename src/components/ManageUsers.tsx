@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, Company, Branch, Store, AuditTrail, SecurityLog, Settings } from '../types';
 import {
   Plus, Pencil, Trash2, ShieldAlert, CheckCircle, X, Eye, EyeOff, Lock, RotateCcw, Key
@@ -8,7 +8,7 @@ import { toast } from '../utils/toast';
 import { hashPassword, isHashedPassword } from '../utils/hash';
 import { apiChangePassword, apiDeleteUser, apiUpsertUser } from '../utils/api';
 import { defaultUsers } from '../initialData';
-import { sameId } from '../utils/idUtils';
+import { sameId, sv } from '../utils/idUtils';
 
 interface ManageUsersProps {
   currentPage: string;
@@ -102,6 +102,18 @@ export default function ManageUsers({
   const getCompanyName = (id: number | null) => id ? (companies.find(c => sameId(c.id, id))?.name || t('Unknown')) : t('Global / All');
   const getBranchName = (id: number | null) => id ? (branches.find(b => b.id === id)?.name || t('Unknown')) : t('Global / All');
   const getStoreName = (id: number | null) => id ? (stores.find(s => s.id === id)?.name || t('Unknown')) : t('Global / All');
+
+  // BUILD 2026-09-08-19 (Required Fix 4): explicit company switch → close the editing
+  // modal / confirm dialog so a user form of the previous company scope can never be
+  // saved into the newly active company.
+  useEffect(() => {
+    const onScopeChange = () => {
+      setEditingUser(null);
+      setConfirmModal(prev => ({ ...prev, isOpen: false }));
+    };
+    window.addEventListener('companyScopeChanged', onScopeChange);
+    return () => window.removeEventListener('companyScopeChanged', onScopeChange);
+  }, []);
 
   // Password hierarchy: only root_mandate / global super admin can view or modify passwords of core accounts.
   // The restricted Super Admin role (non-global) has NO password access; only Admins may reset company staff credentials.
@@ -370,8 +382,10 @@ export default function ManageUsers({
       setEditingUser(null);
       return;
     }
-    data.branchId = (data.branchId as any) === 'None' || !data.branchId ? null : parseInt(data.branchId as any);
-    data.storeId = (data.storeId as any) === 'None' || !data.storeId ? null : parseInt(data.storeId as any);
+    // BUILD 2026-09-08-19: parseInt on a branch/store id yields NaN for UUID ids and
+    // silently breaks every downstream scope match — ids are kept as strings end-to-end.
+    data.branchId = (data.branchId as any) === 'None' || !data.branchId ? null : sv(data.branchId);
+    data.storeId = (data.storeId as any) === 'None' || !data.storeId ? null : sv(data.storeId);
 
     // ROLE-HIERARCHY scope rules (ADD USER):
     //  - Admin / Administrator / Company Administrator / Super Admin → Branch=None,
@@ -1484,7 +1498,7 @@ export default function ManageUsers({
                   <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Allocated Company')}</label>
                   <select
                     value={editingUser.companyId || ''}
-                    onChange={(e) => setEditingUser({ ...editingUser, companyId: e.target.value ? parseInt(e.target.value) : null })}
+                    onChange={(e) => setEditingUser({ ...editingUser, companyId: e.target.value ? sv(e.target.value) : null })}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand bg-white font-semibold"
                   >
                     <option value="">{t('Global / All')}</option>
@@ -1499,7 +1513,7 @@ export default function ManageUsers({
                 <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Assigned Branch')}</label>
                 <select
                   value={editingUser.branchId || 'None'}
-                  onChange={(e) => setEditingUser({ ...editingUser, branchId: e.target.value === 'None' ? null : parseInt(e.target.value) })}
+                  onChange={(e) => setEditingUser({ ...editingUser, branchId: e.target.value === 'None' ? null : sv(e.target.value) })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand bg-white font-semibold"
                 >
                   <option value="None">{t('None (Global / All Branches)')}</option>
@@ -1513,7 +1527,7 @@ export default function ManageUsers({
                 <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Assigned Store')}</label>
                 <select
                   value={editingUser.storeId || 'None'}
-                  onChange={(e) => setEditingUser({ ...editingUser, storeId: e.target.value === 'None' ? null : parseInt(e.target.value) })}
+                  onChange={(e) => setEditingUser({ ...editingUser, storeId: e.target.value === 'None' ? null : sv(e.target.value) })}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand bg-white font-semibold"
                 >
                   <option value="None">{t('None (Global / All Stores)')}</option>

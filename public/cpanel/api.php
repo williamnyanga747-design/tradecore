@@ -3617,7 +3617,15 @@ try {
             $id = (string)($v2in['id'] ?? '');
             $scid = $v2company !== '' ? $v2company : (string)($v2in['company_id'] ?? '');
             if ($id === '') { echo json_encode(["success" => false, "error" => "Missing store id", "server_ts" => $now]); exit(); }
-            try { $pdo->prepare("UPDATE stores SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_store failed: ' . $e->getMessage()); }
+            // BUILD 2026-09-08-19 (Required Fix 3): scope the soft-delete by the recorded
+            // company when one is supplied — multi-company rows can never collide on the
+            // numeric id (previously `WHERE id=?` alone could soft-delete another tenant's
+            // store when two companies had a store with the same numeric id).
+            try {
+                if ($scid !== '') { $pdo->prepare("UPDATE stores SET deleted_at=?, updated_at=? WHERE id=? AND company_id=?")->execute([$now, $now, $id, $scid]); }
+                else { $pdo->prepare("UPDATE stores SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); }
+                $ok = true;
+            } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_store failed: ' . $e->getMessage()); }
             tcBlobMerge($pdo, 'stores', null, $id);
             tcBlobMerge($pdo, 'branches', null, $id);
             tcWriteAuditTrail($pdo, $scid, '', $v2op, 'Store Delete', 'Store', $id, $id, ['company_id' => $scid]);

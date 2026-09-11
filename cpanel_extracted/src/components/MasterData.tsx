@@ -13,7 +13,8 @@ import { SmartMessagingModal } from './SmartMessagingModal';
 import { performCascadeDelete } from '../utils/cascadeDelete';
 import { toast } from '../utils/toast';
 import { getStoreCategories, getCompanyCategories, formatCompanyCategory, cleanCategoryName } from '../utils/categoryHelper';
-import { sv, sameId } from '../utils/idUtils';
+import { sv, sameId, getActiveCompanyScope } from '../utils/idUtils';
+import { v2DeleteCategory } from '../utils/normalizedPersistence';
 import LocationPicker from './marketplace/LocationPicker';
 
 interface MasterDataProps {
@@ -137,6 +138,25 @@ export default function MasterData({
     }
   }, [currentPage, refreshMasterData]);
 
+  // BUILD 2026-09-08-19 (Required Fix 4): clear stale form/editing state on explicit
+  // company switch so the user never continues editing a record of the PREVIOUS scope
+  // (e.g. editing Company B's store details while viewing Company A).
+  useEffect(() => {
+    const onScopeChange = () => {
+      setEditingItem(null);
+      setShowOnlyNoTin(false);
+      setActiveStoreDetailsId(null);
+      setStatementModal(prev => ({ ...prev, isOpen: false }));
+      setMessagingModal(prev => ({ ...prev, isOpen: false }));
+      setConfirmModal(prev => ({ ...prev, isOpen: false }));
+      setLocalCompanyRates({});
+      setLocalUserRates({});
+      setLocalGlobalRate('');
+    };
+    window.addEventListener('companyScopeChanged', onScopeChange);
+    return () => window.removeEventListener('companyScopeChanged', onScopeChange);
+  }, []);
+
   // --- DELETE HANDLERS ---
   const handleDeleteCompany = (id: number) => {
     const compName = companies.find(c => sameId(c.id, id))?.name || `ID ${id}`;
@@ -168,7 +188,7 @@ export default function MasterData({
   };
 
   const handleDeleteBranch = (id: number) => {
-    const brName = branches.find(b => b.id === id)?.name || `ID ${id}`;
+    const brName = branches.find(b => sameId(b.id, id))?.name || `ID ${id}`;
     setConfirmModal({
       isOpen: true,
       title: t('Delete Branch'),
@@ -197,7 +217,7 @@ export default function MasterData({
   };
 
   const handleDeleteStore = (id: number) => {
-    const stName = stores.find(s => s.id === id)?.name || `ID ${id}`;
+    const stName = stores.find(s => sameId(s.id, id))?.name || `ID ${id}`;
     setConfirmModal({
       isOpen: true,
       title: t('Delete Store'),
@@ -235,6 +255,14 @@ export default function MasterData({
         const updatedCategories = categories.filter(c => c !== catName);
         saveAllData({ categories: updatedCategories });
         logAction('Delete Category', `Deleted Category: ${cleanName}`);
+        // BUILD 2026-09-08-19 (Required Fix 3): ALSO delete the row from the normalized
+        // stock_categories MySQL table so the category cannot resurrect from the DB on
+        // the next v2ListCategories re-read (the blob-only path left a ghost category
+        // behind that reappeared after every reload).
+        const cid = currentCompanyId != null ? String(currentCompanyId) : (currentUser?.companyId != null ? String(currentUser.companyId) : '');
+        if (cid) {
+          void v2DeleteCategory(cid, cleanName).catch((e) => console.warn('[MasterData] v2DeleteCategory failed', e));
+        }
       }
     });
   };
@@ -272,14 +300,14 @@ export default function MasterData({
   };
 
   const handleDeleteCustomer = (id: number) => {
-    const cust = customers.find(c => c.id === id);
+    const cust = customers.find(c => sameId(c.id, id));
     const custName = cust ? cust.name : `ID ${id}`;
     setConfirmModal({
       isOpen: true,
       title: t('Delete Customer'),
       description: `${t('Are you sure you want to delete customer')} "${custName}"?`,
       onConfirm: () => {
-        const updatedCustomers = customers.filter(c => c.id !== id);
+        const updatedCustomers = customers.filter(c => !sameId(c.id, id));
         saveAllData({ customers: updatedCustomers });
         logAction('Delete Customer', `Deleted Customer ID: ${id}`);
       }
@@ -287,14 +315,14 @@ export default function MasterData({
   };
 
   const handleDeleteSupplier = (id: number) => {
-    const sup = suppliers.find(s => s.id === id);
+    const sup = suppliers.find(s => sameId(s.id, id));
     const supName = sup ? sup.name : `ID ${id}`;
     setConfirmModal({
       isOpen: true,
       title: t('Delete Supplier'),
       description: `${t('Are you sure you want to delete supplier')} "${supName}"?`,
       onConfirm: () => {
-        const updatedSuppliers = suppliers.filter(s => s.id !== id);
+        const updatedSuppliers = suppliers.filter(s => !sameId(s.id, id));
         saveAllData({ suppliers: updatedSuppliers });
         logAction('Delete Supplier', `Deleted Supplier ID: ${id}`);
       }
@@ -458,12 +486,14 @@ export default function MasterData({
         }
       }
     } else if (type === 'branch') {
-      // BUILD 2026-09-08-18: ids are STRINGS — never parseInt a company id (NaNs the
-      // scope). Keep the raw string from the form or fall back to the active context.
-      const parsedCoId = (data.companyId !== undefined && data.companyId !== null && data.companyId !== '' && String(data.companyId) !== 'NaN')
+      // BUILD 2026-09-08-18/19: ids are STRINGS — never parseInt a company id (NaNs the
+      // scope). Keep the raw string from the form or fall back to the active scope at
+      // submission time (getActiveCompanyScope prefers the live currentCompanyId, then
+      // localStorage active_company_id, then the acting user's company).
+      const parsedCoId = (data.companyId !== undefined && data.companyId !== null && data.companyId !== '' && String(data.companyId) !== 'NaN' && String(data.companyId) !== '0')
         ? String(data.companyId)
-        : (currentCompanyId != null ? String(currentCompanyId) : '1');
-      const cleanData = { ...data, companyId: parsedCoId };
+        : (currentCompanyId != null ? String(currentCompanyId) : getActiveCompanyScope(currentCompanyId, currentUser));
+      const cleanData = { ...data, companyId: parsedCoId, company_id: parsedCoId };
       if (data.id) {
         const updated = branches.map(b => sameId(b.id, data.id) ? cleanData : b);
         saveAllData({ branches: updated });
@@ -484,6 +514,12 @@ export default function MasterData({
       const cleanData = {
         ...data,
         branchId: parsedBranchId,
+        // BUILD 2026-09-08-19 (Fix 1): carry the owning company on the record itself so
+        // a later edit (even from global view) never re-homes the store to another scope.
+        company_id: sv(data.company_id ?? data.companyId) || (() => {
+          const ownerBranch = branches.find(b => sameId(b.id, parsedBranchId));
+          return sv(ownerBranch?.companyId) || getActiveCompanyScope(currentCompanyId, currentUser);
+        })(),
         latitude: Number.isFinite(lat) ? lat : undefined,
         longitude: Number.isFinite(lng) ? lng : undefined,
         googleMapsUrl: typeof data.googleMapsUrl === 'string' && data.googleMapsUrl.trim() ? data.googleMapsUrl.trim() : undefined,
@@ -520,25 +556,31 @@ export default function MasterData({
       delete cleanData.balanceDisplay;
 
       if (data.id) {
-        const updated = customers.map(c => sameId(c.id, data.id) ? cleanData : c);
+        // BUILD 2026-09-08-19 (Fix 1): ensure the OWNING company scope survives edits —
+        // a record loaded without company_id (legacy/global rows) must not lose its
+        // scope when written back through the DIRECT delta; tag the active scope.
+        const editData = { ...cleanData, company_id: sv(cleanData.company_id ?? cleanData.companyId) || getActiveCompanyScope(currentCompanyId, currentUser) };
+        const updated = customers.map(c => sameId(c.id, data.id) ? editData : c);
         saveAllData({ customers: updated });
         logAction('Edit Customer', `Modified Customer parameters for: ${data.name}`);
       } else {
         const nextId = Math.max(0, ...customers.map(c => Number(c.id) || 0)) + 1;
-        // BUILD 2026-09-08-18: tag the record with its owning company id as a string so
-        // cross-company globals never host orphaned customer rows reachable by no scope.
-        const newCust = { ...cleanData, id: nextId, company_id: sv(currentCompanyId) || '1' };
+        // BUILD 2026-09-08-18/19: tag the record with its owning company id as a string
+        // (resolved at submission time — never hardcode '1'). Cross-company globals then
+        // never host orphaned customer rows reachable by no scope.
+        const newCust = { ...cleanData, id: nextId, company_id: sv(currentCompanyId) || getActiveCompanyScope(currentCompanyId, currentUser) };
         saveAllData({ customers: [...customers, newCust] });
         logAction('Create Customer', `Registered new Customer: ${data.name}`);
       }
     } else if (type === 'supplier') {
       if (data.id) {
-        const updated = suppliers.map(s => sameId(s.id, data.id) ? data : s);
+        const editData = { ...data, company_id: sv(data.company_id ?? data.companyId) || getActiveCompanyScope(currentCompanyId, currentUser) };
+        const updated = suppliers.map(s => sameId(s.id, data.id) ? editData : s);
         saveAllData({ suppliers: updated });
         logAction('Edit Supplier', `Modified Supplier parameters for: ${data.name}`);
       } else {
         const nextId = Math.max(0, ...suppliers.map(s => Number(s.id) || 0)) + 1;
-        const newSupplier = { ...data, id: nextId, company_id: sv(currentCompanyId) || '1' };
+        const newSupplier = { ...data, id: nextId, company_id: sv(data.company_id ?? data.companyId) || sv(currentCompanyId) || getActiveCompanyScope(currentCompanyId, currentUser) };
         saveAllData({ suppliers: [...suppliers, newSupplier] });
         logAction('Create Supplier', `Registered new Supplier: ${data.name}`);
       }

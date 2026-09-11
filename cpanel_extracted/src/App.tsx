@@ -109,7 +109,7 @@ import SyncStatusIndicator from './components/SyncStatusIndicator';
 
 // Utils
 import { translate, formatMoney, exportToExcel } from './utils/format';
-import { sv, sameId, isValidCompanyScope, isRealCompanyId, safeCompanyId } from './utils/idUtils';
+import { sv, sameId, isValidCompanyScope, isRealCompanyId, safeCompanyId, getActiveCompanyScope } from './utils/idUtils';
 import { getStoredLanguage, syncDocumentLang, getUserAdminLanguage, setUserAdminLanguage } from './utils/i18n';
 import { handlePrintWithFallback } from './utils/printHelper';
 import { hashPassword, isHashedPassword, verifyPassword } from './utils/hash';
@@ -283,33 +283,93 @@ function directDeltaParts(prev: any, next: any) {
   }
   const removed: string[] = [];
   for (const id of prevMap.keys()) if (!nextMap.has(id)) removed.push(id);
-  return { upsert, removed, nextMap };
+  return { upsert, removed, nextMap, prevMap };
 }
 
-const DIRECT_DELTA_HANDLERS: Record<string, (u: any[], r: string[], nextMap: Map<string, any>, companyId: any) => void> = {
+// BUILD 2026-09-08-19 (Required Fix 1): per-record scope resolution for the DIRECT
+// delta wire calls. Every upsert resolves its company FIRST from the record's own
+// scope (company_id/companyId), THEN from the submission-time active scope — the old
+// `companyId ?? rec.company_id` parameter order let the active-scope argument win and
+// re-assign a record meant for company B to company A (or block the write with scope
+// '' when a Global-View save came through). Deletes resolve from the PREVIOUS map
+// (nextMap no longer contains the removed row — the old lookup always fell through to
+// the fallback and soft-deleted under the wrong company id).
+// BUILD 2026-09-08-19 (Required Fix 2): in-flight DIRECT-MYSQL delta guard. While a
+// direct delta (upsert/delete) for one of the DIRECT_SYNC_KEYS is still flushing to
+// MySQL, an incremental snapshot/poll/Global-View re-fetch could land with the OLD rows
+// (the new record isn't on the server yet) and overwrite the optimistic local copy —
+// "added an item/customer/supplier, it vanished on the next background sync". The guard
+// pins the LOCAL (next) array for that key until every delta op settles, and
+// protectDirtyCollections + applyData overlay that snapshot on any incoming server state
+// for the same key. Cleared the moment the delta requests complete; the record already
+// exists server-side then, so the next re-read returns it intact.
+const directDeltaGuards = new Map<string, { pending: number; snapshot: any[] }>();
+
+/** Register one more in-flight delta batch for a DIRECT key (marks its local snapshot). */
+function markDirectDeltaDirty(key: string, snapshot: any[]): void {
+  const cur = directDeltaGuards.get(key);
+  directDeltaGuards.set(key, {
+    pending: (cur?.pending ?? 0) + 1,
+    snapshot
+  });
+}
+
+/** One batch settled — release the guard when nothing else is in flight. */
+function clearDirectDeltaDirty(key: string): void {
+  const cur = directDeltaGuards.get(key);
+  if (!cur) return;
+  cur.pending -= 1;
+  if (cur.pending <= 0) directDeltaGuards.delete(key);
+}
+
+function getDirectDeltaSnapshot(key: string): any[] | undefined {
+  return directDeltaGuards.get(key)?.snapshot;
+}
+
+/** Block until all DIRECT deltas settle (bounded) — used before a destructive snapshot. */
+async function waitForDirectDeltas(maxWaitMs = 6000): Promise<void> {
+  const deadline = Date.now() + maxWaitMs;
+  while (directDeltaGuards.size > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+}
+
+const DIRECT_DELTA_HANDLERS: Record<string, (u: any[], r: string[], nextMap: Map<string, any>, companyId: any, prevMap: Map<string, any>) => Promise<unknown>[]> = {
   companies: (u, r) => {
-    for (const rec of u) void v2UpsertCompany(rec).catch((e) => console.warn('[Direct MySQL] v2_upsert_company delta failed', e, rec));
-    for (const id of r) void v2DeleteCompany(id).catch((e) => console.warn('[Direct MySQL] v2_delete_company delta failed', e, id));
+    const ops: Promise<unknown>[] = [];
+    for (const rec of u) ops.push(v2UpsertCompany(rec).catch((e) => console.warn('[Direct MySQL] v2_upsert_company delta failed', e, rec)));
+    for (const id of r) ops.push(v2DeleteCompany(id).catch((e) => console.warn('[Direct MySQL] v2_delete_company delta failed', e, id)));
+    return ops;
   },
   branches: (u, r) => {
-    for (const rec of u) void v2UpsertBranch(rec).catch(() => {});
-    for (const id of r) void v2DeleteBranch(id).catch(() => {});
+    const ops: Promise<unknown>[] = [];
+    for (const rec of u) ops.push(v2UpsertBranch(rec).catch(() => {}));
+    for (const id of r) ops.push(v2DeleteBranch(id).catch(() => {}));
+    return ops;
   },
-  stores: (u, r, nextMap, companyId) => {
-    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; void v2UpsertStore(rec, cid).catch(() => {}); }
-    for (const id of r) { const cid = nextMap.get(id)?.company_id ?? nextMap.get(id)?.companyId ?? companyId; void v2DeleteStore(id, cid).catch(() => {}); }
+  stores: (u, r, _nextMap, companyId, prevMap) => {
+    const ops: Promise<unknown>[] = [];
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; ops.push(v2UpsertStore(rec, cid).catch(() => {})); }
+    for (const id of r) { const rec = prevMap.get(id); const cid = rec?.company_id ?? rec?.companyId ?? companyId; ops.push(v2DeleteStore(id, cid).catch(() => {})); }
+    return ops;
   },
-  customers: (u, r, _nextMap, companyId) => {
-    for (const rec of u) void upsertCustomer(rec, companyId).catch(() => {});
-    for (const id of r) void deleteCustomer(id).catch(() => {});
+  customers: (u, r, _nextMap, companyId, prevMap) => {
+    const ops: Promise<unknown>[] = [];
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; ops.push(upsertCustomer(rec, cid).catch((e) => console.warn('[Direct MySQL] v2_upsert_customer delta failed', e))); }
+    for (const id of r) { const rec = prevMap.get(id); const cid = rec?.company_id ?? rec?.companyId ?? companyId; ops.push(deleteCustomer(id, cid).catch(() => {})); }
+    return ops;
   },
-  suppliers: (u, r, _nextMap, companyId) => {
-    for (const rec of u) void upsertSupplier(rec, companyId).catch(() => {});
-    for (const id of r) void deleteSupplier(id).catch(() => {});
+  suppliers: (u, r, _nextMap, companyId, prevMap) => {
+    const ops: Promise<unknown>[] = [];
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; ops.push(upsertSupplier(rec, cid).catch((e) => console.warn('[Direct MySQL] v2_upsert_supplier delta failed', e))); }
+    for (const id of r) { const rec = prevMap.get(id); const cid = rec?.company_id ?? rec?.companyId ?? companyId; ops.push(deleteSupplier(id, cid).catch(() => {})); }
+    return ops;
   },
-  marketplaceProducts: (u, r, nextMap, companyId) => {
-    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; if (cid != null && cid !== '') void v2UpsertProduct(rec, cid).catch(() => {}); }
-    for (const id of r) { const cid = nextMap.get(id)?.company_id ?? nextMap.get(id)?.companyId ?? companyId; if (cid != null && cid !== '') void v2DeleteProduct(id, cid).catch(() => {}); }
+  marketplaceProducts: (u, r, _nextMap, companyId, prevMap) => {
+    const ops: Promise<unknown>[] = [];
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; if (cid != null && cid !== '') ops.push(v2UpsertProduct(rec, cid).catch(() => {})); }
+    for (const id of r) { const rec = prevMap.get(id); const cid = rec?.company_id ?? rec?.companyId ?? companyId; if (cid != null && cid !== '') ops.push(v2DeleteProduct(id, cid).catch(() => {})); }
+    return ops;
   }
 };
 
@@ -326,6 +386,25 @@ const BUSINESS_ENTITY_KEYS = new Set([
 // SYSTEM/SESSION METADATA KEYS: the ONLY key set whose presence is allowed to suppress
 // a flush. Nothing here carries durable business meaning outside the active session.
 const SYSTEM_SESSION_KEYS = new Set(['auditTrails', 'active_company_id', 'company_selection', 'lastActiveAt', 'lastSeen', '_companySwitch']);
+
+// BUILD 2026-09-08-19 (Required Fix 4): GLOBAL COMPANY-SCOPE SWITCH EVENT. When the
+// active company/branch/store context explicitly changes (Header selector, Settings
+// selector, ROOT impersonation, return-to-root), App broadcasts a `companyScopeChanged`
+// CustomEvent so sub-panels (MasterData, ManageUsers, stock modal, …) can drop stale
+// local form/editing state instead of continuing to edit a record of the previous
+// company's scope. Panels attach a window listener and reset in the handler.
+const COMPANY_SCOPE_EVENT = 'companyScopeChanged';
+const dispatchCompanyScopeChanged = (
+  companyId: string | null,
+  branchId: string | null,
+  storeId: string | null
+): void => {
+  try {
+    window.dispatchEvent(new CustomEvent(COMPANY_SCOPE_EVENT, {
+      detail: { companyId, branchId, storeId }
+    }));
+  } catch {}
+};
 
 // PHP state-flush timing: background saves COALESCE into a single server round-trip over
 // a ~6s window (laid-back debounce so rapid small edits never go to the wire one-by-one).
@@ -1382,6 +1461,17 @@ export default function App() {
     //    collections the user edited since last ack). This is the primary guard.
     for (const k of keys) out[k] = pending[k];
 
+    // BUILD 2026-09-08-19 (Fix 2): overlay any DIRECT-MYSQL key that still has an
+    // in-flight delta — the incoming server array predates the not-yet-flushed local
+    // record, so keeping the guarded snapshot prevents the "added record vanished"
+    // rollback. This runs BEFORE the per-record merge so already-acked records from
+    // other collections still get the updated_at union below.
+    for (const [gKey, guard] of Array.from(directDeltaGuards.entries())) {
+      if (guard && guard.pending > 0 && Array.isArray(guard.snapshot)) {
+        out[gKey] = sanitizeArray(guard.snapshot.slice()) as any;
+      }
+    }
+
     // 2. PER-RECORD updated_at merge (Requirement 2a/2b): even for collections NOT in
     //    the dirty snapshot — e.g. already-acked edits, or edits that bypassed
     //    dirtyValuesRef — never let a background re-fetch overwrite a local record
@@ -1517,7 +1607,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-18');
+    console.log('[TradeCore] build 2026-09-08-19');
   }, []);
 
   useEffect(() => {
@@ -1818,6 +1908,18 @@ export default function App() {
       setStorePricingInput(initialStorePrices);
     }
   }, [showStockModal, editingStockItem, activeCurrency, activeExchangeRate, companies, stores]);
+
+  // BUILD 2026-09-08-19 (Required Fix 4): close the stock add/edit modal on an
+  // explicit company switch — otherwise the form keeps holding the previous scope's
+  // product (companyId for the old company) and a Save would dump it into the new scope.
+  useEffect(() => {
+    const onScopeChange = () => {
+      setShowStockModal(false);
+      setEditingStockItem(null);
+    };
+    window.addEventListener('companyScopeChanged', onScopeChange);
+    return () => window.removeEventListener('companyScopeChanged', onScopeChange);
+  }, []);
 
   const handleMainPriceChange = (field: 'purchase' | 'retail' | 'wholesale' | 'partner', value: string) => {
     if (field === 'purchase') setFormPurchasePrice(value);
@@ -2194,6 +2296,17 @@ export default function App() {
     // This catches corrupted localStorage, malformed server responses, and any other
     // source of array-with-holes.
     parsed = sanitizeStateData(parsed);
+    // BUILD 2026-09-08-19 (Fix 2): overlay in-flight DIRECT-MYSQL delta snapshots BEFORE
+    // the server array replacement below — a snapshot/poll/Global-View re-fetch that
+    // arrives mid-delta holds the pre-flush rows, and wholesale replacement would wipe a
+    // just-added local record before MySQL answers. The guard is cleared on settle so the
+    // NEXT authoritative re-read reflects the committed rows. Independent of isRemoteApply
+    // so event-driven applies (SSE/broadcast/storage) get the same protection.
+    for (const [gKey, guard] of Array.from(directDeltaGuards.entries())) {
+      if (guard && guard.pending > 0 && Array.isArray(guard.snapshot) && parsed && typeof parsed === 'object') {
+        parsed[gKey] = sanitizeArray(guard.snapshot.slice());
+      }
+    }
     // REBOOT-SAFE COMPANIES FALLBACK (2026-09-08-11): NEVER let a payload that merely
     // OMITS the `companies` key silently reset the company list back to the two seed
     // defaultCompanies (Alpha/Beta). The boot path first tries fetchCompanySnapshot — a
@@ -3405,6 +3518,12 @@ export default function App() {
         // per-request AbortController (ignoreOuterSignal) and settleFlushes waits them
         // out instead of killing their signal.
         await settleFlushes(10000);
+        // BUILD 2026-09-08-19 (Fix 2): also wait for any in-flight DIRECT-MYSQL delta
+        // (customers/suppliers/stores/branches) of the OLD scope before the destructive
+        // snapshot below. Without this, a switch right after "Add Customer/Supplier"
+        // could fetch the old rows and overwrite the optimistic local record with the
+        // pre-flush array — the vanished-record bug on company switch.
+        await waitForDirectDeltas(6000);
         // STALE-ABORT: re-check the ACTIVE company after flushes settle. If the user
         // already switched again (or back), this resync is stale — the fresh effect run
         // for the new target owns the switch. Never force-switch to a target that is no
@@ -3953,7 +4072,11 @@ export default function App() {
     //    atomic endpoint immediately (no debounce, no localStorage caching).
     //    This ensures every save goes straight to the MySQL database.
     try {
-      const companyId = dbStateRef.current?.companies?.[0]?.id || (dbStateRef.current as any)?.companies?.[0]?.id || '';
+      // BUILD 2026-09-08-19 (Required Fix 1): dynamic scope binding at the MOMENT of
+      // submission. The old fallback `companies[0].id` routed an Atomic upsert to the
+      // FIRST company in the list — in a multi-company account a Save made while company B
+      // was active assigned the record to company A (wrong-company / vanished-record bugs).
+      const companyId = getActiveCompanyScope(currentCompanyId, currentUser);
       const changedKeys = Object.keys(updatedFields || {}).filter(k => !NON_SYNCED_KEYS.has(k));
       for (const key of changedKeys) {
         const val = (updatedFields as any)[key];
@@ -3966,7 +4089,16 @@ export default function App() {
         if (DIRECT_SYNC_KEYS.has(key)) {
           const delta = directDeltaParts((current as any)[key], val);
           const dh = DIRECT_DELTA_HANDLERS[key];
-          if (dh) dh(delta.upsert, delta.removed, delta.nextMap, companyId);
+          if (dh) {
+            // BUILD 2026-09-08-19 (Fix 2): pin the optimistic local snapshot while the
+            // delta is in flight so a background re-fetch can never wipe a fresh local
+            // record; released when the batch settles.
+            const ops = dh(delta.upsert, delta.removed, delta.nextMap, companyId, delta.prevMap);
+            if (ops && ops.length > 0) {
+              markDirectDeltaDirty(key, Array.isArray(val) ? val.slice() : val);
+              void Promise.allSettled(ops).then(() => clearDirectDeltaDirty(key)).catch(() => clearDirectDeltaDirty(key));
+            }
+          }
           continue;
         }
 
@@ -10081,6 +10213,7 @@ try {
     setCurrentBranchId(newBranchId);
     setCurrentStoreId(newStoreId);
     setCurrentPage('dashboard');
+    dispatchCompanyScopeChanged(String(demoCompId), String(newBranchId), String(newStoreId));
     setDemoSetupOpen(false);
     logAction('Demo Account Created', `1-day demo account "${demoUsername}" created and auto-logged-in with user-chosen credentials. Demo expires ${expiresAt.split('T')[0]}.`);
     toast.success(t('Welcome! Your 1-day free demo account has been created.'));
@@ -10336,6 +10469,7 @@ try {
     explicitCompanySwitchRef.current = true;
     setCurrentCompanyId(cid);
     setCurrentPage('dashboard');
+    dispatchCompanyScopeChanged(cid, null, null);
     toast.success(t(`Viewing as ${owner.name} — use "Return to Root" to switch back.`));
     logAction('Root Impersonation', `ROOT_MANDATE started viewing the system as ${owner.username} of company #${cid}.`);
   };
@@ -10350,6 +10484,7 @@ try {
     setCurrentUser(backup);
     setCurrentCompanyId(null);
     setCurrentPage('root-dashboard');
+    dispatchCompanyScopeChanged(null, null, null);
     toast.success(t('Returned to ROOT MANDATE session.'));
   };
 
@@ -10447,13 +10582,15 @@ try {
   const handleContextChange = (level: 'company' | 'branch' | 'store', val: number | string) => {
     if (level === 'company') {
       // GLOBAL VIEW (ALL COMPANIES): only available to global super admins. The company
-      // selector uses value 0 for the "Global View (All Companies)" entry. We keep the
-      // last concrete currentCompanyId (so the resync effect never trips) and apply a
-      // cross-company authoritative snapshot (company_id='') that returns EVERY company's
-      // stores/users/categories so the whole-workspace lists + dashboard aggregate.
-      if (val === 0 && isSuperScopeUser(currentUser)) {
+      // selector uses value 0 for the "Global View (All Companies)" entry (and React/HTML
+      // options always surface it to onChange as the STRING "0"). We keep the last concrete
+      // currentCompanyId (so the resync effect never trips) and apply a cross-company
+      // authoritative snapshot (company_id='') that returns EVERY company's stores/users/
+      // categories so the whole-workspace lists + dashboard aggregate.
+      if ((val === 0 || String(val) === '0') && isSuperScopeUser(currentUser)) {
         setGlobalCompanyView(true);
         persistActiveCompany('all');
+        dispatchCompanyScopeChanged('all', null, null);
         void (async () => {
           try {
             const snap = await fetchCompanySnapshot('');
@@ -10474,13 +10611,25 @@ try {
       setCurrentBranchId(b ? String(b.id) : null);
       const s = b ? stores.find(x => sameId(x.branchId, b.id)) : null;
       setCurrentStoreId(s ? String(s.id) : null);
+      dispatchCompanyScopeChanged(cid, b ? String(b.id) : null, s ? String(s.id) : null);
     } else if (level === 'branch') {
       const bid = val !== null && val !== undefined && val !== '' ? String(val) : null;
       setCurrentBranchId(bid);
       const s = stores.find(x => sameId(x.branchId, bid));
       setCurrentStoreId(s ? String(s.id) : null);
+      dispatchCompanyScopeChanged(
+        currentCompanyId != null ? String(currentCompanyId) : null,
+        bid,
+        s ? String(s.id) : null
+      );
     } else if (level === 'store') {
-      setCurrentStoreId(val !== null && val !== undefined && val !== '' ? String(val) : null);
+      const sid = val !== null && val !== undefined && val !== '' ? String(val) : null;
+      setCurrentStoreId(sid);
+      dispatchCompanyScopeChanged(
+        currentCompanyId != null ? String(currentCompanyId) : null,
+        currentBranchId != null ? String(currentBranchId) : null,
+        sid
+      );
     }
   };
 
@@ -14118,7 +14267,7 @@ try {
                     companies.length > 1 ? (
                       <select
                         value={targetCompId}
-                        onChange={(e) => { explicitCompanySwitchRef.current = true; const v = String(e.target.value); if (isRealCompanyId(v)) setCurrentCompanyId(v); }}
+                        onChange={(e) => { explicitCompanySwitchRef.current = true; const v = String(e.target.value); if (isRealCompanyId(v)) { setCurrentCompanyId(v); dispatchCompanyScopeChanged(v, null, null); } }}
                         className="w-full text-xs font-bold bg-white border border-indigo-200 rounded px-2 py-1 text-indigo-950 outline-none"
                       >
                         {companies.map(c => (

@@ -60,6 +60,22 @@ function ck(cid: string | number | undefined): Record<string, unknown> {
   return { company_id: String(cid ?? '') };
 }
 
+// BUILD 2026-09-08-19 (Required Fix 3): every delete carries the owning company scope
+// so the backend soft-delete is scoped + audited to the right company (multi-company
+// rows can never collide on the numeric id) and root_mandate impersonation deletes
+// land on the intended tenant.
+async function deleteByKey<T>(
+  action: string,
+  id: string | number,
+  companyId?: string | number
+): Promise<boolean> {
+  const r = await post<WriteRes>(action, {
+    id: String(id),
+    ...ck(companyId != null ? companyId : undefined)
+  });
+  return !!r?.success;
+}
+
 interface ListRes<T> { success: boolean; list?: T[]; count?: number; server_ts?: number; error?: string; }
 interface WriteRes { success: boolean; id?: string; server_ts?: number; error?: string; }
 
@@ -82,9 +98,8 @@ export async function upsertExpense(e: Expense, companyId?: string | number): Pr
   const r = await post<WriteRes>('v2_upsert_expense', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteExpense(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_expense', { id: String(id) });
-  return !!r?.success;
+export async function deleteExpense(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_expense', id, companyId);
 }
 
 // ============================================================================
@@ -105,9 +120,8 @@ export async function upsertSupplier(e: Supplier, companyId?: string | number): 
   const r = await post<WriteRes>('v2_upsert_supplier', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteSupplier(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_supplier', { id: String(id) });
-  return !!r?.success;
+export async function deleteSupplier(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_supplier', id, companyId);
 }
 
 // ============================================================================
@@ -131,9 +145,8 @@ export async function upsertPurchaseOrder(e: PurchaseOrder, companyId?: string |
   const r = await post<WriteRes>('v2_upsert_purchase_order', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deletePurchaseOrder(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_purchase_order', { id: String(id) });
-  return !!r?.success;
+export async function deletePurchaseOrder(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_purchase_order', id, companyId);
 }
 
 // ============================================================================
@@ -155,9 +168,8 @@ export async function upsertCustomer(e: Customer, companyId?: string | number): 
   const r = await post<WriteRes>('v2_upsert_customer', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteCustomer(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_customer', { id: String(id) });
-  return !!r?.success;
+export async function deleteCustomer(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_customer', id, companyId);
 }
 
 // ============================================================================
@@ -200,9 +212,8 @@ export async function upsertTaxRule(e: TaxRule, companyId?: string | number): Pr
   const r = await post<WriteRes>('v2_upsert_tax_rule', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteTaxRule(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_tax_rule', { id: String(id) });
-  return !!r?.success;
+export async function deleteTaxRule(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_tax_rule', id, companyId);
 }
 
 // ============================================================================
@@ -224,9 +235,8 @@ export async function upsertFlashSale(e: FlashSale, companyId?: string | number)
   const r = await post<WriteRes>('v2_upsert_flash_sale', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteFlashSale(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_flash_sale', { id: String(id) });
-  return !!r?.success;
+export async function deleteFlashSale(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_flash_sale', id, companyId);
 }
 
 // ============================================================================
@@ -247,9 +257,8 @@ export async function upsertStory(e: Story, companyId?: string | number): Promis
   const r = await post<WriteRes>('v2_upsert_story', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteStory(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_story', { id: String(id) });
-  return !!r?.success;
+export async function deleteStory(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_story', id, companyId);
 }
 
 // ============================================================================
@@ -270,9 +279,8 @@ export async function upsertDispute(e: Dispute, companyId?: string | number): Pr
   const r = await post<WriteRes>('v2_upsert_dispute', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteDispute(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_dispute', { id: String(id) });
-  return !!r?.success;
+export async function deleteDispute(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_dispute', id, companyId);
 }
 
 // ============================================================================
@@ -311,9 +319,8 @@ export async function upsertProductReturn(e: ProductReturn, companyId?: string |
   const r = await post<WriteRes>('v2_upsert_product_return', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteProductReturn(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_product_return', { id: String(id) });
-  return !!r?.success;
+export async function deleteProductReturn(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_product_return', id, companyId);
 }
 
 // ============================================================================
@@ -334,9 +341,8 @@ export async function upsertChatConversation(e: ChatConversation, companyId?: st
   const r = await post<WriteRes>('v2_upsert_chat_conversation', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteChatConversation(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_chat_conversation', { id: String(id) });
-  return !!r?.success;
+export async function deleteChatConversation(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_chat_conversation', id, companyId);
 }
 
 // ============================================================================
@@ -413,9 +419,8 @@ export async function upsertInstallmentPlan(e: InstallmentPlan, companyId?: stri
   const r = await post<WriteRes>('v2_upsert_installment_plan', { entity: e, ...ck(companyId ?? e.company_id) });
   return !!r?.success;
 }
-export async function deleteInstallmentPlan(id: string | number): Promise<boolean> {
-  const r = await post<WriteRes>('v2_delete_installment_plan', { id: String(id) });
-  return !!r?.success;
+export async function deleteInstallmentPlan(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_installment_plan', id, companyId);
 }
 
 // ============================================================================

@@ -6,6 +6,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-19] - 2026-09-10
+
+### Build 2026-09-08-19 — CRITICAL CRUD PERSISTENCE & MULTI-COMPANY SCOPE FIX
+Reported: records saved via CRUD got applied to the wrong company, deleted rows kept showing up, and newly added item/customer/supplier rows "vanished on the next background sync".
+
+**Root causes**:
+1. **Wrong-scope upserts/deletes** — `saveAllData`'s direct-MySQL delta wiring resolved a record's company with `companyId ?? rec.company_id`, so the *submission-time active scope* always won and re-homed an existing record to whichever company was being viewed (a Global-View save blocked or mis-scoped the write). Deletes looked up the just-removed row in the **next** map (already gone → fell through to the fallback → soft-deleted under the wrong company id).
+2. **Delta-vs-snapshot race** — an in-flight direct-MySQL upsert/delete racing an incremental snapshot/poll/Global-View re-fetch got **overwritten by the pre-write server state**: the record existed locally but not yet on the server, so the next re-read showed it gone.
+3. **Unscoped backend deletes** — several delete handlers (`api_entities.php`: expenses/suppliers/customers/purchase_orders/tax_rules/flash_sales/stories/disputes/product_returns/chat_conversations/installment_plans; `api.php`: stores) soft-deleted by numeric `id` ONLY with **no `company_id` scope** — two companies sharing a numeric id could delete each other's rows; `chat_conversations` and `installment_plans` were hard `DELETE FROM`.
+4. **Stale panel state across scope switches** — after a company/branch/store switch, panels kept the *previous* scope's in-flight editing state (ManageUsers `editingUser`, MasterData `editingItem`, the stock modal) and a save would re-home it across companies.
+
+**Frontend fixes** (`src/`, mirrored through the `cpanel_extracted/src` junction):
+1. **Per-record scope resolution at submission time** — upserts resolve `rec.company_id ?? rec.companyId ?? activeScope`; deletes resolve from the **previous** map (`prevMap`). `saveAllData`'s company fallback is now `getActiveCompanyScope(currentCompanyId, currentUser)` instead of `companies[0].id`. `BAD_SCOPE` in `idUtils.ts` now also rejects `'0'` (the Header company select emits string `'0'` for index 0 in Global View, which previously minted a destructive snapshot).
+2. **`directDeltaGuards` (Fix 2)** — while a direct-MySQL delta batch for a `DIRECT_SYNC_KEYS` key is still flushing, the guard pins the LOCAL next array and `protectDirtyCollections`/`applyData` overlay that snapshot over any incoming server state; `waitForDirectDeltas` blocks the destructive company-switch snapshot until deltas settle.
+3. **`normalizedPersistence` delete exports** now accept and forward `companyId`; every `v2_*` delete body sends `company_id`.
+4. **`companyScopeChanged` window event (Fix 4)** — dispatched from the Header selector, Settings selector, ROOT impersonation, return-to-root, and the demo-company switch; MasterData, ManageUsers, and the stock modal drop stale editing state on the event.
+
+**Backend fixes** (`public/cpanel/api_entities.php`, `public/cpanel/api.php`, synced to `cpanel_extracted/cpanel/`):
+1. New `tcV2ScopedDelete($pdo, $table, $id, $cid, $hard, $withUpdated)` helper — adds `AND company_id = ?` when a scope is supplied; all 11 `api_entities.php` delete handlers now use it (+ soft deletes for expense/supplier/customer/purchase_order/tax_rule/flash_sale/story/dispute/product_return, hard deletes for chat_conversation and installment_plan) and write an audit row.
+2. `v2_delete_store` in `api.php` now includes `AND company_id=?` in its soft-delete WHERE when a scope is supplied — cross-tenant numeric-id collisions can no longer delete another company's store.
+3. Existing degenerate-scope gate and user-account super-protect guard remain; per decision, the operator-scope `tcV2CanDelete` guard was **not** added (every handler is scoped by `company_id` and impersonation is covered by the existing gates).
+
+**Acceptance**: deploy head commit → hard refresh → add a customer/supplier/item under company A → cross-device poll must NOT wipe it → delete a row → `SELECT * FROM <table> WHERE company_id=<companyA>` confirms the scope → switch companies while a stale modal is open → the new company's records are untouched. Table is still `companies`.
+
 ## [1.0.9-build-18] - 2026-09-10
 
 ### Build 2026-09-08-18 — SYSTEM-WIDE scope fix: `company=NaN`, `Company Parent: N/A`, empty-snapshot data wipes, and cascade company deletion

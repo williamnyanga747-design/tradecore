@@ -14,7 +14,11 @@
  * isRealCompanyId BEFORE any snapshot/refetch/flush.
  */
 
-const BAD_SCOPE = new Set(['nan', 'undefined', 'null', 'none']);
+// BUILD 2026-09-08-19: '0' added — the Global View selector reads value="0" off the
+// DOM as the STRING '0', and a literal '0' is never a real company scope (the PHP
+// gate rejects it too). Treating it as valid let a stray Global-View selection run a
+// snapshot against company '0' which then overwrote local data with an empty payload.
+const BAD_SCOPE = new Set(['nan', 'undefined', 'null', 'none', '0']);
 
 /**
  * Canonical string form of an id. Returns '' for null/undefined/blank/'NaN'
@@ -50,4 +54,31 @@ export function isRealCompanyId(v: unknown): boolean {
 /** Real single-company id, or '' if the value is invalid. Guards snapshot/fetch calls. */
 export function safeCompanyId(v: unknown): string {
   return isRealCompanyId(v) ? sv(v) : '';
+}
+
+/**
+ * BUILD 2026-09-08-19 — DYNAMIC SCOPE BINDING (Required Fix 1).
+ * Resolve the company scope to attach to an outgoing CRUD payload AT THE MOMENT OF
+ * SUBMISSION (not from a stale prop captured when the form opened). Priority:
+ *  1. the live preferred value (the component's currentCompanyId state at submit time)
+ *  2. localStorage 'active_company_id' (persisted canonical committed scope)
+ *  3. the acting user's company id
+ * Returns only a validated real single-company id ("", 'all', 'NaN' etc. => '' so a
+ * degenerate scope can never reach a snapshot/flush/save).
+ */
+export function getActiveCompanyScope(
+  preferred?: unknown,
+  user?: { company_id?: unknown; companyId?: unknown } | null
+): string {
+  const pref = sv(preferred);
+  if (isRealCompanyId(pref)) return pref;
+  try {
+    const stored = window.localStorage.getItem('active_company_id');
+    if (stored) {
+      const s = sv(stored);
+      if (isRealCompanyId(s)) return s;
+    }
+  } catch {}
+  const u = user?.company_id ?? user?.companyId;
+  return safeCompanyId(u);
 }

@@ -58,6 +58,31 @@ function tcUpsertRow($pdo, $table, $id, $insertSql, $insertVals, $updateSets, $u
     return $stmt->rowCount() > 0;
 }
 
+// BUILD 2026-09-08-19 (Required Fix 3): SCOPED SOFT/HARD DELETE. When a company scope
+// is supplied, the UPDATE/DELETE is additionally bound to `AND company_id = ?` so a
+// multi-tenant row can NEVER be soft-deleted (or removed) by a caller that does not own
+// it — fixes the wrong-company deleted-row bug and keeps root_mandate impersonation
+// deletes inside the intended tenant. Falls back to id-only when no scope is sent
+// (legacy callers). Returns success without throwing (never breaks a batch).
+function tcV2ScopedDelete($pdo, $table, $id, $cid, $hard = false, $withUpdated = true) {
+    global $now;
+    try {
+        if ($hard) {
+            if ($cid !== '') { $pdo->prepare("DELETE FROM `$table` WHERE id=? AND company_id=?")->execute([$id, $cid]); }
+            else { $pdo->prepare("DELETE FROM `$table` WHERE id=?")->execute([$id]); }
+        } else {
+            if ($withUpdated) {
+                if ($cid !== '') { $pdo->prepare("UPDATE `$table` SET deleted_at=?, updated_at=? WHERE id=? AND company_id=?")->execute([$now, $now, $id, $cid]); }
+                else { $pdo->prepare("UPDATE `$table` SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); }
+            } else {
+                if ($cid !== '') { $pdo->prepare("UPDATE `$table` SET deleted_at=? WHERE id=? AND company_id=?")->execute([$now, $id, $cid]); }
+                else { $pdo->prepare("UPDATE `$table` SET deleted_at=? WHERE id=?")->execute([$now, $id]); }
+            }
+        }
+        return true;
+    } catch (Throwable $e) { error_log('[API] v2 delete ' . $table . ' #' . $id . ': ' . $e->getMessage()); return false; }
+}
+
 // ============================================================================
 // EXPENSES
 // ============================================================================
@@ -90,7 +115,9 @@ if ($action === 'v2_upsert_expense') {
 if ($action === 'v2_delete_expense') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE expenses SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'expenses', $id, $cid);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Expense Delete', 'Expense', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -127,7 +154,9 @@ if ($action === 'v2_upsert_supplier') {
 if ($action === 'v2_delete_supplier') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE suppliers SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'suppliers', $id, $cid);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Supplier Delete', 'Supplier', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -165,7 +194,9 @@ if ($action === 'v2_upsert_purchase_order') {
 if ($action === 'v2_delete_purchase_order') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE purchase_orders SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'purchase_orders', $id, $cid);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Purchase Order Delete', 'PurchaseOrder', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -202,7 +233,9 @@ if ($action === 'v2_upsert_customer') {
 if ($action === 'v2_delete_customer') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE customers SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'customers', $id, $cid);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Customer Delete', 'Customer', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -277,7 +310,9 @@ if ($action === 'v2_upsert_tax_rule') {
 if ($action === 'v2_delete_tax_rule') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE tax_rules SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'tax_rules', $id, $cid);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Tax Rule Delete', 'TaxRule', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -313,7 +348,9 @@ if ($action === 'v2_upsert_flash_sale') {
 if ($action === 'v2_delete_flash_sale') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE flash_sales SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'flash_sales', $id, $cid);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Flash Sale Delete', 'FlashSale', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -349,7 +386,9 @@ if ($action === 'v2_upsert_story') {
 if ($action === 'v2_delete_story') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE stories SET deleted_at=? WHERE id=?")->execute([$now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'stories', $id, $cid, false, false);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Story Delete', 'Story', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -385,7 +424,9 @@ if ($action === 'v2_upsert_dispute') {
 if ($action === 'v2_delete_dispute') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE disputes SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'disputes', $id, $cid);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Dispute Delete', 'Dispute', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -458,7 +499,9 @@ if ($action === 'v2_upsert_product_return') {
 if ($action === 'v2_delete_product_return') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("UPDATE product_returns SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'product_returns', $id, $cid);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Product Return Delete', 'ProductReturn', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -494,7 +537,9 @@ if ($action === 'v2_upsert_chat_conversation') {
 if ($action === 'v2_delete_chat_conversation') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("DELETE FROM chat_conversations WHERE id=?")->execute([$id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'chat_conversations', $id, $cid, true);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Chat Conversation Delete', 'ChatConversation', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
@@ -619,7 +664,9 @@ if ($action === 'v2_upsert_installment_plan') {
 if ($action === 'v2_delete_installment_plan') {
     $id = (string)($v2in['id'] ?? '');
     if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
-    try { $pdo->prepare("DELETE FROM installment_plans WHERE id=?")->execute([$id]); $ok = true; } catch (Throwable $e) { $ok = false; }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'installment_plans', $id, $cid, true);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Installment Plan Delete', 'InstallmentPlan', $id, '');
     echo json_encode(["success" => $ok, "server_ts" => $now]);
     exit();
 }
