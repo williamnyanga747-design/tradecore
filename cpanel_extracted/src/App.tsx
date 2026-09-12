@@ -1628,7 +1628,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-20');
+    console.log('[TradeCore] build 2026-09-08-21');
   }, []);
 
   useEffect(() => {
@@ -2527,6 +2527,31 @@ export default function App() {
           if (prev[k] !== undefined && prev[k] !== null) {
             (updatedState as any)[k] = prev[k];
           }
+        }
+      }
+    }
+
+    // BUILD 2026-09-08-21 (Smart non-destructive merge): never let a NON-ASSEMBLED remote
+    // payload silently wipe a master collection the local client already holds. The dynamic
+    // backend snapshot now assembles branches/stores/categories/users/companies straight
+    // from MySQL on snapshot/get_state/check_timestamp/stream_updates and tags the payload
+    // with _assembled=1 — so when _assembled is present, an empty array IS authoritative
+    // (a synchronized deletion must propagate). Only when the payload is NOT assembled
+    // (old-server / blob-only fallback) do we preserve the non-empty local rows instead of
+    // applying the empty array, and log the GUARD. sanitizeStateData keeps unknown keys, so
+    // _assembled survives entry.
+    const payloadAssembled = !!(
+      parsed && typeof parsed === 'object' &&
+      (parsed._assembled === true || parsed._assembled === 1 || parsed._assembled === '1')
+    );
+    if (isRemoteApply && !payloadAssembled) {
+      for (const k of ['branches', 'stores', 'categories', 'users', 'companies']) {
+        const incomingArr = Array.isArray(parsed?.[k]) ? parsed[k] : undefined;
+        const prevArr = Array.isArray((dbStateRef.current as any)?.[k]) ? (dbStateRef.current as any)[k] : undefined;
+        if (incomingArr && incomingArr.length === 0 && prevArr && prevArr.length > 0
+            && Array.isArray((updatedState as any)[k]) && (updatedState as any)[k].length === 0) {
+          console.warn(`[Sync] GUARD - server returned empty ${k} but local has ${prevArr.length} - preserving local until a MySQL-assembled payload confirms`);
+          (updatedState as any)[k] = prevArr;
         }
       }
     }

@@ -6,6 +6,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-21] - 2026-09-11
+
+### Build 2026-09-08-21 — DATA VANISHING ON REFRESH FIX, BACKEND DYNAMIC SNAPSHOT ASSEMBLY & MULTI-DEVICE REAL-TIME SYNC
+Reported (with screenshots): after a refresh the data appears for 2–5 s (boot reconciliation "Reconciliated boot state with parallel MySQL v2 reads") then **vanishes** when the background `php_sync.php`/SSE poll completes and overwrites with empty `[]`; and Branches/Stores/Categories/Users created on device A never reach device B without a hard refresh — only Companies do.
+
+**Root causes**:
+1. **`stream_updates` (SSE) pushed the RAW blob with NO MySQL merge** — the SSE connect event (and every version change) immediately `applyData`s the blob verbatim; a stale/empty collection in that blob overwrites the freshly boot-hydrated MySQL state. This is the 2–5 s "appear then vanish" culprit. `check_timestamp`'s inline `full` state was blob-only too.
+2. **v2 direct-MySQL writes never bumped `tradecore_system_state.version`** — `tcBlobMerge` "NEVER bumps the monotonic version (only save_state may)", so SSE and the cross-device poll never saw a change and never re-emitted → only the writer's own device ever saw the row (the exact Companies-vs-everything-else asymmetry).
+3. **`get_state` company path omits companies/branches/stores and returns client-mismatched key names** — the 30s cross-device poll (`data.products ?? data.state?.products`, `data.users`) and `fetchSystemDataFromPhp` could never converge master data.
+4. **Strict-UUID leak in category keys** — `tcLoadCategoriesN`/`tcMirrorNormalized`/v2 category blob-merge all cast the company id with `(int)`, turning every opaque/UUID company id into `0` and emitting `co_0:<name>` keys that never match the client's `co_<uuid>:<name>` strings.
+
+**Backend fixes** (`public/cpanel/api.php`, synced to `cpanel_extracted/cpanel/api.php`):
+1. **ONE shared dynamic assembler `tcAssembleDynamicSnapshot($pdo, $companyId, $data)`** — overlays authoritative MySQL rows over the blob base (`companies` always full-global; stores+branches partitioned from `stores` by `branchId`; users from `user_accounts` + legacy scope/fallback; categories FULL cross-company `co_<id>:<name>` strings; products mapped to `marketplaceProducts`/`stockItems`/`products`; sales→`salesOrders`, marketplace orders→`marketplaceOrders`) and sets `_assembled=1`. Only overrides a key when the DB actually has rows, so deletions still propagate cleanly.
+2. **Wire the assembler into ALL read paths** — `snapshot` (replaces every inline overlay block), `get_state` company FULL fetch (`companies/branches/stores/users/categories/stockItems/...` top-level) AND its global fallback, `check_timestamp`'s inline `full` state, and `stream_updates` (SSE payload now carries DB truth, never the raw blob).
+3. **`tcBumpMainStateVersion($pdo)`** — bumps `tradecore_system_state.version` + `updated_at` (MySQL `NOW()`, matching the row's DATETIME column) after EVERY successful v2 write (upsert/delete company, store, product, category, user account), so SSE re-emits and the 30s cross-device poll refetches → multi-device real-time propagation.
+4. **Strict UUID string handling** — category `co_<id>:<name>` keys now preserve the exact company id string (removed every `(int)` cast and the `/^co_(\d+):/` regex); `tcLoadProductsN` refactored onto the shared `tcMapProductRow` mapper.
+
+**Frontend fix** (`src/App.tsx`, mirrored via the `cpanel_extracted/src` junction):
+- **Smart non-destructive merge (empty-guard)** — in `applyData`, a remote payload is only trusted to contain authoritative empty arrays when it carries `_assembled=1` (i.e. the backend actually assembled MySQL rows). For NON-assembled payloads (old-server/blob-only fallback), a master collection (`branches/stores/categories/users/companies`) returned as `[]` while the local client holds rows is PRESERVED with a `[Sync] GUARD - server returned empty ... preserving local ...` log — this is scoped to non-assembled payloads only, so it can never strand rows (the build-2026-09-08-10 regression class) because assembled payloads always win.
+
+**Acceptance**: deploy head commit → hard refresh → data must NOT vanish (no empty overwrite after boot). Device A add Branch/Store/Category/User → device B picks it up WITHOUT a hard refresh within ~1 s (SSE version bump) or ≤30 s (poll), and vice-versa. Delete on one device propagates to the other. `SELECT * FROM products/stores/stock_categories/user_accounts WHERE deleted_at IS NULL` rows are served by `snapshot`, `get_state`, `check_timestamp?full=1`, and the SSE stream. UUID company ids (e.g. `7506a432-7daa-4bdb-af34-ad4e5838fd1c`) produce `co_7506a432-...:<name>` category keys everywhere. Epoch timestamps stay integer epoch-seconds (BIGINT columns since build-17) — `NOW()` is used only for the blob's DATETIME `updated_at` on version bumps.
+
+---
+
 ## [1.0.9-build-20] - 2026-09-11
 
 ### Build 2026-09-08-20 — DIRECT MYSQL CRUD PERSISTENCE FOR ALL MASTER ENTITIES (Branches/Stores/Categories/Users)

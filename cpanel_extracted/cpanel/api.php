@@ -614,21 +614,8 @@ function tcLoadProductsN($pdo, $companyId = '', $storeId = '', $since = 0) {
         $st = $pdo->prepare($sql);
         $st->execute($args);
         foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
-            $extra = [];
-            if ($r['extra_json']) { $d = json_decode($r['extra_json'], true); if (is_array($d)) $extra = $d; }
-            $p = [
-                'id' => $r['id'], 'companyId' => $r['company_id'], 'storeId' => $r['store_id'],
-                'categoryId' => $r['category_id'], 'sku' => $r['sku'], 'name' => $r['name'],
-                'barcode' => $r['barcode'], 'price' => (float)$r['unit_price'], 'unitPrice' => (float)$r['unit_price'],
-                'costPrice' => (float)$r['cost_price'], 'unitCost' => (float)$r['cost_price'],
-                'stockQty' => (float)$r['stock_qty'], 'quantity' => (float)$r['stock_qty'],
-                'lowStockThreshold' => $r['low_stock_threshold'] === null ? null : (float)$r['low_stock_threshold'],
-                'taxRate' => (float)$r['tax_rate'], 'unit' => $r['unit'], 'image' => $r['image_url'],
-                'description' => $r['description'], 'is_active' => (int)$r['is_active'], 'active' => (int)$r['is_active'],
-                'created_at' => $r['created_at'], 'updated_at' => $r['updated_at'],
-            ];
-            foreach ($extra as $ek => $ev) { if (!array_key_exists($ek, $p)) $p[$ek] = $ev; }
-            $out[] = $p;
+            $mp = tcMapProductRow($r);
+            if ($mp !== null) $out[] = $mp;
         }
     } catch (Throwable $e) { error_log('[TradeCore API] tcLoadProductsN failed: ' . $e->getMessage()); }
     return $out;
@@ -704,12 +691,136 @@ function tcLoadCategoriesN($pdo, $companyId = '') {
             $st = $pdo->query("SELECT company_id, name, deleted_at FROM stock_categories WHERE deleted_at IS NULL ORDER BY company_id ASC, created_at ASC");
         }
         foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
-            $cid = (int)($r['company_id'] ?? 1);
+            // STRICT UUID STRING HANDLING (2026-09-08-21): company ids are opaque strings
+            // (e.g. 'co_a1b2...' or a UUID) — (int) cast would turn every non-numeric id
+            // into 0 and emit 'co_0:<name>' keys that never match the client's strings.
+            $cid = (string)($r['company_id'] ?? '1');
             $name = trim((string)($r['name'] ?? ''));
             if ($name !== '') $out[] = 'co_' . $cid . ':' . $name;
         }
     } catch (Throwable $e) { error_log('[TradeCore API] tcLoadCategoriesN failed: ' . $e->getMessage()); }
     return $out;
+}
+
+// Map a raw `products` table row to the client-side product shape (single source of
+// truth reused by tcLoadProductsN, the global product query in v2_list_products and
+// tcAssembleDynamicSnapshot). extra_json fields are appended when not already present.
+function tcMapProductRow($r) {
+    if (!is_array($r)) return null;
+    $extra = [];
+    if (!empty($r['extra_json'])) { $d = json_decode($r['extra_json'], true); if (is_array($d)) $extra = $d; }
+    $p = [
+        'id' => $r['id'], 'companyId' => $r['company_id'], 'company_id' => $r['company_id'], 'storeId' => $r['store_id'],
+        'store_id' => $r['store_id'], 'categoryId' => $r['category_id'], 'category_id' => $r['category_id'],
+        'sku' => $r['sku'], 'name' => $r['name'], 'barcode' => $r['barcode'],
+        'price' => (float)$r['unit_price'], 'unitPrice' => (float)$r['unit_price'],
+        'costPrice' => (float)$r['cost_price'], 'unitCost' => (float)$r['cost_price'],
+        'stockQty' => (float)$r['stock_qty'], 'quantity' => (float)$r['stock_qty'],
+        'lowStockThreshold' => $r['low_stock_threshold'] === null ? null : (float)$r['low_stock_threshold'],
+        'taxRate' => (float)$r['tax_rate'], 'unit' => $r['unit'], 'image' => $r['image_url'],
+        'image_url' => $r['image_url'], 'description' => $r['description'],
+        'is_active' => (int)$r['is_active'], 'active' => (int)$r['is_active'],
+        'created_at' => $r['created_at'], 'updated_at' => $r['updated_at'],
+    ];
+    foreach ($extra as $ek => $ev) { if ($ek !== 'id' && !array_key_exists($ek, $p)) $p[$ek] = $ev; }
+    return $p;
+}
+
+// DYNAMIC SNAPSHOT ASSEMBLY (2026-09-08-21): overlay authoritative MySQL/normalized rows
+// over a blob-backed state object so snapshot, get_state (company + global), check_timestamp
+// and stream_updates (SSE) NEVER return an empty master collection for rows that exist in
+// MySQL. The main_state blob remains the base; each MySQL collection OVERRIDES its blob key
+// only when the DB actually has rows. Sets $data['_assembled']=1 so the client can safely
+// trust non-empty counts (and reserve its empty-preserve GUARD for blob-only/legacy payloads
+// that lack the flag).
+function tcAssembleDynamicSnapshot($pdo, $companyId = '', $data = []) {
+    if (!$pdo || !is_array($data)) return is_array($data) ? $data : [];
+    $scope = ($companyId === null || $companyId === 'all') ? '' : (string)$companyId;
+
+    // companies — ALWAYS the full global list (the client keeps ONE global array and
+    // filters per active company; a scoped subset would wipe other companies on apply).
+    try {
+        $c = tcLoadCompanies($pdo);
+        if (count($c) > 0) $data['companies'] = $c;
+    } catch (Throwable $e) { error_log('[TradeCore API] assemble companies failed: ' . $e->getMessage()); }
+
+    // stores + branches — partition the stores table exactly like the v2/snapshot rule:
+    // a row whose branch_id is set IS a branch; a row without branch_id is a plain store.
+    try {
+        $st = tcLoadStores($pdo, $scope);
+        if (count($st) > 0) {
+            $branches = array_values(array_filter($st, function($s) { return !empty($s['branchId']); }));
+            $poSs = array_values(array_filter($st, function($s) { return empty($s['branchId']); }));
+            if (count($poSs) > 0) $data['stores'] = $poSs;
+            if (count($branches) > 0) $data['branches'] = $branches;
+        }
+    } catch (Throwable $e) { error_log('[TradeCore API] assemble stores failed: ' . $e->getMessage()); }
+
+    // users — normalized user_accounts (+ branch/store scope overlay in tcLoadUsersN),
+    // with the legacy tradecore_users atomic mirror as fallback while the table is empty.
+    try {
+        $u = tcLoadUsersN($pdo, $scope);
+        if (count($u) === 0 && $scope !== '') {
+            $stU = $pdo->prepare("SELECT data FROM tradecore_users WHERE company_id=? AND deleted_at IS NULL");
+            $stU->execute([$scope]);
+            foreach ($stU->fetchAll() as $rU) { $dU = json_decode($rU['data'], true); if (is_array($dU) && empty($dU['isDeleted']) && empty($dU['deletedAt'])) $u[] = $dU; }
+        }
+        if (count($u) > 0) { $data['users'] = $u; $data['userAccounts'] = $u; }
+    } catch (Throwable $e) { error_log('[TradeCore API] assemble users failed: ' . $e->getMessage()); }
+
+    // categories — FULL cross-company set (client keeps one global co_<id>:<name> array and
+    // filters itself); fall back to the legacy tradecore_categories loader while stock_categories
+    // is empty. Blob stays as-is when BOTH tables are empty (fresh migration safety).
+    try {
+        $cats = tcLoadCategoriesN($pdo, '');
+        if (count($cats) === 0) $cats = tcLoadCategories($pdo);
+        if (count($cats) > 0) $data['categories'] = $cats;
+    } catch (Throwable $e) { error_log('[TradeCore API] assemble categories failed: ' . $e->getMessage()); }
+
+    // products — normalized products rows scoped to the company; full table at global scope,
+    // mapped to client shape into BOTH marketplaceProducts and stockItems/product keys.
+    try {
+        $prods = [];
+        if ($scope !== '') {
+            $prods = tcLoadProductsN($pdo, $scope);
+        } else {
+            $rsP = $pdo->query("SELECT * FROM products WHERE deleted_at IS NULL ORDER BY company_id ASC, name ASC");
+            foreach ($rsP->fetchAll(PDO::FETCH_ASSOC) as $rP) { $mp = tcMapProductRow($rP); if ($mp !== null) $prods[] = $mp; }
+        }
+        if (count($prods) > 0) { $data['marketplaceProducts'] = $prods; $data['products'] = $prods; $data['stockItems'] = $prods; }
+    } catch (Throwable $e) { error_log('[TradeCore API] assemble products failed: ' . $e->getMessage()); }
+
+    // sales + marketplace orders — legacy atomic overlays (company-scoped when a scope is
+    // given, global otherwise). Only override when rows exist so deletions propagate cleanly.
+    foreach (['tradecore_sales' => 'salesOrders', 'tradecore_marketplace_orders' => 'marketplaceOrders'] as $tbl => $key) {
+        try {
+            if (!preg_match('/^[a-z0-9_]+$/', $tbl)) continue;
+            $sql = "SELECT data FROM {$tbl} WHERE deleted_at IS NULL";
+            $args = [];
+            if ($scope !== '') { $sql .= " AND company_id=?"; $args[] = $scope; }
+            $stO = $pdo->prepare($sql);
+            $stO->execute($args);
+            $rowsO = [];
+            foreach ($stO->fetchAll() as $rO) { $dO = json_decode($rO['data'], true); if (is_array($dO)) $rowsO[] = $dO; }
+            if (count($rowsO) > 0) $data[$key] = $rowsO;
+        } catch (Throwable $e) { error_log('[TradeCore API] assemble ' . $tbl . ' failed: ' . $e->getMessage()); }
+    }
+
+    $data['_assembled'] = 1;
+    return $data;
+}
+
+// MULTI-DEVICE VERSION BUMPS (2026-09-08-21): v2 direct-MySQL writes previously merged a thin
+// row into the blob (tcBlobMerge) WITHOUT bumping tradecore_system_state.version, so
+// stream_updates (SSE) and check_timestamp never noticed the change and other devices never
+// refetched — the reason branches/stores/categories/users were visible only to the writer.
+// Every v2 write handler now calls this so the OWNING device's SSE pushes an assembled
+// payload and every polling device refetches the MySQL-assembled state.
+function tcBumpMainStateVersion($pdo) {
+    if (!$pdo) return;
+    try {
+        $pdo->prepare("UPDATE tradecore_system_state SET version=COALESCE(version,0)+1, updated_at=NOW() WHERE doc_key='main_state'")->execute();
+    } catch (Throwable $e) { error_log('[TradeCore API] tcBumpMainStateVersion failed: ' . $e->getMessage()); }
 }
 
 // Append-only normalized audit row + legacy audit_logs back-compat.
@@ -754,7 +865,9 @@ function tcMirrorNormalized($pdo, $data) {
             foreach ($data['categories'] as $cname) {
                 if (!is_string($cname) || trim($cname) === '') continue;
                 $cid = 1; $name = trim($cname);
-                if (preg_match('/^co_(\d+):(.+)$/s', $name, $m)) { $cid = (int)$m[1]; $name = trim($m[2]); }
+                // STRICT UUID (2026-09-08-21): accept any non-colon string after 'co_' —
+                // numeric ids (legacy '1') AND opaque UUIDs (e.g. 'co_a1b2...') both match.
+                if (preg_match('/^co_([^:]+):(.+)$/s', $name, $m)) { $cid = (string)$m[1]; $name = trim($m[2]); }
                 if ($name !== '') tcUpsertCategoryRow($pdo, (string)$cid, $name, $now);
             }
         }
@@ -1233,79 +1346,15 @@ try {
             // every snapshot, so an empty normalized table self-populates here.
             try { tcMirrorNormalized($pdo, $blob); } catch (Throwable $eMirror) {}
 
-            // companies -> normalized when present, else blob overlay.
-            $nCompanies = tcLoadCompanies($pdo);
-            if (count($nCompanies) > 0) $blob['companies'] = $nCompanies;
-            // stores (stores + branches) -> normalized when present, else blob.
-            $nStores = tcLoadStores($pdo, $companyId !== '' ? $companyId : '');
-            if (count($nStores) > 0) {
-                $branches = array_values(array_filter($nStores, function($s) { return !empty($s['branchId']); }));
-                $poSs = array_values(array_filter($nStores, function($s) { return empty($s['branchId']); }));
-                if (count($poSs) > 0) $blob['stores'] = $poSs;
-                if (count($branches) > 0) $blob['branches'] = $branches;
-            }
-            // user_accounts -> normalized when present, else tradecore_users/blob.
-            $nUsers = tcLoadUsersN($pdo, $companyId !== '' ? $companyId : '');
-            if (count($nUsers) > 0) {
-                $blob['users'] = $nUsers;
-                $blob['userAccounts'] = $nUsers;
-            }
-            if ($companyId !== '') {
-                // users -> tradecore_users (fallback only when normalized/blob have none)
-                try {
-                    $st = $pdo->prepare("SELECT data FROM tradecore_users WHERE company_id=? AND deleted_at IS NULL");
-                    $st->execute([$companyId]);
-                    $rows = [];
-                    foreach ($st->fetchAll() as $r) { $d = json_decode($r['data'], true); if (is_array($d)) $rows[] = $d; }
-                    // Only fill from the legacy atomic table when nothing was already
-                    // resolved (normalized user_accounts wins; next fallback is the blob).
-                    if (empty($blob['users'] ?? [])) $blob['users'] = $rows;
-                } catch (Throwable $eSnapU) { error_log('[TradeCore API] snapshot users failed: ' . $eSnapU->getMessage()); }
-                // products -> marketplaceProducts
-                try {
-                    $st = $pdo->prepare("SELECT data FROM tradecore_products WHERE company_id=? AND deleted_at IS NULL");
-                    $st->execute([$companyId]);
-                    $rows = [];
-                    foreach ($st->fetchAll() as $r) { $d = json_decode($r['data'], true); if (is_array($d)) $rows[] = $d; }
-                    if (count($rows) > 0 || empty($blob['marketplaceProducts'] ?? [])) $blob['marketplaceProducts'] = $rows;
-                } catch (Throwable $eSnapP) { error_log('[TradeCore API] snapshot products failed: ' . $eSnapP->getMessage()); }
-                // sales -> salesOrders
-                try {
-                    $st = $pdo->prepare("SELECT data FROM tradecore_sales WHERE company_id=? AND deleted_at IS NULL");
-                    $st->execute([$companyId]);
-                    $rows = [];
-                    foreach ($st->fetchAll() as $r) { $d = json_decode($r['data'], true); if (is_array($d)) $rows[] = $d; }
-                    if (count($rows) > 0 || empty($blob['salesOrders'] ?? [])) $blob['salesOrders'] = $rows;
-                } catch (Throwable $eSnapS) { error_log('[TradeCore API] snapshot sales failed: ' . $eSnapS->getMessage()); }
-                // marketplace_orders -> marketplaceOrders
-                try {
-                    $st = $pdo->prepare("SELECT data FROM tradecore_marketplace_orders WHERE company_id=? AND deleted_at IS NULL");
-                    $st->execute([$companyId]);
-                    $rows = [];
-                    foreach ($st->fetchAll() as $r) { $d = json_decode($r['data'], true); if (is_array($d)) $rows[] = $d; }
-                    if (count($rows) > 0 || empty($blob['marketplaceOrders'] ?? [])) $blob['marketplaceOrders'] = $rows;
-                } catch (Throwable $eSnapO) { error_log('[TradeCore API] snapshot orders failed: ' . $eSnapO->getMessage()); }
-            }
-
-            // 3. Categories: stock_categories (normalized) first, then the legacy
-            //    tradecore_categories mirror, falling back to the blob only while both
-            //    tables are empty so a fresh DB (migration not yet run) can never reset
-            //    categories to [].
-            //    CRITICAL (2026-09-07): load the FULL cross-company category set — never
-            //    a company-scoped subset. The client stores categories as a single global
-            //    array of "co_<cid>:<name>" strings and filters per active company itself
-            //    (getCompanyCategories). Returning only the requested company's rows here
-            //    wipes every OTHER company's categories from the client's state on each
-            //    snapshot; a following flush then sends the trimmed array to the server,
-            //    permanently deleting the other companies' categories for all users.
-            try {
-                $cats = tcLoadCategoriesN($pdo, '');
-                if (count($cats) === 0) $cats = tcLoadCategories($pdo);
-                if (count($cats) === 0 && isset($blob['categories']) && is_array($blob['categories']) && count($blob['categories']) > 0) {
-                    $cats = $blob['categories'];
-                }
-                $blob['categories'] = $cats;
-            } catch (Throwable $eSnapC) { error_log('[TradeCore API] snapshot categories failed: ' . $eSnapC->getMessage()); }
+            // 2b. DYNAMIC SNAPSHOT ASSEMBLY (BUILD 2026-09-08-21): overlay the normalized
+            //     MySQL tables (companies / stores+branches / users / categories / products /
+            //     sales / marketplace_orders) over the blob base so a snapshot NEVER returns
+            //     an empty master collection for rows that actually exist in MySQL. This ONE
+            //     assembler replaces every inline overlay block below (including the old
+            //     categories block) and is shared by snapshot, get_state, check_timestamp and
+            //     stream_updates so all four read paths stay consistent.
+            try { $blob = tcAssembleDynamicSnapshot($pdo, $companyId !== '' ? $companyId : '', $blob); }
+            catch (Throwable $eAssembleSnap) { error_log('[TradeCore API] snapshot assemble failed: ' . $eAssembleSnap->getMessage()); }
 
             $blob['_version'] = $version;
             $blob['_serverUpdatedAt'] = $blobRow['updated_at'] ?? $blob['_serverUpdatedAt'] ?? null;
@@ -1372,7 +1421,12 @@ try {
                     $row2 = $stmt2 ? $stmt2->fetch(PDO::FETCH_ASSOC) : null;
                     if ($row2 && $row2['json_data']) {
                         $stData = normalizeBlobData(json_decode($row2['json_data'], true));
-                        if (is_array($stData)) $result['state'] = $stData;
+                        if (is_array($stData)) {
+                            // 2026-09-08-21: global dynamic assembly — the full state served
+                            // here must reflect MySQL master data, never just the stale blob.
+                            $stData = tcAssembleDynamicSnapshot($pdo, '', $stData);
+                            $result['state'] = $stData;
+                        }
                     }
                 } catch (Throwable $eSt) {
                     error_log('[TradeCore API] check_timestamp state fetch failed: ' . $eSt->getMessage());
@@ -1474,11 +1528,16 @@ try {
                     "sales" => $sales,
                     "marketplaceOrders" => $orders,
                 ];
-                // Categories: on a FULL fetch (since=0) return the MySQL-backed category
-                // list (per-company rows + timestamps; source of truth). Incremental
-                // fetches omit this key so the client keeps its already-loaded categories.
+                // Categories: on a FULL fetch (since=0) return the MySQL-backed category list plus the
+                // other master collections assembled from MySQL so polling devices converge
+                // on the SAME direct-MySQL data (stores/branches/companies/users/categories/
+                // stock) that the writer just persisted via the v2 endpoints.
                 if ($since === 0) {
-                    $result['categories'] = tcLoadCategoriesN($pdo, $companyId);
+                    $asData = tcAssembleDynamicSnapshot($pdo, $companyId, []);
+                    foreach (['companies', 'branches', 'stores', 'users', 'categories', 'stockItems', 'marketplaceProducts', 'salesOrders', 'marketplaceOrders'] as $okey) {
+                        if (isset($asData[$okey]) && is_array($asData[$okey]) && count($asData[$okey]) > 0) $result[$okey] = $asData[$okey];
+                    }
+                    if (isset($asData['marketplaceProducts']) && !isset($result['products'])) $result['products'] = $asData['marketplaceProducts'];
                 }
                 // Include deleted IDs for incremental sync
                 if ($since > 0 && (count($deletedProducts) > 0 || count($deletedUsers) > 0)) {
@@ -1544,6 +1603,10 @@ try {
                     // a clobbered/empty blob key can never wipe known categories.
                     $tableCats = tcLoadCategories($pdo);
                     if (count($tableCats) > 0) $outData['categories'] = $tableCats;
+                    // 2026-09-08-21: GLOBAL dynamic assembly — fallback path must also serve
+                    // MySQL master data so a superadmin/global GET never returns empty rows
+                    // that the DB actually holds.
+                    $outData = tcAssembleDynamicSnapshot($pdo, '', $outData);
                     echo json_encode(["changed" => true, "server_ts" => $ver, "version" => $ver, "_version" => $ver, "state" => $outData]);
                     exit();
                 }
@@ -1602,6 +1665,12 @@ try {
                         if (is_file($sf)) { $fc = @file_get_contents($sf); $fd = $fc ? json_decode($fc, true) : null; if (is_array($fd)) { $stateData = normalizeBlobData(isset($fd['data']) && is_array($fd['data']) ? $fd['data'] : $fd); $updatedAtVal = $fd['updatedAt'] ?? null; $verOut = $fd['version'] ?? 0; } }
                     }
                     if ($stateData && !connection_aborted()) {
+                        // 2026-09-08-21: assemble from MySQL BEFORE pushing. This is what kills
+                        // the "data appears then vanishes" bug — the raw blob used to be pushed
+                        // verbatim, so the FIRST SSE connect event immediately overwrote the
+                        // client's freshly boot-hydrated state with stale/empty arrays. Now the
+                        // payload carries the DB truth (with _assembled=1).
+                        if ($pdo) $stateData = tcAssembleDynamicSnapshot($pdo, '', $stateData);
                         if (!isset($stateData['_version']) && $verOut !== null) $stateData['_version'] = $verOut;
                         echo "data: " . json_encode(["data" => $stateData, "updatedAt" => $updatedAtVal, "version" => $verOut, "lastUpdated" => $updatedAtVal]) . "\n\n";
                         @flush();
@@ -3368,6 +3437,7 @@ try {
             if (!$ok) error_log('[v2_upsert_company] FAILED SQL: ' . ($err ?: 'unknown') . ' DATA: ' . json_encode($company));
             if ($ok) {
                 try { tcBlobMerge($pdo, 'companies', $company); } catch (Throwable $eBlob) { error_log('[TradeCore API] v2_upsert_company blob merge failed: ' . $eBlob->getMessage()); }
+                tcBumpMainStateVersion($pdo);
             }
             $name = (string)($company['name'] ?? $company['id']);
             try { tcWriteAuditTrail($pdo, (string)$company['id'], '', $v2op, 'Company Upsert', 'Company', (string)$company['id'], $name, ['company_id' => $company['id']]); } catch (Throwable $eAudit) { error_log('[TradeCore API] v2_upsert_company audit failed: ' . $eAudit->getMessage()); }
@@ -3619,6 +3689,8 @@ try {
                  * array only when a branchId was provided, so the classic
                  * snapshot-driven UI keeps working during the transition.
                  */
+                // 2026-09-08-21: notify every device (SSE + poll) that master data changed.
+                tcBumpMainStateVersion($pdo);
             }
             tcWriteAuditTrail($pdo, $scid, '', $v2op, 'Store Upsert', 'Store', (string)$store['id'], (string)($store['name'] ?? $store['id']), ['company_id' => $scid]);
             echo json_encode(["success" => $ok, "id" => (string)$store['id'], "server_ts" => $now]);
@@ -3640,6 +3712,7 @@ try {
                 else { $pdo->prepare("UPDATE stores SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); }
                 $ok = true;
             } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_store failed: ' . $e->getMessage()); }
+            if ($ok) tcBumpMainStateVersion($pdo);
             tcBlobMerge($pdo, 'stores', null, $id);
             tcBlobMerge($pdo, 'branches', null, $id);
             tcWriteAuditTrail($pdo, $scid, '', $v2op, 'Store Delete', 'Store', $id, $id, ['company_id' => $scid]);
@@ -3719,7 +3792,10 @@ try {
             if ($pcid === '') { echo json_encode(["success" => false, "error" => "Missing product company_id", "server_ts" => $now]); exit(); }
             $product['company_id'] = $product['companyId'] = $pcid;
             $ok = tcUpsertProductRow($pdo, $product, $now);
-            if ($ok) tcBlobMerge($pdo, 'marketplaceProducts', $product);
+            if ($ok) {
+                tcBlobMerge($pdo, 'marketplaceProducts', $product);
+                tcBumpMainStateVersion($pdo);
+            }
             tcWriteAuditTrail($pdo, $pcid, '', $v2op, 'Product Upsert', 'Product', (string)$product['id'], (string)($product['name'] ?? $product['id']), ['company_id' => $pcid, 'store_id' => $product['storeId'] ?? null]);
             echo json_encode(["success" => $ok, "id" => (string)$product['id'], "server_ts" => $now]);
             exit();
@@ -3736,6 +3812,7 @@ try {
                 $pdo->prepare("UPDATE tradecore_products SET deleted_at=? WHERE id=? AND company_id=?")->execute([$now, $id, $pcid]);
                 $ok = true;
             } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_product failed: ' . $e->getMessage()); }
+            if ($ok) tcBumpMainStateVersion($pdo);
             tcBlobMerge($pdo, 'marketplaceProducts', null, $id);
             tcWriteAuditTrail($pdo, $pcid, '', $v2op, 'Product Delete', 'Product', $id, $id, ['company_id' => $pcid]);
             echo json_encode(["success" => $ok, "server_ts" => $now]);
@@ -3767,13 +3844,14 @@ try {
                         $pd = normalizeBlobData(json_decode($pre['json_data'], true));
                         if (is_array($pd)) {
                             if (!isset($pd['categories']) || !is_array($pd['categories'])) $pd['categories'] = [];
-                            $entry = 'co_' . (int)$ccid . ':' . $catName;
+                            $entry = 'co_' . $ccid . ':' . $catName;
                             if (!in_array($entry, $pd['categories'], true)) $pd['categories'][] = $entry;
                             $pdo->prepare("INSERT INTO tradecore_system_state (doc_key, json_data, updated_at) VALUES ('main_state', ?, NOW()) ON DUPLICATE KEY UPDATE json_data=VALUES(json_data), updated_at=NOW()")->execute([json_encode($pd, JSON_UNESCAPED_UNICODE)]);
                         }
                     }
                 } catch (Throwable $eBlob) { error_log('[TradeCore API] v2_upsert_category blob merge failed: ' . $eBlob->getMessage()); }
             }
+            if ($ok) tcBumpMainStateVersion($pdo);
             tcWriteAuditTrail($pdo, $ccid, '', $v2op, 'Category Upsert', 'Category', 'nc_' . md5($ccid . ':' . $catName), $catName, ['company_id' => $ccid]);
             echo json_encode(["success" => $ok, "id" => 'nc_' . md5($ccid . ':' . $catName), "server_ts" => $now]);
             exit();
@@ -3792,6 +3870,7 @@ try {
                 $pdo->prepare("UPDATE stock_categories SET deleted_at=?, updated_at=? WHERE id=? AND company_id=?")->execute([$now, $now, $catId, $ccid]);
                 $ok = true;
             } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_category failed: ' . $e->getMessage()); }
+            if ($ok) tcBumpMainStateVersion($pdo);
             if ($catName !== '') {
                 try { $pdo->prepare("UPDATE tradecore_categories SET deleted_at=? WHERE company_id=? AND category_name=?")->execute([$now, $ccid, $catName]); } catch (Throwable $e) {}
                 try {
@@ -3799,7 +3878,7 @@ try {
                     if ($pre && $pre['json_data']) {
                         $pd = normalizeBlobData(json_decode($pre['json_data'], true));
                         if (is_array($pd) && isset($pd['categories']) && is_array($pd['categories'])) {
-                            $entry = 'co_' . (int)$ccid . ':' . $catName;
+                            $entry = 'co_' . $ccid . ':' . $catName;
                             $pd['categories'] = array_values(array_filter($pd['categories'], function($x) use ($entry) { return $x !== $entry; }));
                             $pdo->prepare("INSERT INTO tradecore_system_state (doc_key, json_data, updated_at) VALUES ('main_state', ?, NOW()) ON DUPLICATE KEY UPDATE json_data=VALUES(json_data), updated_at=NOW()")->execute([json_encode($pd, JSON_UNESCAPED_UNICODE)]);
                         }
@@ -3843,7 +3922,10 @@ try {
             if (tcIsSuperOperatorUser($user) && $ucid !== '') { $ucid = ''; }
             $user['company_id'] = $user['companyId'] = $ucid;
             $ok = tcUpsertUserRow($pdo, $user, $now);
-            if ($ok) tcBlobMerge($pdo, 'users', $user);
+            if ($ok) {
+                tcBlobMerge($pdo, 'users', $user);
+                tcBumpMainStateVersion($pdo);
+            }
             tcWriteAuditTrail($pdo, $ucid, (string)$user['id'], $v2op, 'User Account Upsert', 'UserAccount', (string)$user['id'], (string)($user['username'] ?? $user['id']), ['company_id' => $ucid]);
             echo json_encode(["success" => $ok, "id" => (string)$user['id'], "server_ts" => $now]);
             exit();
@@ -3879,6 +3961,7 @@ try {
                 if ($ucid !== '') $pdo->prepare("UPDATE tradecore_users SET deleted_at=? WHERE id=? AND company_id=?")->execute([$now, $id, $ucid]);
                 $ok = true;
             } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_user_account failed: ' . $e->getMessage()); }
+            if ($ok) tcBumpMainStateVersion($pdo);
             tcBlobMerge($pdo, 'users', null, $id);
             tcWriteAuditTrail($pdo, $ucid, $id, $v2op, 'User Account Delete', 'UserAccount', $id, $id, ['company_id' => $ucid]);
             echo json_encode(["success" => $ok, "server_ts" => $now]);
