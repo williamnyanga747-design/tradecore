@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { StockItem, Customer, Supplier, Store } from '../types';
 import { FileUp, HelpCircle, CheckCircle } from 'lucide-react';
 import { toast } from '../utils/toast';
+import { safeLower } from '../utils/stateHelpers';
 
 interface ImportDataProps {
   currentPage: string;
@@ -52,7 +53,7 @@ export default function ImportData({
           const lowStockQty = parseInt(cols[6]) || 5;
 
           const exists = updatedStockItems.some(
-            item => item.code.toLowerCase() === code.toLowerCase()
+            item => safeLower(item.code) === safeLower(code)
           );
           if (exists) {
             duplicateCount++;

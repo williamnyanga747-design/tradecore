@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { ChevronLeft, MapPin, Phone, Mail, Search, ShoppingCart, Store, Package, Grid3x3 } from 'lucide-react';
 import { Company, MarketplaceProduct, Review } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
+import { safeLower } from '../../utils/stateHelpers';
 import { CartLine, ProductCard, TZS, VerifiedBadge, TFunc, isProductVisible, Stars } from './MarketplaceShared';
 import StoreMapCard from './StoreMapCard';
 
@@ -38,7 +39,7 @@ export default function MarketplaceStorefront({
     return products
       .filter(p => isProductVisible(p))
       .filter(p => !category || p.category === category)
-      .filter(p => !q || p.name.toLowerCase().includes(q) || (p.description || '').toLowerCase().includes(q));
+      .filter(p => !q || safeLower(p.name).includes(q) || (p.description || '').toLowerCase().includes(q));
   }, [products, search, category]);
 
   const cartCount = cartItems.reduce((s, i) => s + i.quantity, 0);

@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Supplier, StockItem, PurchaseOrder, Store, Settings, POItem } from '../types';
 import { X, Search, Plus, Minus, Trash2, FileText, AlertTriangle, CheckCircle, Info } from 'lucide-react';
 import { formatMoney } from '../utils/format';
+import { safeLower } from '../utils/stateHelpers';
 import { toast } from '../utils/toast';
 import { addFIFOBatch } from '../utils/fifo';
 
@@ -78,8 +79,8 @@ export default function PurchaseOrderModal({
   // Filter products by search query
   const filteredProducts = useMemo(() => {
     return stockItems.filter(item => {
-      const nameMatch = item.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const codeMatch = item.code.toLowerCase().includes(searchQuery.toLowerCase());
+      const nameMatch = safeLower(item.name).includes(searchQuery.toLowerCase());
+      const codeMatch = safeLower(item.code).includes(searchQuery.toLowerCase());
       const categoryMatch = (item.category || 'Uncategorized').toLowerCase().includes(searchQuery.toLowerCase());
       return nameMatch || codeMatch || categoryMatch;
     });

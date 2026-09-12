@@ -9,6 +9,17 @@
 // safely-guarded value) and let state hydration guarantee collections are
 // never null/undefined when they enter React state.
 
+/**
+ * Safe string coercion to lowercase (build 2026-09-08-23). Any value — including
+ * null, undefined, numbers, objects — becomes a lowercase string, so render-path
+ * predicates can never throw "Cannot read properties of undefined (reading
+ * 'toLowerCase')". Identity for already-safe strings keeps search semantics.
+ */
+export function safeLower(val: any): string {
+  if (val === null || val === undefined) return '';
+  return String(val).toLowerCase();
+}
+
 /** Normalize any collection-ish value to a plain array. */
 export function safeArray<T>(data: T[] | Record<string, T> | null | undefined): T[] {
   if (!data) return [];

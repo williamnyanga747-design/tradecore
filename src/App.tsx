@@ -110,7 +110,7 @@ import SyncStatusIndicator from './components/SyncStatusIndicator';
 // Utils
 import { translate, formatMoney, exportToExcel } from './utils/format';
 import { sv, sameId, isValidCompanyScope, isRealCompanyId, safeCompanyId, getActiveCompanyScope } from './utils/idUtils';
-import { safeArray, safeObjectValues, safeObjectKeys, normalizeDbCollections, COLLECTION_KEYS } from './utils/stateHelpers';
+import { safeArray, safeObjectValues, safeObjectKeys, safeLower, normalizeDbCollections, COLLECTION_KEYS } from './utils/stateHelpers';
 import { getStoredLanguage, syncDocumentLang, getUserAdminLanguage, setUserAdminLanguage } from './utils/i18n';
 import { handlePrintWithFallback } from './utils/printHelper';
 import { hashPassword, isHashedPassword, verifyPassword } from './utils/hash';
@@ -233,7 +233,7 @@ const normalizePhone = (phone: string): string => phone.replace(/\s+/g, '').repl
 // or commits the wrong scope. 'all' (Global View) is the only non-company value permitted.
 const persistActiveCompany = (cid: string | number | null | undefined): void => {
   const s = sv(cid);
-  if (s === '' || s.toLowerCase() === 'none') return;
+  if (s === '' || safeLower(s) === 'none') return;
   if (!isValidCompanyScope(s)) return;
   try {
     localStorage.setItem('company_id', s);
@@ -1614,7 +1614,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-22');
+    console.log('[TradeCore] build 2026-09-08-23');
   }, []);
 
   useEffect(() => {
@@ -1664,7 +1664,7 @@ export default function App() {
       refCode = decodeURIComponent(refCode).trim();
       if (!refCode) return;
       setAffiliateRefCookie(refCode);
-      const existing = (dbStateRef.current.affiliates || []).find(a => a.referralCode.toLowerCase() === refCode.toLowerCase() && a.isActive);
+      const existing = (dbStateRef.current.affiliates || []).find(a => safeLower(a.referralCode) === safeLower(refCode) && a.isActive);
       if (existing) {
         const nowIso = new Date().toISOString();
         const click = { id: Date.now(), affiliateId: existing.id, url: window.location.href, clickedAt: nowIso };
@@ -2235,7 +2235,7 @@ export default function App() {
   // recorded in settings.deletedDefaultUsers and must never be auto-recreated.
   const isDefaultUserDeleted = (settingsData: any, username: string) =>
     (settingsData?.deletedDefaultUsers || []).some(
-      (d: string) => d.toLowerCase() === username.toLowerCase()
+      (d: string) => safeLower(d) === safeLower(username)
     );
 
   const seedDefaultUsersIfEmpty = (rawUsers: any[], settingsData: any): any[] => {
@@ -5513,7 +5513,7 @@ const conflict = consumeConflictData();
 
       sales.forEach(so => {
         tbody.innerHTML += \`
-          <tr class="hover:bg-slate-50/50 sales-row border-b" data-invoice="\${so.soNumber.toLowerCase()}" data-cust="\${(so.customerName || 'walk-in').toLowerCase()}">
+          <tr class="hover:bg-slate-50/50 sales-row border-b" data-invoice="\${safeLower(so.soNumber)}" data-cust="\${(so.customerName || 'walk-in').toLowerCase()}">
             <td class="p-3 font-mono font-bold text-blue-600 cursor-pointer" onclick="viewSalesDetail('\${so.soNumber}')">\${so.soNumber}</td>
             <td class="p-3 text-slate-500 font-medium">\${new Date(so.date).toLocaleString()}</td>
             <td class="p-3 font-bold text-slate-700">\${so.customerName || 'Walk-in Customer'}</td>
@@ -5558,7 +5558,7 @@ const conflict = consumeConflictData();
       purchases.forEach(po => {
         const isRec = po.status === 'Received';
         tbody.innerHTML += \`
-          <tr class="hover:bg-slate-50/50 purchase-row border-b" data-po="\${po.poNumber.toLowerCase()}" data-supplier="\${(po.supplierName || '').toLowerCase()}">
+          <tr class="hover:bg-slate-50/50 purchase-row border-b" data-po="\${safeLower(po.poNumber)}" data-supplier="\${(po.supplierName || '').toLowerCase()}">
             <td class="p-3 font-mono font-bold text-emerald-600 cursor-pointer" onclick="viewPurchaseDetail('\${po.poNumber}')">\${po.poNumber}</td>
             <td class="p-3 text-slate-500 font-medium">\${new Date(po.date).toLocaleDateString()}</td>
             <td class="p-3 font-bold text-slate-700">\${po.supplierName || 'General Supplier'}</td>
@@ -6485,7 +6485,7 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
     const cleanUsername = loginUsername.trim().toLowerCase();
 
     // Check if target user exists
-    const targetUser = latestUsers.find(u => u.username.trim().toLowerCase() === cleanUsername);
+    const targetUser = latestUsers.find(u => String(u.username || '').trim().toLowerCase() === cleanUsername);
 
     if (targetUser) {
       const isCoreSuperAdmin = targetUser.username === 'root_mandate' || targetUser.username === 'superadmin';
@@ -6699,7 +6699,7 @@ try {
         // Password genuinely incorrect — Calculate recent failed attempts within 15-min sliding window
         const fifteenMinAgo = Date.now() - 15 * 60 * 1000;
         const recentFailedLogs = securityLogs.filter(
-          l => l.username.toLowerCase() === cleanUsername && l.status === 'Failed' &&
+          l => safeLower(l.username) === cleanUsername && l.status === 'Failed' &&
             new Date(l.timestamp).getTime() > fifteenMinAgo
         );
         const failedCount = recentFailedLogs.length + 1;
@@ -7327,20 +7327,20 @@ try {
     businessLicense?: string;
   }) => {
     try {
-      const cleanUsername = data.username.trim().toLowerCase();
-      const duplicateUser = users.find(u => u.username.trim().toLowerCase() === cleanUsername);
+      const cleanUsername = String(data.username || '').trim().toLowerCase();
+      const duplicateUser = users.find(u => String(u.username || '').trim().toLowerCase() === cleanUsername);
       if (duplicateUser) {
         const msg = t('That username is already registered. Please sign in or choose another username.');
         toast.error(msg);
         return msg;
       }
-    const duplicateEmail = users.find(u => u.email && u.email.toLowerCase() === data.email.toLowerCase());
+    const duplicateEmail = users.find(u => safeLower(u.email) === safeLower(data.email));
     if (duplicateEmail) {
       const msg = t('An account with that email address already exists.');
       toast.error(msg);
       return msg;
     }
-    const duplicateCompany = companies.find(c => c.name.toLowerCase() === data.companyName.toLowerCase());
+    const duplicateCompany = companies.find(c => safeLower(c.name) === safeLower(data.companyName));
     if (duplicateCompany) {
       const msg = t('That company name is already registered.');
       toast.error(msg);
@@ -8165,7 +8165,7 @@ try {
       let nextAffiliates = affiliates || [];
       let nextAffiliateSales = affiliateSales || [];
       const refCode = readAffiliateRefCookie();
-      const affiliateByCode = refCode ? nextAffiliates.find(a => a.referralCode.toLowerCase() === refCode.toLowerCase() && a.isActive) : undefined;
+      const affiliateByCode = refCode ? nextAffiliates.find(a => safeLower(a.referralCode) === safeLower(refCode) && a.isActive) : undefined;
       if (affiliateByCode) {
         const globalPct = settings.affiliateCommissionPercent ?? settings.affiliateDefaultPercent ?? defaultAffiliateCommissionPercent;
         const companyPct = company.defaultAffiliatePercent ?? globalPct;
@@ -8367,7 +8367,7 @@ try {
     let aff = (affiliates || []).find(a => a.userId === user.id);
     if (!aff) {
       const code = (user.username || 'ref').replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 20) || `ref${user.id}`;
-      const exists = (affiliates || []).some(a => a.referralCode.toLowerCase() === code);
+      const exists = (affiliates || []).some(a => safeLower(a.referralCode) === code);
       const finalCode = exists ? `${code}${user.id}` : code;
       aff = {
         id: Date.now(),
@@ -8475,7 +8475,7 @@ try {
     const exists = (affiliates || []).some(a => a.phone.replace(/\s+/g, '') === phone.replace(/^\+?255/, '0'));
     if (exists) return { ok: false, error: t('A wakala with this phone number already exists. Login instead.') };
     let code = generateWakalaCode();
-    while ((affiliates || []).some(a => a.referralCode.toLowerCase() === code.toLowerCase())) {
+    while ((affiliates || []).some(a => safeLower(a.referralCode) === safeLower(code))) {
       code = generateWakalaCode();
     }
     const nowIso = new Date().toISOString();
@@ -8769,7 +8769,7 @@ try {
 
     // Affiliate commission on the completed sale.
     const refCode = readAffiliateRefCookie();
-    const affiliateByCode = refCode ? nextAffiliates.find(a => a.referralCode.toLowerCase() === refCode.toLowerCase() && a.isActive) : undefined;
+    const affiliateByCode = refCode ? nextAffiliates.find(a => safeLower(a.referralCode) === safeLower(refCode) && a.isActive) : undefined;
     if (affiliateByCode && commissionPercent > 0 && order) {
       const affPct = settings.affiliateCommissionPercent ?? defaultAffiliateCommissionPercent;
       const affCommission = Math.round(totalAmount * (affPct / 100) * 100) / 100;
@@ -9762,7 +9762,7 @@ try {
   };
 
   const useLoyaltyCode = (code: string, orderId?: number | null): { ok: boolean; valueTzs?: number; error?: string } => {
-    const entry = (loyaltyRedeemCodes || []).find(c => c.code.toLowerCase() === code.trim().toLowerCase());
+    const entry = (loyaltyRedeemCodes || []).find(c => safeLower(c.code) === code.trim().toLowerCase());
     if (!entry) return { ok: false, error: 'Code si sahihi.' };
     if (entry.used) return { ok: false, error: 'Code hii imeshatumika.' };
     saveAllData({
@@ -10307,7 +10307,7 @@ try {
     const expiresAt = new Date(Date.now() + 1 * 86400000).toISOString();
     const demoCompId = Math.max(0, ...companies.map(c => c.id)) + 1;
     const demoUserId = Math.max(0, ...users.map(u => u.id)) + 1;
-    const demoUsername = data.username.trim().toLowerCase();
+    const demoUsername = String(data.username || '').trim().toLowerCase();
     const demoPassword = data.password;
 
     const newBranchId = Math.max(0, ...branches.map(b => b.id)) + 1;
@@ -11610,8 +11610,8 @@ try {
     const storeId = currentStoreId || 1;
     
     const filteredStockItems = activeStockItems.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(stockSearchQuery.toLowerCase()) || 
-                            p.code.toLowerCase().includes(stockSearchQuery.toLowerCase());
+      const matchesSearch = safeLower(p.name).includes(safeLower(stockSearchQuery)) || 
+                            safeLower(p.code).includes(safeLower(stockSearchQuery));
       const matchesCategory = stockFilterCategory === '' || p.category === stockFilterCategory;
       return matchesSearch && matchesCategory;
     });

@@ -6,6 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-23] - 2026-09-12
+
+### Build 2026-09-08-23 — SEARCH/FILTER CRASH-SAFETY (TOLOWERCASE NORMALIZATION)
+App crashed on load with `TypeError: Cannot read properties of undefined (reading 'toLowerCase')` inside `Array.filter` / `useMemo` whenever a search/filter predicate called `.toLowerCase()` on a record field that was null/undefined.
+
+**Root cause**: render-path predicates (`.filter/.find/.some` and `useMemo`) called `.toLowerCase()` directly on data fields (`item.name`, `item.code`, `exp.description`, `o.customerName`, `u.username`, `c.lastMessage`, `v.query`, ...) with no fallback.
+
+**Fixes**:
+1. **`safeLower(val)` added to `src/utils/stateHelpers.ts`** — returns `''` for null/undefined, else `String(val).toLowerCase()`.
+2. **Converted every unguarded property `.toLowerCase()` inside filter/find/some/useMemo across 15 files**: `App.tsx` (stock/role/affiliate/security-log/duplicate-user filters, login `u.username`, print/export templates), `POSModal`, `PurchaseOrderModal`, `Expenses`, `ImportData`, `ManageUsers` (telemetry filters), `RootMandatePanel` (company/product/user/synonym/collection filters), `MarketplaceOrdersPanel` (incl. `customerPhone.replace` guard), `MarketplaceApp`, `MarketplaceStorefront`, `MarketplaceTrackOrder`, `MarketplaceRegion`, `MegaChat` (`lastMessage`/`buyerName`), `Reports`, `Receipts` (incl. customer/supplier-name lookups), `VoiceSearchStatsPanel` (`v.query` in `topQueries` useMemo), `MegaBulkUpload` (CSV header cells).
+3. **Already-guarded forms left untouched** — `(x || '').toLowerCase()`, `String(x || '').toLowerCase()`, `e.key`, string query state, DOM `.value`, early-returned lookups.
+
+**Acceptance**: app mounts and search/filter works without the `toLowerCase` TypeError even when record fields are null/missing in any collection.
+
+---
+
 ## [1.0.9-build-22] - 2026-09-12
 
 ### Build 2026-09-08-22 — STATE-ENGINE CRASH-SAFETY (OBJECT.VALUES NORMALIZATION)

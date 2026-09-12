@@ -4,6 +4,7 @@ import { X, Search, Plus, Minus, Trash2, ShoppingBag, AlertTriangle, CheckCircle
 import { formatMoney } from '../utils/format';
 import { ConfirmActionModal } from './ConfirmActionModal';
 import { handlePrintWithFallback } from '../utils/printHelper';
+import { safeLower } from '../utils/stateHelpers';
 import { toast } from '../utils/toast';
 import { cleanCategoryName } from '../utils/categoryHelper';
 import { calculateFIFOCost, getFIFOBatchBreakdown } from '../utils/fifo';
@@ -318,8 +319,8 @@ export default function POSModal({
   // Filter products by search query
   const filteredProducts = useMemo(() => {
     return stockItems.filter(item => {
-      const nameMatch = item.name.toLowerCase().includes(searchQuery.toLowerCase());
-      const codeMatch = item.code.toLowerCase().includes(searchQuery.toLowerCase());
+      const nameMatch = safeLower(item.name).includes(searchQuery.toLowerCase());
+      const codeMatch = safeLower(item.code).includes(searchQuery.toLowerCase());
       const categoryMatch = (item.category || 'Uncategorized').toLowerCase().includes(searchQuery.toLowerCase());
       return nameMatch || codeMatch || categoryMatch;
     });
@@ -1445,7 +1446,7 @@ export default function POSModal({
                       if (e.key === 'Enter' && searchQuery.trim()) {
                         const q = searchQuery.trim().toLowerCase();
                         const exactMatch = stockItems.find(
-                          p => p.code.toLowerCase() === q || p.name.toLowerCase() === q
+                          p => safeLower(p.code) === q || safeLower(p.name) === q
                         );
                         if (exactMatch) {
                           const stockQty = getStockQty(exactMatch, selectedStoreId);

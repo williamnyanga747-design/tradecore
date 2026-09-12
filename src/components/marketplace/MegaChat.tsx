@@ -4,6 +4,7 @@ import { ChatConversation, ChatMessage, Company, MarketplaceProduct } from '../.
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TZS, TFunc } from './MarketplaceShared';
 import { timeAgo } from '../../utils/megaHelpers';
+import { safeLower } from '../../utils/stateHelpers';
 
 interface Props {
   theme: PublicTheme;
@@ -55,9 +56,9 @@ export default function MegaChat({
       list = list.filter(c => {
         if (mode === 'buyer') {
           const comp = companies.find(x => x.id === c.companyId);
-          return (comp?.name || '').toLowerCase().includes(q) || c.lastMessage.toLowerCase().includes(q);
+          return (comp?.name || '').toLowerCase().includes(q) || safeLower(c.lastMessage).includes(q);
         }
-        return c.buyerName.toLowerCase().includes(q) || c.buyerPhone.includes(q) || c.lastMessage.toLowerCase().includes(q);
+        return safeLower(c.buyerName).includes(q) || c.buyerPhone.includes(q) || safeLower(c.lastMessage).includes(q);
       });
     }
     return [...list].sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));

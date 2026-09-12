@@ -10,6 +10,7 @@ import { handlePrintWithFallback } from '../utils/printHelper';
 import { TaxVatReport } from './TaxVatReport';
 import { PredictiveForecasting } from './PredictiveForecasting';
 import { sameId } from '../utils/idUtils';
+import { safeLower } from '../utils/stateHelpers';
 
 interface ReportsProps {
   currentPage: string;
@@ -1193,7 +1194,7 @@ export default function Reports({
 
     // 4. Gather products matching filters
     const displayProducts = stockItems.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(velocitySearch.toLowerCase()) || p.code.toLowerCase().includes(velocitySearch.toLowerCase());
+      const matchesSearch = safeLower(p.name).includes(velocitySearch.toLowerCase()) || safeLower(p.code).includes(velocitySearch.toLowerCase());
       const matchesCategory = velocityCategory === 'all' || p.category === velocityCategory;
       return matchesSearch && matchesCategory;
     });

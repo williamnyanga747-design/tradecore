@@ -4,6 +4,7 @@ import { Company, MarketplaceOrder, MarketplaceOrderStatus, User } from '../type
 import StatusStepper from './marketplace/StatusStepper';
 import { TZS, orderStatusLabel } from './marketplace/MarketplaceShared';
 import { sameId } from '../utils/idUtils';
+import { safeLower } from '../utils/stateHelpers';
 
 interface Props {
   currentCompanyId?: string | number;
@@ -59,7 +60,7 @@ export default function MarketplaceOrdersPanel({
       .filter(o => !currentCompanyId || sameId(o.companyId, currentCompanyId))
       .filter(o => matchesView(o, viewTab))
       .filter(o => filter === 'All' || o.status === filter)
-      .filter(o => !q || o.orderNumber.toLowerCase().includes(q) || o.customerName.toLowerCase().includes(q) || o.customerPhone.replace(/\s/g, '').includes(q.replace(/\s/g, '')))
+      .filter(o => !q || safeLower(o.orderNumber).includes(q) || safeLower(o.customerName).includes(q) || safeLower(o.customerPhone).replace(/\s/g, '').includes(q.replace(/\s/g, '')))
       .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   }, [orders, currentCompanyId, filter, search, viewTab]);
 

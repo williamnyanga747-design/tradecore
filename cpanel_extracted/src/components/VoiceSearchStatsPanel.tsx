@@ -21,7 +21,7 @@ export default function VoiceSearchStatsPanel({ voiceSearches, t, onDeleteVoiceS
   const topQueries = useMemo(() => {
     const counts: Record<string, number> = {};
     for (const v of voiceSearches) {
-      const q = v.query.trim().toLowerCase();
+      const q = String(v.query || '').trim().toLowerCase();
       if (!q) continue;
       counts[q] = (counts[q] || 0) + 1;
     }

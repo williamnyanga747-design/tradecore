@@ -75,7 +75,7 @@ export default function MegaBulkUpload({ theme, t, company, existingProducts, jo
     const text = await file.text();
     const rows = parseCsv(text);
     if (rows.length < 2) { setProcessing(false); return setError(t('Faili haina data — tumia template yetu.')); }
-    const header = rows[0].map(h => h.trim().toLowerCase());
+    const header = rows[0].map(h => String(h || '').trim().toLowerCase());
     const missing = BULK_TEMPLATE_HEADERS.filter(h => !header.includes(h));
     if (missing.length > 0) { setProcessing(false); return setError(`${t('Nguzo hazipatikani')}: ${missing.join(', ')}`); }
     const dataRows = rows.slice(1);

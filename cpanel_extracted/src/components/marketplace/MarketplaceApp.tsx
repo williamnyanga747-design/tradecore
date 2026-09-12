@@ -6,6 +6,7 @@ import { haversineKm, readCustomerLocation } from '../../utils/haversine';
 import { GoldenTopLine } from '../../utils/publicTheme';
 import { MarketHeader, MarketFooter, CartLine, isProductVisible, isCompanySubscriptionExpired } from './MarketplaceShared';
 import { translate } from '../../utils/format';
+import { safeLower } from '../../utils/stateHelpers';
 import { getScopedStoredLanguage, setScopedStoredLanguage, clearScopedStoredLanguage, ensureLocaleCookie, setLocaleCookie, isLangCode, syncDocumentLang, LangCode } from '../../utils/i18n';
 import MarketplaceHome from './MarketplaceHome';
 import MarketplaceStorefront from './MarketplaceStorefront';
@@ -251,7 +252,7 @@ export default function MarketplaceApp({
 
   const handleVoiceResult = (transcript: string, query: string) => {
     if (!query) return;
-    const matches = products.filter(p => p.name.toLowerCase().includes(query)).length;
+    const matches = products.filter(p => safeLower(p.name).includes(query)).length;
     setVoiceResult({ transcript, query, matches });
     onLogVoiceSearch?.(query, transcript, matches, 'sw-TZ');
     go(`/marketplace/search?q=${encodeURIComponent(query)}&voice=1`);

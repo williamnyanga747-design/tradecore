@@ -10,6 +10,7 @@ import {
 import { ConfirmActionModal } from './ConfirmActionModal';
 import { toast } from '../utils/toast';
 import { sameId } from '../utils/idUtils';
+import { safeLower } from '../utils/stateHelpers';
 
 interface ReceiptsProps {
   salesOrders: SalesOrder[];
@@ -380,9 +381,9 @@ export default function Receipts({
     const matchStartDate = filterStartDate ? so.date >= filterStartDate : true;
     const matchEndDate = filterEndDate ? so.date <= filterEndDate : true;
 
-    const custName = getCustomerName(so.customerId).toLowerCase();
+    const custName = safeLower(getCustomerName(so.customerId));
     const matchSearch = searchQuery
-      ? so.soNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      ? safeLower(so.soNumber).includes(searchQuery.toLowerCase()) ||
         custName.includes(searchQuery.toLowerCase())
       : true;
     return matchStore && matchStartDate && matchEndDate && matchSearch;
@@ -398,9 +399,9 @@ export default function Receipts({
     const matchStartDate = filterStartDate ? po.date >= filterStartDate : true;
     const matchEndDate = filterEndDate ? po.date <= filterEndDate : true;
 
-    const suppName = getSupplierName(po.supplierId).toLowerCase();
+    const suppName = safeLower(getSupplierName(po.supplierId));
     const matchSearch = searchQuery
-      ? po.poNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      ? safeLower(po.poNumber).includes(searchQuery.toLowerCase()) ||
         suppName.includes(searchQuery.toLowerCase())
       : true;
     return matchStore && matchStartDate && matchEndDate && matchSearch;

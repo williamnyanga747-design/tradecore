@@ -4,6 +4,7 @@ import { Company, MarketplaceProduct } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TANZANIA_REGIONS, regionCenter } from '../../utils/regions';
 import { slugify, resolveCompanyCoords, jitterCompanyCoords } from '../../utils/haversine';
+import { safeLower } from '../../utils/stateHelpers';
 import { ProductCard, TFunc, VerifiedBadge, isProductVisible } from './MarketplaceShared';
 import LeafletMap from './LeafletMap';
 
@@ -22,7 +23,7 @@ interface Props {
 
 export function resolveRegionName(slug: string, regions?: string[]): string {
   const list = regions && regions.length > 0 ? regions : TANZANIA_REGIONS;
-  const s = slug.toLowerCase();
+  const s = safeLower(slug);
   return list.find(r => slugify(r) === s) || '';
 }
 

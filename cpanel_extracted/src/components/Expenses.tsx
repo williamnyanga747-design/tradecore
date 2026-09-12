@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Expense, Store } from '../types';
 import { formatMoney, exportToExcel } from '../utils/format';
 import { handlePrintWithFallback } from '../utils/printHelper';
+import { safeLower } from '../utils/stateHelpers';
 import { Plus, Trash2, Pencil, Search, Calendar, CreditCard, Receipt, AlertCircle, FileSpreadsheet, Printer } from 'lucide-react';
 import { ConfirmActionModal } from './ConfirmActionModal';
 import { sameId } from '../utils/idUtils';
@@ -154,8 +155,8 @@ export default function Expenses({
     const matchStore = currentStoreId ? sameId(exp.storeId, currentStoreId) : true;
     const matchCat = filterCategory ? exp.category === filterCategory : true;
     const matchSearch = searchQuery
-      ? exp.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        exp.expenseNumber.toLowerCase().includes(searchQuery.toLowerCase())
+      ? safeLower(exp.description).includes(searchQuery.toLowerCase()) ||
+        safeLower(exp.expenseNumber).includes(searchQuery.toLowerCase())
       : true;
     return matchStore && matchCat && matchSearch;
   });

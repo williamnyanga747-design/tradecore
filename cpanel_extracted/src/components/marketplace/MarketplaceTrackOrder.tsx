@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ChevronLeft, Search, Package, Store, MapPin, Smartphone, Calendar, FileText } from 'lucide-react';
 import { Company, MarketplaceOrder } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
+import { safeLower } from '../../utils/stateHelpers';
 import { TZS, VerifiedBadge, TFunc, orderStatusLabel } from './MarketplaceShared';
 import StatusStepper from './StatusStepper';
 
@@ -24,7 +25,7 @@ export default function MarketplaceTrackOrder({ theme, t, orders, companies, ini
   const order = submitted && q.trim()
     ? orders.find(o => {
         const query = q.trim().toLowerCase();
-        return o.orderNumber.toLowerCase() === query || (o.transactionId && o.transactionId.toLowerCase() === query);
+        return safeLower(o.orderNumber) === query || (o.transactionId && safeLower(o.transactionId) === query);
       })
     : undefined;
 

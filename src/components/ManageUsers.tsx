@@ -9,6 +9,7 @@ import { hashPassword, isHashedPassword } from '../utils/hash';
 import { apiChangePassword, apiDeleteUser, apiUpsertUser } from '../utils/api';
 import { defaultUsers } from '../initialData';
 import { sameId, sv } from '../utils/idUtils';
+import { safeLower } from '../utils/stateHelpers';
 
 interface ManageUsersProps {
   currentPage: string;
@@ -309,7 +310,7 @@ export default function ManageUsers({
         const updatedUsers = users.filter(u => u.id !== id);
         // Track deleted default users so the seeder never auto-recreates them.
         const isDefaultUser = defaultUsers.some(
-          d => d.username.toLowerCase() === target.username.toLowerCase()
+          d => safeLower(d.username) === safeLower(target.username)
         );
         let updatedSettings = settings;
         if (isDefaultUser) {
@@ -1041,8 +1042,8 @@ export default function ManageUsers({
           // Filter by Category
           if (telemetryCategory !== 'All') {
             telemetryLogs = telemetryLogs.filter(l => {
-              const actionLower = l.action.toLowerCase();
-              const detailsLower = l.details.toLowerCase();
+              const actionLower = safeLower(l.action);
+              const detailsLower = safeLower(l.details);
               if (telemetryCategory === 'Deletions') {
                 return actionLower.includes('delete') || actionLower.includes('trash') || actionLower.includes('remove') || actionLower.includes('void');
               }
@@ -1071,10 +1072,10 @@ export default function ManageUsers({
           if (telemetrySearch.trim()) {
             const q = telemetrySearch.toLowerCase();
             telemetryLogs = telemetryLogs.filter(l => 
-              l.username.toLowerCase().includes(q) ||
-              l.action.toLowerCase().includes(q) ||
-              l.details.toLowerCase().includes(q) ||
-              l.timestamp.toLowerCase().includes(q)
+              safeLower(l.username).includes(q) ||
+              safeLower(l.action).includes(q) ||
+              safeLower(l.details).includes(q) ||
+              safeLower(l.timestamp).includes(q)
             );
           }
 
@@ -1187,7 +1188,7 @@ export default function ManageUsers({
                   </thead>
                   <tbody className="divide-y divide-gray-100 font-semibold text-gray-700 bg-white">
                     {telemetryLogs.map(l => {
-                      const isDestructive = l.action.toLowerCase().includes('delete') || l.action.toLowerCase().includes('block') || l.action.toLowerCase().includes('revoke');
+                      const isDestructive = safeLower(l.action).includes('delete') || safeLower(l.action).includes('block') || safeLower(l.action).includes('revoke');
                       return (
                         <tr key={l.id} className="hover:bg-gray-50/50 transition">
                           <td className="px-4 py-3 text-gray-400 font-mono text-[10px] whitespace-nowrap">{l.timestamp}</td>

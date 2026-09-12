@@ -23,6 +23,7 @@ import {
 import { defaultHomepageContent } from '../initialData';
 import { getPhpConfig } from '../utils/api';
 import { sameId } from '../utils/idUtils';
+import { safeLower } from '../utils/stateHelpers';
 import { Stars, VerifiedBadge, TZS } from './marketplace/MarketplaceShared';
 import AnalyticsLineChart from './marketplace/AnalyticsLineChart';
 import LeafletMap from './marketplace/LeafletMap';
@@ -483,7 +484,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
     const filtered = companies.filter(c => {
       const state = companyVerificationState(c);
       const q = search.toLowerCase();
-      const matchQ = !q || c.name.toLowerCase().includes(q) || (c.region || '').toLowerCase().includes(q) || (c.category || '').toLowerCase().includes(q);
+      const matchQ = !q || safeLower(c.name).includes(q) || (c.region || '').toLowerCase().includes(q) || (c.category || '').toLowerCase().includes(q);
       const matchF =
         compFilter === 'all' ? true :
         compFilter === 'pending' ? state.label === 'Pending' :
@@ -566,7 +567,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
   const renderProducts = () => {
     const filtered = products.filter(p => {
       const q = search.toLowerCase();
-      const matchQ = !q || p.name.toLowerCase().includes(q) || companyName(companies, p.companyId).toLowerCase().includes(q);
+      const matchQ = !q || safeLower(p.name).includes(q) || safeLower(companyName(companies, p.companyId)).includes(q);
       const matchF = prodFilter === 'all' ? true : (p.status || 'pending') === prodFilter;
       return matchQ && matchF;
     });
@@ -634,7 +635,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
   const renderUsers = () => {
     const filtered = users.filter(u => {
       const q = search.toLowerCase();
-      const matchQ = !q || u.name.toLowerCase().includes(q) || u.username.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+      const matchQ = !q || safeLower(u.name).includes(q) || safeLower(u.username).includes(q) || safeLower(u.email).includes(q);
       const matchF = userFilter === 'all' ? true : u.role === userFilter;
       return matchQ && matchF;
     });
@@ -1243,7 +1244,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
     const filtered = (searchSynonyms || []).filter(s => {
       const q = synSearch.toLowerCase();
       if (!q) return true;
-      return s.keyword.toLowerCase().includes(q) || s.synonyms.some(x => x.toLowerCase().includes(q));
+      return safeLower(s.keyword).includes(q) || s.synonyms.some(x => safeLower(x).includes(q));
     });
     return (
       <div className="space-y-4">
@@ -1320,9 +1321,9 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
     const filtered = (collections || []).filter(c => {
       const q = colSearch.toLowerCase();
       const matchesQ = !q
-        || c.reference.toLowerCase().includes(q)
+        || safeLower(c.reference).includes(q)
         || (c.customerName || '').toLowerCase().includes(q)
-        || c.customerPhone.replace(/\s/g, '').toLowerCase().includes(q.replace(/\s/g, '').toLowerCase())
+        || safeLower(c.customerPhone).replace(/\s/g, '').includes(q.replace(/\s/g, ''))
         || (c.transactionId || '').toLowerCase().includes(q);
       const matchesNet = colNetFilter === 'all' || c.network === colNetFilter;
       const matchesStatus = colStatusFilter === 'all' || c.status === colStatusFilter;
