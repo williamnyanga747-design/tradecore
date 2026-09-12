@@ -110,6 +110,7 @@ import SyncStatusIndicator from './components/SyncStatusIndicator';
 // Utils
 import { translate, formatMoney, exportToExcel } from './utils/format';
 import { sv, sameId, isValidCompanyScope, isRealCompanyId, safeCompanyId, getActiveCompanyScope } from './utils/idUtils';
+import { safeArray, safeObjectValues, safeObjectKeys, normalizeDbCollections, COLLECTION_KEYS } from './utils/stateHelpers';
 import { getStoredLanguage, syncDocumentLang, getUserAdminLanguage, setUserAdminLanguage } from './utils/i18n';
 import { handlePrintWithFallback } from './utils/printHelper';
 import { hashPassword, isHashedPassword, verifyPassword } from './utils/hash';
@@ -443,23 +444,8 @@ const sanitizeArray = <T extends Record<string, any>>(arr: any): T[] => {
 // Sanitize all collection arrays in a parsed state object to prevent
 // "Cannot read properties of undefined (reading 'startTime')" and similar
 // crashes caused by undefined entries leaking into React state.
-const COLLECTION_KEYS = [
-  'companies', 'branches', 'stores', 'users', 'categories', 'taxes',
-  'suppliers', 'customers', 'stockItems', 'purchaseOrders', 'salesOrders',
-  'expenses', 'auditTrails', 'securityLogs', 'rolePermissions', 'posShifts',
-  'stockTransfers', 'contactMessages', 'marketplaceProducts', 'marketplaceCustomers',
-  'marketplaceOrders', 'marketplaceClicks', 'reviews', 'productViews', 'wallets',
-  'walletTransactions', 'withdrawals', 'affiliates', 'affiliateClicks',
-  'affiliateSales', 'affiliateWithdrawals', 'searchSynonyms', 'pushSubscriptions',
-  'collections', 'webhookLogs', 'adminEarnings', 'offers', 'offerMessages',
-  'groupDeals', 'groupDealParticipants', 'whatsappConversations', 'notificationLogs',
-  'deliveries', 'deliveryUpdates', 'installmentPlans', 'installmentOrders',
-  'installmentPayments', 'liveStreams', 'liveComments', 'loyaltyCustomers',
-  'loyaltyTransactions', 'loyaltyRedeemCodes', 'voiceSearches', 'qrScans',
-  'traReceipts', 'escrowTransactions', 'chatConversations', 'chatMessages',
-  'visualSearches', 'productReturns', 'disputes', 'disputeMessages',
-  'flashSales', 'appNotifications', 'bulkUploads', 'stories', 'storyViews',
-];
+// COLLECTION_KEYS now lives in ./utils/stateHelpers (single canonical source so
+// sanitizeStateData and normalizeDbCollections always agree on the key set).
 
 const sanitizeStateData = (data: any): any => {
   if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
@@ -1628,7 +1614,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-21');
+    console.log('[TradeCore] build 2026-09-08-22');
   }, []);
 
   useEffect(() => {
@@ -2586,10 +2572,19 @@ export default function App() {
       }
     }
 
-    dbStateRef.current = updatedState;
+    // BUILD 2026-09-08-22 (State-engine normalization): hard-guarantee every collection
+    // that enters React state is a plain array — incoming snapshots/payloads can carry
+    // { branches: null }, { stores: {} } (object-map) or omit a key entirely. Previously a
+    // null/undefined/map-shaped collection reaching a render path crashed with
+    // "TypeError: Cannot convert undefined or null to object ... at Object.values".
+    // normalizeDbCollections rewrites each collection key through safeArray (objects are
+    // unwrapped via Object.values, null/undefined/primitives become []) while preserving
+    // every non-collection key (settings, _version, _assembled, lastUpdated, ...).
+    const normalizedState = normalizeDbCollections(updatedState);
+    dbStateRef.current = normalizedState;
     if (parsed && parsed.lastUpdated) noteStateTimestamp(parsed.lastUpdated);
 
-    applyCollectionState(updatedState);
+    applyCollectionState(normalizedState);
   };
 
   // SESSION-SCOPE RESTORE (2026-09-07-02): reads ONLY the session token keys
@@ -2962,6 +2957,9 @@ export default function App() {
               overlay.users = extra.length > 0 ? [...snapUsers, ...extra] : snapUsers;
             }
             phpData = overlay;
+            // BUILD 2026-09-08-22: the overlay must NEVER hand null/map-shaped collections
+            // to applyData — normalize before applying and before the localStorage cache copy.
+            phpData = normalizeDbCollections(phpData);
             console.log('[DB] Reconciliated boot state with parallel MySQL v2 reads (companies/branches/stores/categories/users)');
           } catch (e) {
             console.warn('[DB] v2 boot overlay skipped:', e);
@@ -10789,7 +10787,9 @@ try {
   // loading or when a user's stored/allowedPages is empty. This is the "full
   // authorized menu list" fallback per the navigation stability requirement.
   const ALL_CORE_PAGES = useMemo(() =>
-    Array.from(new Set(Object.values(rolePermissions).flat())).concat([
+    // BUILD 2026-09-08-22: rolePermissions can be a stale null in a partial payload —
+    // safeObjectValues makes Object.values(null/undefined) impossible to crash on.
+    Array.from(new Set(safeObjectValues(rolePermissions).flat())).concat([
       'profile', 'report-tax-vat', 'report-predictive-ai', 'subscriptions',
       'root-dashboard', 'tra-reports', 'root-disputes'
     ]),
@@ -13827,8 +13827,12 @@ try {
     if (currentStoreId) {
       return (item.stock[currentStoreId] || 0) <= item.lowStockQty;
     } else {
-      // If no store is selected, check if any of the stores are low
-      return Object.values(item.stock).some(qty => qty <= item.lowStockQty) || Object.keys(item.stock).length === 0;
+      // If no store is selected, check if any of the stores are low. BUILD 2026-09-08-22:
+      // item.stock can be undefined/null on legacy or partial rows — safeObjectValues/
+      // safeObjectKeys normalize to [] so the filter never throws
+      // "Cannot convert undefined or null to object".
+      const stockVals = safeObjectValues(item.stock);
+      return stockVals.some(qty => qty <= item.lowStockQty) || safeObjectKeys(item.stock).length === 0;
     }
   }).length;
 

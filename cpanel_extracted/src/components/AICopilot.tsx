@@ -8,6 +8,9 @@ import {
   Brain, BarChart3, HelpCircle, Layers, Lightbulb, Zap, ShieldCheck
 } from 'lucide-react';
 import { sameId } from '../utils/idUtils';
+// BUILD 2026-09-08-22: safeObjectValues normalizes null/undefined/malformed stock maps
+// so Object.values(...) can never throw "Cannot convert undefined or null to object".
+import { safeObjectValues } from '../utils/stateHelpers';
 
 interface AICopilotProps {
   currentUser: User | null;
@@ -96,7 +99,7 @@ export default function AICopilot({
           qty += (p.stock[stId] || 0);
         });
       } else {
-        qty = (Object.values(p.stock || {}) as number[]).reduce((a, b) => a + (Number(b) || 0), 0);
+        qty = (safeObjectValues(p.stock) as number[]).reduce((a, b) => a + (Number(b) || 0), 0);
       }
       totalStockQty += qty;
       const mainQty = p.useSubUnitPricing ? qty / (p.subUnitConversion || 1) : qty;
@@ -214,7 +217,7 @@ export default function AICopilot({
       : `### 🚀 Executive Intelligence Report for **${activeCompany.name}**\n\n`;
 
     if (selectedProductObj) {
-      const totalUnits = Object.values(selectedProductObj.stock).reduce((a, b) => a + b, 0);
+      const totalUnits = safeObjectValues(selectedProductObj.stock).reduce((a, b) => a + b, 0);
       const margin = selectedProductObj.retailPrice > 0 ? (((selectedProductObj.retailPrice - selectedProductObj.purchasePrice) / selectedProductObj.retailPrice) * 100).toFixed(1) : '0';
 
       if (isSwahili) {

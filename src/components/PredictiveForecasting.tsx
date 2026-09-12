@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { TrendingUp, AlertTriangle, ShieldAlert, RefreshCw, Layers, CheckCircle2, PackageCheck, Zap, Sparkles } from 'lucide-react';
 import { StockItem, SalesOrder, PosShift, AuditTrail, Store } from '../types';
+import { safeObjectValues } from '../utils/stateHelpers';
 
 interface PredictiveForecastingProps {
   stockItems: StockItem[];
@@ -49,7 +50,7 @@ export const PredictiveForecasting: React.FC<PredictiveForecastingProps> = ({
       // Calculate current total stock
       let currentStock = 0;
       if (selectedStoreId === 'all') {
-        currentStock = (Object.values(item.stock || {}) as number[]).reduce((a: number, b: number) => a + (Number(b) || 0), 0);
+        currentStock = (safeObjectValues(item.stock) as number[]).reduce((a: number, b: number) => a + (Number(b) || 0), 0);
       } else {
         currentStock = item.stock?.[Number(selectedStoreId)] || 0;
       }

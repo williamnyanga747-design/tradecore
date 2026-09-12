@@ -6,6 +6,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-22] - 2026-09-12
+
+### Build 2026-09-08-22 — STATE-ENGINE CRASH-SAFETY (OBJECT.VALUES NORMALIZATION)
+App crashed immediately at boot/hydration with `TypeError: Cannot convert undefined or null to object ... at Object.values ... at Array.filter` whenever a snapshot/SSE/localStorage payload carried a null, undefined or object-map-shaped collection (e.g. `{ branches: null }`, `{ stores: {...} }`, `{ categories: undefined }`).
+
+**Root cause**: state collections could enter React state in malformed shapes (null / undefined / object-map), and render paths called `Object.values()` outright on those fields — the low-stock `stockItems.filter(...)` was the reported crash (`item.stock` undefined on a partial row).
+
+**Fixes**:
+1. **New global helpers module `src/utils/stateHelpers.ts`** — `safeArray` (any value → plain array; object-maps unwrapped via `Object.values`, null/undefined/primitives → `[]`), `safeObjectValues`, `safeObjectKeys`, `normalizeDbCollections`, plus the **single canonical `COLLECTION_KEYS`** list (now shared by `sanitizeStateData`; previously App-local + test-local copies).
+2. **State-engine guarantee in `applyData`** — every incoming payload runs through `normalizeDbCollections` before writing `dbStateRef.current` and before `applyCollectionState` dispatches React setters, so every collection key is hard-guaranteed a plain array while non-collection keys (`settings`, `_version`, `_assembled`, `lastUpdated`, ...) are preserved verbatim.
+3. **`initPhpSync` boot-overlay normalization** — the MySQL-v2 reconciliation overlay is normalized before apply so `{ stores: {...} }` from a partial v2 read cannot hydrate map-shaped state.
+4. **All raw `Object.values()` sites hardened to `safeObjectValues`**: `stockItems` low-stock filter (the reported crash, also `safeObjectKeys` for the empty-check), `ALL_CORE_PAGES` rolePermissions flattener, AICopilot stock aggregation (2 sites), PredictiveForecasting stock valuation.
+
+**Acceptance**: app must mount cleanly even when the API returns `{ branches: null }` / `{ stores: {} }` / `{ categories: undefined }` etc., render all panels without the `Object.values` TypeError, and survive stale localStorage/SSE payloads from older builds.
+
+---
+
 ## [1.0.9-build-21] - 2026-09-11
 
 ### Build 2026-09-08-21 — DATA VANISHING ON REFRESH FIX, BACKEND DYNAMIC SNAPSHOT ASSEMBLY & MULTI-DEVICE REAL-TIME SYNC
