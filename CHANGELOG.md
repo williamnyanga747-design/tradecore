@@ -6,6 +6,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-26] - 2026-09-12
+
+### Build 2026-09-08-26 — UNDEFINED STOCK CRASH FIX (`reading '1'`)
+
+The `TypeError: Cannot read properties of undefined (reading '1')` crash persisted into build 25 because the root cause was NOT an array `[1]` index — it was `item.stock[storeId]` where `item.stock` was `undefined` on legacy/partial rows. When `storeId` was `'1'` at runtime, Chrome reported `reading '1'`. The existing guard at the `else` branch (lines 13856–13861) acknowledged this pattern in a comment but did NOT guard the `if (currentStoreId)` branch.
+
+**Root cause**: four unguarded `item.stock[id]` reads across four files. A `StockItem` row created via legacy import, partial sync, or an empty state can have `stock: undefined` (the StockItem type allows it), and accessing `[key]` on `undefined` throws.
+
+**Fixes** (all four sites):
+1. **`src/App.tsx:13854`** — `lowStockCount` filter: `(item.stock[currentStoreId] || 0)` → `(item.stock?.[currentStoreId] || 0)` — the confirmed production crash site.
+2. **`src/components/AICopilot.tsx:99`** — stock valuation loop: `(p.stock[stId] || 0)` → `(p.stock?.[stId] || 0)`.
+3. **`src/components/Receipts.tsx:267`** — void/restore stock adjustment: `item.stock[so.storeId] || 0` → `item.stock?.[so.storeId] || 0`.
+4. **`src/components/PurchaseOrderModal.tsx:351`** — product grid stock display: `item.stock[selectedStoreId] || 0` → `item.stock?.[selectedStoreId] || 0`.
+
+**Already safe**: `POSModal.tsx:365` (ternary guard `item.stock ?`), `ImportData.tsx:74` (stock initialized as `{}`).
+
+---
+
 ## [1.0.9-build-25] - 2026-09-12
 
 ### Build 2026-09-08-25 — SUPERADMIN MULTI-COMPANY CRUD SCOPE PERSISTENCE (DYNAMIC BINDING + REJECT INVALID SCOPE + CRASH-PROOFED INDEX READS)

@@ -264,7 +264,7 @@ export default function Receipts({
     const updatedStockItems = stockItems.map(item => {
       const orderItem = so.items.find(oi => oi.productId === item.id);
       if (orderItem) {
-        const currentQtyInStore = item.stock[so.storeId] || 0;
+        const currentQtyInStore = item.stock?.[so.storeId] || 0;
         // If we are voiding, we RE-ADD the stock back to the store (restore stock).
         // If we are restoring, we SUBTRACT the stock from the store (re-sell stock).
         const newQtyInStore = isVoiding 

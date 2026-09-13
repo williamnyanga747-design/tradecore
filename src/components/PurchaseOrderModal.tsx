@@ -348,7 +348,7 @@ export default function PurchaseOrderModal({
             {/* Products Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 flex-1 overflow-y-auto pr-1">
               {filteredProducts.map(item => {
-                const stockQty = item.stock[selectedStoreId] || 0;
+                const stockQty = item.stock?.[selectedStoreId] || 0;
 
                 return (
                   <div

@@ -1614,7 +1614,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-25');
+    console.log('[TradeCore] build 2026-09-08-26');
   }, []);
 
   useEffect(() => {
@@ -13851,7 +13851,7 @@ try {
   // Calculate low stock items count
   const lowStockCount = stockItems.filter(item => {
     if (currentStoreId) {
-      return (item.stock[currentStoreId] || 0) <= item.lowStockQty;
+      return (item.stock?.[currentStoreId] || 0) <= item.lowStockQty;
     } else {
       // If no store is selected, check if any of the stores are low. BUILD 2026-09-08-22:
       // item.stock can be undefined/null on legacy or partial rows — safeObjectValues/

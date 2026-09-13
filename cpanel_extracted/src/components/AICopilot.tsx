@@ -96,7 +96,7 @@ export default function AICopilot({
       let qty = 0;
       if (companyStoreIds.length > 0) {
         companyStoreIds.forEach(stId => {
-          qty += (p.stock[stId] || 0);
+          qty += (p.stock?.[stId] || 0);
         });
       } else {
         qty = (safeObjectValues(p.stock) as number[]).reduce((a, b) => a + (Number(b) || 0), 0);
