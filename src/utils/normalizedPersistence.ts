@@ -138,8 +138,8 @@ async function resolveApiUrl(): Promise<string> {
  * operator + bearer headers, 30s timeout, outer-signal ignore (writes must finish).
  */
 async function v2Post<T>(action: string, payload: Record<string, unknown>): Promise<T | null> {
-  const isStoreAction = action === 'v2_upsert_store' || action === 'v2_delete_store' || action === 'v2_list_stores' || action === 'v2_list_branches';
-  if (isStoreAction) console.log('[DIAG-v2Post] → ' + action + ' payload_keys=' + Object.keys(payload).join(',') + ' company_id=' + (payload.company_id ?? ''));
+  const isDiagAction = action === 'v2_upsert_store' || action === 'v2_delete_store' || action === 'v2_list_stores' || action === 'v2_list_branches' || action === 'v2_upsert_category' || action === 'v2_delete_category' || action === 'v2_list_categories' || action === 'v2_upsert_company' || action === 'v2_delete_company';
+  if (isDiagAction) console.log('[DIAG-v2Post] → ' + action + ' payload_keys=' + Object.keys(payload).join(',') + ' company_id=' + (payload.company_id ?? ''));
   try {
     const url = await resolveApiUrl();
     const headers: Record<string, string> = {
@@ -162,12 +162,12 @@ async function v2Post<T>(action: string, payload: Record<string, unknown>): Prom
         signal: controller.signal
       });
       const respText = await response.text();
-      if (isStoreAction) console.log('[DIAG-v2Post] ← ' + action + ' status=' + response.status + ' body=' + respText.substring(0, 500));
-      if (!response.ok) { if (isStoreAction) console.warn('[DIAG-v2Post] ' + action + ' NON-OK status=' + response.status); return null; }
+      if (isDiagAction) console.log('[DIAG-v2Post] ← ' + action + ' status=' + response.status + ' body=' + respText.substring(0, 500));
+      if (!response.ok) { if (isDiagAction) console.warn('[DIAG-v2Post] ' + action + ' NON-OK status=' + response.status); return null; }
       try {
         return JSON.parse(respText) as T;
       } catch (e) {
-        if (isStoreAction) console.warn('[DIAG-v2Post] ' + action + ' JSON parse error');
+        if (isDiagAction) console.warn('[DIAG-v2Post] ' + action + ' JSON parse error');
         return null;
       }
     } finally {

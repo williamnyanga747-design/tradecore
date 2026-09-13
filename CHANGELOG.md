@@ -6,6 +6,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-33] - 2026-09-14
+
+### Build 2026-09-08-33 — FIX: branches/stores/categories MySQL persistence
+
+Root cause investigation revealed multiple failure points preventing branches, stores, and categories from reaching MySQL. Only `companies` worked because `v2_upsert_company` happened to have the table already created via a prior `tcMirrorNormalized` call, while `v2_upsert_store` and `v2_upsert_category` silently failed.
+
+**PHP Fixes**:
+1. `v2_upsert_store`: Added `tcEnsureNormalizedTables($pdo)` call — ensures `stores` table exists before INSERT. Added `company_id` non-empty validation guard (returns error instead of writing orphan row with blank `company_id`).
+2. `v2_upsert_category`: Added `tcEnsureNormalizedTables($pdo)` call — ensures `stock_categories`/`tradecore_categories` tables exist. Added diagnostic logging for entry and result.
+3. `tcMirrorNormalized`: Added tracing — logs counts of companies/branches/stores/categories being written so we can see if the blob flush path is receiving data.
+4. `tcUpsertCategoryRow`: Added logging for all early-return failure paths (empty name, no PDO) and SUCCESS/FAILED for the stock_categories INSERT.
+5. `save_state`: Added overlay diagnostic logging — traces pre-overlay and MySQL overlay counts for branches/stores/categories. Added pre-mirror counts.
+
+**Client Fix**:
+6. `v2Post`: Expanded `[DIAG-v2Post]` logging to cover category and company actions (previously only store/branch). Now traces request payload, HTTP status, and response body for ALL key entity writes.
+
+**Build markers**: `2026-09-08-33`, `v1.0.9-33`
+
+---
+
 ## [1.0.9-build-32] - 2026-09-13
 
 ### Build 2026-09-08-32 — DIAGNOSTIC: Branch/Store MySQL Persistence Logging

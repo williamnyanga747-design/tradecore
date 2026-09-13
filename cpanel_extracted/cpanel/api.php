@@ -450,10 +450,10 @@ function tcUpsertStoreRow($pdo, $s, $now) {
 }
 
 function tcUpsertCategoryRow($pdo, $companyId, $name, $now, $color = null) {
-    if (!$pdo || $name === '') return false;
+    if (!$pdo || $name === '') { error_log('[DIAG-tcUpsertCatRow] early return: pdo=' . ($pdo ? 'yes' : 'no') . ' name_empty=' . ($name === '' ? 'yes' : 'no')); return false; }
     $companyId = (string)$companyId;
     $name = trim((string)$name);
-    if ($name === '') return false;
+    if ($name === '') { error_log('[DIAG-tcUpsertCatRow] empty after trim'); return false; }
     $id = 'nc_' . md5($companyId . ':' . $name);
     $color = $color !== null ? (string)$color : '#f59e0b';
     try {
@@ -461,7 +461,8 @@ function tcUpsertCategoryRow($pdo, $companyId, $name, $now, $color = null) {
             VALUES (?,?,?,NULL,?,1,?,?,NULL)
             ON DUPLICATE KEY UPDATE name=VALUES(name), color=VALUES(color), updated_at=VALUES(updated_at), deleted_at=NULL")
             ->execute([$id, $companyId, $name, $color, $now, $now]);
-    } catch (Throwable $e) { error_log('[TradeCore API] upsert stock_category failed: ' . $e->getMessage()); return false; }
+        error_log('[DIAG-tcUpsertCatRow] SUCCESS stock_categories: id=' . $id . ' company_id=' . $companyId . ' name=' . $name);
+    } catch (Throwable $e) { error_log('[DIAG-tcUpsertCatRow] FAILED stock_categories: id=' . $id . ' error=' . $e->getMessage()); return false; }
     // Legacy atomic mirror so the classic snapshot/list path also sees the category.
     try { $pdo->prepare("INSERT INTO tradecore_categories (company_id, category_name, created_at, updated_at) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE updated_at=VALUES(updated_at), deleted_at=NULL")->execute([$companyId, $name, $now, $now]); } catch (Throwable $e2) {}
     return true;
@@ -846,6 +847,11 @@ function tcMirrorNormalized($pdo, $data) {
     tcEnsureNormalizedTables($pdo);
     $now = time();
     try {
+        $coCount = isset($data['companies']) && is_array($data['companies']) ? count($data['companies']) : 0;
+        $brCount = isset($data['branches']) && is_array($data['branches']) ? count($data['branches']) : 0;
+        $stCount = isset($data['stores']) && is_array($data['stores']) ? count($data['stores']) : 0;
+        $catCount = isset($data['categories']) && is_array($data['categories']) ? count($data['categories']) : 0;
+        error_log('[DIAG-tcMirrorNorm] companies=' . $coCount . ' branches=' . $brCount . ' stores=' . $stCount . ' categories=' . $catCount);
         if (isset($data['companies']) && is_array($data['companies'])) {
             foreach ($data['companies'] as $c) { if (is_array($c) && isset($c['id'])) tcUpsertCompanyRow($pdo, $c, $now); }
         }
@@ -2229,6 +2235,9 @@ try {
                     try {
                         $mysqlOverlay = tcAssembleDynamicSnapshot($pdo, '', []);
                         foreach (['branches', 'stores', 'categories'] as $overlayKey) {
+                            $preCount = is_array($toPersist[$overlayKey] ?? null) ? count($toPersist[$overlayKey]) : 0;
+                            $overlayCount = is_array($mysqlOverlay[$overlayKey] ?? null) ? count($mysqlOverlay[$overlayKey]) : 0;
+                            error_log('[DIAG-save_state] overlay ' . $overlayKey . ': pre=' . $preCount . ' mysql=' . $overlayCount);
                             if (!empty($mysqlOverlay[$overlayKey])) {
                                 $toPersist[$overlayKey] = $mysqlOverlay[$overlayKey];
                             }
@@ -2288,6 +2297,7 @@ try {
                 // normalized tables (companies/stores/products/categories/user_accounts).
                 // Runs inside the same transaction so the blob + normalized rows commit
                 // atomically — every legacy flush lands in the normalized schema too.
+                error_log('[DIAG-save_state] before tcMirrorNorm: companies=' . (isset($toPersist['companies']) && is_array($toPersist['companies']) ? count($toPersist['companies']) : 0) . ' branches=' . (isset($toPersist['branches']) && is_array($toPersist['branches']) ? count($toPersist['branches']) : 0) . ' stores=' . (isset($toPersist['stores']) && is_array($toPersist['stores']) ? count($toPersist['stores']) : 0) . ' categories=' . (isset($toPersist['categories']) && is_array($toPersist['categories']) ? count($toPersist['categories']) : 0));
                 try { tcMirrorNormalized($pdo, $toPersist); } catch (Throwable $eMirrorN) { error_log('[TradeCore API] tcMirrorNormalized failed: ' . $eMirrorN->getMessage()); }
 
                 // 7. File fallback
@@ -3706,9 +3716,11 @@ try {
         if ($action === 'v2_upsert_store') {
             error_log('[DIAG-PHP] v2_upsert_store called: v2company=' . ($v2company ?? '') . ' entity_id=' . ($v2in['entity']['id'] ?? 'NONE'));
             if (!$pdo) { error_log('[DIAG-PHP] v2_upsert_store: no PDO'); echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
+            try { tcEnsureNormalizedTables($pdo); } catch (Throwable $eT) { error_log('[DIAG-PHP] v2_upsert_store: tcEnsureNormalizedTables failed: ' . $eT->getMessage()); }
             $store = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['store'] ?? null) ? $v2in['store'] : null);
             if (!$store || !isset($store['id'])) { error_log('[DIAG-PHP] v2_upsert_store: missing entity or entity.id'); echo json_encode(["success" => false, "error" => "Missing store.id", "server_ts" => $now]); exit(); }
             $scid = (string)($store['company_id'] ?? $store['companyId'] ?? $v2company ?? '');
+            if ($scid === '') { error_log('[DIAG-PHP] v2_upsert_store: EMPTY company_id — store.id=' . $store['id']); echo json_encode(["success" => false, "error" => "Missing company_id for store", "server_ts" => $now]); exit(); }
             $store['company_id'] = $store['companyId'] = $scid;
             error_log('[DIAG-PHP] v2_upsert_store: id=' . $store['id'] . ' scid=' . $scid . ' name=' . ($store['name'] ?? ''));
             $ok = tcUpsertStoreRow($pdo, $store, $now);
@@ -3868,11 +3880,14 @@ try {
         // ---- v2_upsert_category ---------------------------------------------------
         if ($action === 'v2_upsert_category') {
             if (!$pdo) { echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
+            try { tcEnsureNormalizedTables($pdo); } catch (Throwable $eT) {}
             $catName = trim((string)($v2in['name'] ?? $v2in['category_name'] ?? ''));
             if ($catName === '') { echo json_encode(["success" => false, "error" => "Missing category name", "server_ts" => $now]); exit(); }
             $ccid = $v2company !== '' ? $v2company : (string)($v2in['company_id'] ?? '');
             if ($ccid === '') { echo json_encode(["success" => false, "error" => "Missing company_id", "server_ts" => $now]); exit(); }
+            error_log('[DIAG-PHP] v2_upsert_category: ccid=' . $ccid . ' name=' . $catName);
             $ok = tcUpsertCategoryRow($pdo, $ccid, $catName, $now, (string)($v2in['color'] ?? null));
+            error_log('[DIAG-PHP] v2_upsert_category: tcUpsertCategoryRow returned ' . ($ok ? 'TRUE' : 'FALSE'));
             if ($ok) {
                 try {
                     $pre = $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch();
