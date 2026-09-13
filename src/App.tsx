@@ -352,14 +352,18 @@ const DIRECT_DELTA_HANDLERS: Record<string, (u: any[], r: string[], nextMap: Map
     return ops;
   },
   branches: (u, r, _nextMap, companyId, prevMap) => {
+    console.log('[DIAG-BRANCHES] handler entry: upsert=' + u.length + ' removed=' + r.length + ' companyId=' + companyId);
+    if (u.length > 0) console.log('[DIAG-BRANCHES] upsert ids:', u.map((x: any) => x?.id).join(','), 'company_ids:', u.map((x: any) => x?.company_id ?? x?.companyId).join(','));
     const ops: Promise<unknown>[] = [];
-    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; ops.push(v2UpsertBranch(rec, cid).catch((e) => { console.warn('[Direct MySQL] v2_upsert_branch delta failed', e, rec); return false; })); }
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; console.log('[DIAG-BRANCHES] upsert rec id=' + rec?.id + ' cid=' + cid + ' name=' + rec?.name); ops.push(v2UpsertBranch(rec, cid).then((ok) => { console.log('[DIAG-BRANCHES] v2UpsertBranch result: id=' + rec?.id + ' ok=' + ok); return ok; }).catch((e) => { console.warn('[Direct MySQL] v2_upsert_branch delta failed', e, rec); return false; })); }
     for (const id of r) { const rec = prevMap.get(id); const cid = rec?.company_id ?? rec?.companyId ?? companyId; ops.push(v2DeleteBranch(id, cid).catch((e) => { console.warn('[Direct MySQL] v2_delete_branch delta failed', e, id); return false; })); }
     return ops;
   },
   stores: (u, r, _nextMap, companyId, prevMap) => {
+    console.log('[DIAG-STORES] handler entry: upsert=' + u.length + ' removed=' + r.length + ' companyId=' + companyId);
+    if (u.length > 0) console.log('[DIAG-STORES] upsert ids:', u.map((x: any) => x?.id).join(','), 'company_ids:', u.map((x: any) => x?.company_id ?? x?.companyId).join(','));
     const ops: Promise<unknown>[] = [];
-    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; ops.push(v2UpsertStore(rec, cid).catch((e) => { console.warn('[Direct MySQL] v2_upsert_store delta failed', e, rec); return false; })); }
+    for (const rec of u) { const cid = rec.company_id ?? rec.companyId ?? companyId; console.log('[DIAG-STORES] upsert rec id=' + rec?.id + ' cid=' + cid + ' name=' + rec?.name); ops.push(v2UpsertStore(rec, cid).then((ok) => { console.log('[DIAG-STORES] v2UpsertStore result: id=' + rec?.id + ' ok=' + ok); return ok; }).catch((e) => { console.warn('[Direct MySQL] v2_upsert_store delta failed', e, rec); return false; })); }
     for (const id of r) { const rec = prevMap.get(id); const cid = rec?.company_id ?? rec?.companyId ?? companyId; ops.push(v2DeleteStore(id, cid).catch((e) => { console.warn('[Direct MySQL] v2_delete_store delta failed', e, id); return false; })); }
     return ops;
   },
@@ -1614,7 +1618,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-31');
+    console.log('[TradeCore] build 2026-09-08-32');
   }, []);
 
   useEffect(() => {
@@ -4179,6 +4183,9 @@ export default function App() {
         // atomic endpoints. Diffed delta (create/edit/delete), never the state blob, so
         // there is NO 13.4KB flush + version bump + 409 Conflict for these records.
         if (DIRECT_SYNC_KEYS.has(key)) {
+          if (key === 'branches' || key === 'stores') {
+            console.log('[DIAG-' + key.toUpperCase() + '] DIRECT_SYNC key=' + key + ' companyId="' + companyId + '" valLen=' + (Array.isArray(val) ? val.length : 'N/A') + ' currentLen=' + ((current as any)[key]?.length ?? 0));
+          }
           // BUILD 2026-09-08-25 (Req 1c — DYNAMIC-SCOPE SUBMISSION GATE): resolve the active
           // company AT THE MOMENT OF SUBMISSION (never a stale form closure). If nothing is
           // bound (no active_company_id in storage, no session user company, empty
@@ -4228,15 +4235,28 @@ export default function App() {
             continue;
           }
           const delta = directDeltaParts((current as any)[key], val);
+          if (key === 'branches' || key === 'stores') {
+            console.log('[DIAG-' + key.toUpperCase() + '] delta: upsert=' + delta.upsert.length + ' removed=' + delta.removed.length + ' prevLen=' + ((current as any)[key]?.length ?? 0) + ' nextLen=' + (Array.isArray(val) ? val.length : 0));
+          }
           const dh = DIRECT_DELTA_HANDLERS[key];
           if (dh) {
             // BUILD 2026-09-08-19 (Fix 2): pin the optimistic local snapshot while the
             // delta is in flight so a background re-fetch can never wipe a fresh local
             // record; released when the batch settles.
             const ops = dh(delta.upsert, delta.removed, delta.nextMap, companyId, delta.prevMap);
+            if (key === 'branches' || key === 'stores') {
+              console.log('[DIAG-' + key.toUpperCase() + '] handler returned ' + (ops?.length ?? 0) + ' ops');
+            }
             if (ops && ops.length > 0) {
               markDirectDeltaDirty(key, Array.isArray(val) ? val.slice() : val);
-              void Promise.allSettled(ops).then(() => clearDirectDeltaDirty(key)).catch(() => clearDirectDeltaDirty(key));
+              void Promise.allSettled(ops).then((results) => {
+                if (key === 'branches' || key === 'stores') {
+                  console.log('[DIAG-' + key.toUpperCase() + '] Promise.allSettled settled. results:', results.map((r: any) => r.status === 'fulfilled' ? 'fulfilled:' + r.value : 'rejected:' + (r.reason?.message || r.reason)));
+                }
+                clearDirectDeltaDirty(key);
+              }).catch(() => clearDirectDeltaDirty(key));
+            } else if (key === 'branches' || key === 'stores') {
+              console.log('[DIAG-' + key.toUpperCase() + '] NO OPS - handler returned empty array');
             }
           }
           continue;

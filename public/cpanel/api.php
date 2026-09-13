@@ -414,7 +414,7 @@ function tcUpsertCompanyRow($pdo, $c, $now, &$err = '') {
 }
 
 function tcUpsertStoreRow($pdo, $s, $now) {
-    if (!$pdo || !is_array($s) || !isset($s['id'])) return false;
+    if (!$pdo || !is_array($s) || !isset($s['id'])) { error_log('[DIAG-tcUpsertStoreRow] early return: pdo=' . ($pdo ? 'yes' : 'no') . ' is_array=' . (is_array($s) ? 'yes' : 'no') . ' has_id=' . (isset($s['id']) ? 'yes' : 'no')); return false; }
     $id = (string)$s['id'];
     // DELETED-ENTITY GUARD (2026-09-07): same treatment as tcUpsertCompanyRow — honor
     // client soft-deletes so a blob flush can never resurrect a store/branch that was
@@ -444,8 +444,9 @@ function tcUpsertStoreRow($pdo, $s, $now) {
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)
             ON DUPLICATE KEY UPDATE company_id=VALUES(company_id), branch_id=VALUES(branch_id), name=VALUES(name), code=VALUES(code), phone=VALUES(phone), email=VALUES(email), address=VALUES(address), city=VALUES(city), is_active=VALUES(is_active), settings_json=VALUES(settings_json), updated_at=VALUES(updated_at), deleted_at=NULL")
             ->execute([$id, $data['company_id'], $data['branch_id'], $data['name'], $data['code'], $data['phone'], $data['email'], $data['address'], $data['city'], $data['is_active'], $data['settings_json'], tcEpochTs($s['created_at'] ?? null, $now), tcEpochTs($s['updated_at'] ?? null, $now)]);
+        error_log('[DIAG-tcUpsertStoreRow] SUCCESS: id=' . $id . ' company_id=' . $data['company_id'] . ' name=' . $data['name']);
         return true;
-    } catch (Throwable $e) { error_log('[TradeCore API] upsert store failed: ' . $e->getMessage()); return false; }
+    } catch (Throwable $e) { error_log('[DIAG-tcUpsertStoreRow] FAILED: id=' . $id . ' error=' . $e->getMessage()); return false; }
 }
 
 function tcUpsertCategoryRow($pdo, $companyId, $name, $now, $color = null) {
@@ -3394,7 +3395,7 @@ try {
         if ($action === 'v2_upsert_user' || $action === 'v2_update_user') $action = 'v2_upsert_user_account';
         if ($action === 'v2_list_users') $action = 'v2_list_user_accounts';
         if ($action === 'v2_delete_user') $action = 'v2_delete_user_account';
-        if ($action === 'v2_upsert_branch') $action = 'v2_upsert_store';
+        if ($action === 'v2_upsert_branch') { error_log('[DIAG-PHP] v2_upsert_branch aliased to v2_upsert_store'); $action = 'v2_upsert_store'; }
         if ($action === 'v2_delete_branch') $action = 'v2_delete_store';
         list($v2op, $v2role) = tcCurrentOperator($rawInput);
         $v2company = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
@@ -3703,12 +3704,15 @@ try {
 
         // ---- v2_upsert_store ------------------------------------------------------
         if ($action === 'v2_upsert_store') {
-            if (!$pdo) { echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
+            error_log('[DIAG-PHP] v2_upsert_store called: v2company=' . ($v2company ?? '') . ' entity_id=' . ($v2in['entity']['id'] ?? 'NONE'));
+            if (!$pdo) { error_log('[DIAG-PHP] v2_upsert_store: no PDO'); echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
             $store = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['store'] ?? null) ? $v2in['store'] : null);
-            if (!$store || !isset($store['id'])) { echo json_encode(["success" => false, "error" => "Missing store.id", "server_ts" => $now]); exit(); }
+            if (!$store || !isset($store['id'])) { error_log('[DIAG-PHP] v2_upsert_store: missing entity or entity.id'); echo json_encode(["success" => false, "error" => "Missing store.id", "server_ts" => $now]); exit(); }
             $scid = (string)($store['company_id'] ?? $store['companyId'] ?? $v2company ?? '');
             $store['company_id'] = $store['companyId'] = $scid;
+            error_log('[DIAG-PHP] v2_upsert_store: id=' . $store['id'] . ' scid=' . $scid . ' name=' . ($store['name'] ?? ''));
             $ok = tcUpsertStoreRow($pdo, $store, $now);
+            error_log('[DIAG-PHP] v2_upsert_store: tcUpsertStoreRow returned ' . ($ok ? 'TRUE' : 'FALSE'));
             if ($ok) {
                 $sname = (string)($store['name'] ?? $store['id']);
                 tcBlobMerge($pdo, 'stores', ['id' => $store['id'], 'companyId' => $scid, 'name' => $sname, 'is_active' => 1]);

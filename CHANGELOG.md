@@ -6,6 +6,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-32] - 2026-09-13
+
+### Build 2026-09-08-32 — DIAGNOSTIC: Branch/Store MySQL Persistence Logging
+
+Root cause for branches/stores disappearing on refresh remains unresolved: data saves locally but doesn't reach MySQL. This build adds comprehensive `[DIAG-*]` prefixed logging across the entire client→PHP→MySQL pipeline to pinpoint the exact failure point.
+
+**Diagnostic logging added**:
+1. `App.tsx` — DIRECT_DELTA_HANDLERS: logs delta.upsert.length, removed.length, companyId, each rec's id/cid/name, handler result, Promise.allSettled outcomes for branches & stores
+2. `App.tsx` — DIRECT_SYNC entry: logs key, companyId, valLen, currentLen
+3. `normalizedPersistence.ts` — `v2Post`: logs request payload keys + company_id, HTTP status, response body (truncated to 500 chars) for all store/branch actions
+4. `api.php` — `v2_upsert_store` handler: logs entity.id, v2company, tcUpsertStoreRow result
+5. `api.php` — `tcUpsertStoreRow`: logs early returns, SUCCESS with id/company_id/name, FAILED with error
+6. `api.php` — branch alias: logs `v2_upsert_branch` → `v2_upsert_store` rename
+
+**All logs prefixed `[DIAG-...]` for easy filtering. Deploy and reproduce to capture diagnostic output.**
+
+**Build markers**: `2026-09-08-32`, `v1.0.9-32`
+
+---
+
 ## [1.0.9-build-31] - 2026-09-13
 
 ### Build 2026-09-08-31 — CATEGORY SCOPING FIX (RootMandatePanel)
