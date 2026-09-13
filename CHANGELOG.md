@@ -6,6 +6,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-31] - 2026-09-13
+
+### Build 2026-09-08-31 — CATEGORY SCOPING FIX (RootMandatePanel)
+
+Categories created from the RootMandatePanel (superadmin) were plain names without the `co_<companyId>:<name>` prefix required for MySQL persistence. On refresh, the MySQL assembler couldn't match them to any company, so they vanished.
+
+**Fixes**:
+1. `RootMandatePanel.tsx`: Category creation now uses `formatCompanyCategory(newCat, currentUser.companyId)` to add the `co_<companyId>:` prefix, matching how MasterData.tsx does it
+2. `RootMandatePanel.tsx`: Category display uses `cleanCategoryName()` to show clean names without the prefix in the UI
+3. Delete log message also shows the clean name
+
+**Build markers**: `2026-09-08-31`, `v1.0.9-31`
+
+---
+
 ## [1.0.9-build-30] - 2026-09-13
 
 ### Build 2026-09-08-30 — DATA PERSISTENCE FIX (get_state blob-missing + save_state overlay)

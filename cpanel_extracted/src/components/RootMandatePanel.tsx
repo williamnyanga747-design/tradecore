@@ -24,6 +24,7 @@ import { defaultHomepageContent } from '../initialData';
 import { getPhpConfig } from '../utils/api';
 import { sameId } from '../utils/idUtils';
 import { safeLower } from '../utils/stateHelpers';
+import { formatCompanyCategory, cleanCategoryName } from '../utils/categoryHelper';
 import { Stars, VerifiedBadge, TZS } from './marketplace/MarketplaceShared';
 import AnalyticsLineChart from './marketplace/AnalyticsLineChart';
 import LeafletMap from './marketplace/LeafletMap';
@@ -769,7 +770,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
           <div className="font-bold text-gray-900 text-sm mb-3">{t('Add Category')}</div>
           <div className="flex gap-2">
             <input value={newCat} onChange={e => setNewCat(e.target.value)} placeholder={t('New category name...')} className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none" />
-            <button onClick={() => { if (newCat.trim()) { onUpdateCategories([...categories, newCat.trim()]); logAction('Category Created', `ROOT_MANDATE created category "${newCat.trim()}".`); setNewCat(''); } }} className="px-4 py-2 bg-brand text-white rounded-lg text-xs font-bold inline-flex items-center gap-1.5"><Plus className="w-4 h-4" /> {t('Add')}</button>
+            <button onClick={() => { if (newCat.trim()) { const prefixed = formatCompanyCategory(newCat.trim(), currentUser.companyId); onUpdateCategories([...categories, prefixed]); logAction('Category Created', `ROOT_MANDATE created category "${prefixed}".`); setNewCat(''); } }} className="px-4 py-2 bg-brand text-white rounded-lg text-xs font-bold inline-flex items-center gap-1.5"><Plus className="w-4 h-4" /> {t('Add')}</button>
           </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -777,9 +778,9 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
             <div key={cat} className="bg-white rounded-xl border border-gray-100 shadow-sm p-3 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0"><FolderTree className="w-4 h-4" /></div>
-                <span className="font-bold text-gray-900 text-xs truncate">{cat}</span>
+                <span className="font-bold text-gray-900 text-xs truncate">{cleanCategoryName(cat)}</span>
               </div>
-              <button onClick={() => { onUpdateCategories(categories.filter(c => c !== cat)); logAction('Category Deleted', `ROOT_MANDATE deleted category "${cat}".`); }} className="p-1.5 rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+              <button onClick={() => { onUpdateCategories(categories.filter(c => c !== cat)); logAction('Category Deleted', `ROOT_MANDATE deleted category "${cleanCategoryName(cat)}".`); }} className="p-1.5 rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
             </div>
           ))}
         </div>
