@@ -6,6 +6,40 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-29] - 2026-09-13
+
+### Build 2026-09-08-29 — CONSOLE SPAM FIX + INFINITE SYNC LOOP FIX
+
+Three major issues resolved after build 28:
+
+**Issue 1 — Console log spam ("User session preserved/restored")**: The browser console was flooded with repetitive `console.log` statements firing dozens of times per second, degrading performance.
+
+**Issue 2 — Infinite sync loop**: The `[Sync] Re-fetch merged N pending local collection(s)` message fired every 3-6 seconds, causing continuous flush cycles (`Flush started → Flush OK → Cleared dirty → Re-fetch merged → Flush started`).
+
+**Issue 3 — Backend architecture audit**: All 15 v2_* endpoints for branches/stores/categories/customers/suppliers were verified as existing and using direct MySQL queries. No backend changes needed.
+
+**Root cause (console spam)**: Line 3966 `console.log('User session preserved/restored')` inside `useEffect([currentUser, persistRoleCache])` fired every time `currentUser` object identity changed on sync cycles. Lines 6035/6056 (`[Scope]` logs) fired inside a useEffect with `[currentUser, users]` deps. Line 3285 `SYNC DEBUG` fired in the 30s poll interval.
+
+**Root cause (infinite loop)**: After a successful flush, the dirty key clearing logic at lines 4725-4736 used an `optimisticWriteTs > flushStartMs` check that kept keys dirty when `protectDirtyCollections` overlays triggered re-renders which caused effects to call `saveAllData` again during the flush window. The echo-merge guard at lines 2145-2150 / 3442-3448 had a `pK2.length <= 2` limit that prevented it from matching when 3+ keys were dirty.
+
+**Fixes**:
+1. **Silenced 12 console.log statements** that fired repeatedly in useEffect/interval contexts:
+   - `src/App.tsx:3966` — `'User session preserved/restored'` (worst offender)
+   - `src/App.tsx:6035` — `'[Scope] Super Admin / root / impersonation active...'`
+   - `src/App.tsx:6056` — `'[Scope] Freshly-created account...'`
+   - `src/App.tsx:4832` — `'Flush error, session preserved'`
+   - `src/App.tsx:3285` — `'SYNC DEBUG'` (now gated behind `window.DEBUG_SYNC`)
+   - `src/App.tsx:3557` — `'[Scope] Ignoring invalid company switch...'`
+   - `src/App.tsx:3569/3686/3696/3697` — Company switch/selection logs
+   - `src/App.tsx:2135` — `'[Sync] Cross-tab: applying fetched update'`
+   - `src/App.tsx:2152` — `'[Sync] Skipped re-merge...'`
+   - `src/App.tsx:4595` — `'Flush started'`
+   - `src/App.tsx:1525` — `'[Sync] Re-fetch merged...'` (now gated behind `window.DEBUG_SYNC`)
+2. **Unconditional dirty key clearing** after successful flush (lines 4711-4718): removed the per-key `optimisticWriteTs > flushStartMs` check that kept keys dirty when re-fetch overlays triggered re-saves. All flushed keys are now cleared unconditionally — a genuine new user edit will re-dirty via `saveAllData`.
+3. **Removed ≤2 key limit** from echo-merge guards (lines 2144-2150, 3442-3448): the `pendingKeys.length <= 2` condition prevented the guard from matching when 3+ keys were dirty, allowing the re-fetch overlay to proceed and restart the loop.
+
+---
+
 ## [1.0.9-build-28] - 2026-09-13
 
 ### Build 2026-09-08-28 — DATA RESURRECTION FIX + V2 TIMEOUT FIX

@@ -1521,7 +1521,7 @@ export default function App() {
       });
     }
 
-    if (keys.length > 0) {
+    if (keys.length > 0 && (window as any).DEBUG_SYNC) {
       console.log(`[Sync] Re-fetch merged ${keys.length} pending local collection(s) over server state — local edits preserved`);
     }
     return out;
@@ -1614,7 +1614,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-28');
+    console.log('[TradeCore] build 2026-09-08-29');
   }, []);
 
   useEffect(() => {
@@ -2132,7 +2132,6 @@ export default function App() {
         if (fetchedVer > 0) { lastServerVersionRef.current = fetchedVer; lastRealtimeVersionRef.current = fetchedVer; noteServerVersion(fetchedVer); }
         if (fullState.lastUpdated) noteStateTimestamp(fullState.lastUpdated);
         if ((fullState as any)._serverUpdatedAt) lastServerTimestampRef.current = (fullState as any)._serverUpdatedAt;
-        console.log('[Sync] Cross-tab: applying fetched update');
         // BUILD 2026-09-08-10 — ECHO-MERGE GUARD: after our own Flush OK the server
         // version is locked into lastSyncVersionRef and the flushed keys into
         // lastFlushedKeysRef. If this re-fetch returns a version >= that lock and the
@@ -2146,10 +2145,8 @@ export default function App() {
           && fetchedVer > 0
           && fetchedVer >= lastSyncVersionRef.current
           && pendingKeys.length > 0
-          && pendingKeys.length <= 2
           && pendingKeys.every(k => lastFlushedKeysRef.current.includes(k));
         if (isOwnFlushEcho) {
-          console.log(`[Sync] Skipped re-merge — server state v${fetchedVer} already reflects our just-flushed collections (${pendingKeys.join(', ')})`);
           applyData(fullState, true);
           usersSyncedRef.current = true;
           localStorage.setItem('tradecore_data', JSON.stringify(fullState));
@@ -3282,7 +3279,7 @@ export default function App() {
           const resp = await fetch(pollUrl, { method: 'GET', headers, cache: 'no-store' });
           if (!resp.ok) return;
           const data = await resp.json();
-          if (data?.debug) console.log('SYNC DEBUG', data.debug);
+          if (data?.debug && (window as any).DEBUG_SYNC) console.log('SYNC DEBUG', data.debug);
           const incomingProducts: any[] = sanitizeArray<any>(data.products ?? data.state?.products ?? []);
           const incomingUsers: any[] = sanitizeArray<any>(data.users ?? data.state?.users ?? []);
           const hasPayload = Array.isArray(incomingProducts) || Array.isArray(incomingUsers);
@@ -3446,11 +3443,9 @@ export default function App() {
               && fetchedVer > 0
               && fetchedVer >= lastSyncVersionRef.current
               && pK2.length > 0
-              && pK2.length <= 2
               && pK2.every(k => lastFlushedKeysRef.current.includes(k));
             let mergedState: any;
             if (ownEcho2) {
-              console.log(`[Sync] Skipped poll re-merge — server state v${fetchedVer} already reflects our just-flushed collections (${pK2.join(', ')})`);
               mergedState = fullState;
             } else {
               mergedState = protectDirtyCollections(fullState);
@@ -3566,7 +3561,6 @@ export default function App() {
     if (curCid && curCid !== 'none' && !savedCid && (!activeCid || activeCid === 'none')) {
       persistActiveCompany(curCid);
       lastResyncedCompanyRef.current = curCid;
-      console.log('Company selection updated, session stable: company=' + curCid + ' committed silently (first assignment).');
       return;
     }
     // switchCompany(from, to) LOCK (GUARD 1): company switches MUST only be treated as a
@@ -3683,7 +3677,6 @@ export default function App() {
               applyData(snap, true);
               snapVer = Number(snap._version ?? snap.version ?? 0);
               if (Number.isNaN(snapVer)) snapVer = 0;
-              console.log('Company switched -> applied authoritative snapshot for company ' + targetCid + ' (version ' + snapVer + ')');
             }
           } catch (e) {
             console.warn('Authoritative snapshot on company switch failed, falling through to versioned poll:', e);
@@ -3693,8 +3686,6 @@ export default function App() {
         setLastServerVersion(snapVer);
         // Remember this target: any further triggers for the SAME company are ignored.
         lastResyncedCompanyRef.current = targetCid;
-        console.log('Company selection updated, session stable: company=' + targetCid + ' (explicit switch, no window.close / no session reset).');
-        console.log('Company switched', fromCid ?? 'none', '->', targetCid, 'forcing resync (flush settled)');
       } finally {
         resyncInFlightRef.current = false;
       }
@@ -3963,7 +3954,6 @@ export default function App() {
     if (meta && meta !== lastRoleMetaPersistedRef.current) {
       lastRoleMetaPersistedRef.current = meta;
       persistRoleCache(currentUser);
-      console.log('User session preserved/restored');
     } else if (!meta && lastRoleMetaPersistedRef.current) {
       lastRoleMetaPersistedRef.current = '';
       // Any logout (explicit, revoked, terminated, auto-lock) drops the cached
@@ -4599,7 +4589,6 @@ export default function App() {
     flushInFlightRef.current = true; // isFlushing lock — held until the whole coalesced queue drains
     setPhpSyncing(true);
     setPhpSyncMessage('Saving changes to server...');
-    console.log('Flush started');
     try {
       // COALESCED DRAIN LOOP: repeat the HTTP pass while one mid-flight pending batch
       // coalesced. Each pass consumes the token and re-reads lastServerVersionRef — which
@@ -4622,7 +4611,6 @@ export default function App() {
       } catch (e) {}
       let saveOk = false;
       const MAX_ATTEMPTS = 5;
-      const flushStartMs = Date.now();
       for (let attempt = 1; attempt <= MAX_ATTEMPTS && !saveOk; attempt++) {
         if (!flushDirtyRef.current) break;
         // CRITICAL: exclude ALL volatile keys (auditTrails, active_company_id, lastActiveAt,
@@ -4708,31 +4696,16 @@ export default function App() {
             isApplyingRemoteUpdateRef.current = false;
           }
           // Clear flushed dirty keys AND their value snapshots.
-          // BUILD 2026-09-08-10: the OLD gate `hadNewWrite = lastLocalWriteTimeRef.current > flushStartMs`
-          // kept EVERY flushed key dirty when ANY write — even a NON_SYNCED heartbeat
-          // (lastActiveAt/lastSeen/appOnline) — landed during the in-flight flush window.
-          // The same 1-2 keys therefore re-flushed forever ("Flush 13.2KB (2 dirty keys)
-          // -> Flush OK -> still dirty -> re-flush -> version churn 5063->5066"), and the
-          // pending local collections were re-merged over the server on every re-fetch, so
-          // the server's authoritative state was never applied and CRUD never persisted.
-          // Now we clear per-key: a key is only KEPT dirty if that EXACT collection was
-          // re-edited strictly after flushStartMs (optimisticWriteTsRef[k] > flushStartMs)
-          // — a genuine new edit the in-flight flush did not carry. lastSyncVersion is
-          // locked to the freshly-committed server version so the re-fetch echo guard can
-          // detect "this is our own flush coming back, not new data".
+          // BUILD 2026-09-08-28: unconditionally clear ALL flushed keys. The previous
+          // per-key optimisticWriteTs check kept keys dirty when a re-fetch overlay
+          // triggered a re-save during the flush window, causing an infinite flush loop.
+          // A genuine new user edit during the flush will re-dirty via saveAllData.
           const clearedKeys: string[] = [];
-          const reDirtiedFlushedKeys: string[] = [];
           dirtySnapshot.forEach(k => {
-            const optimisticTs = (optimisticWriteTsRef.current as any)[k];
-            const reWrittenDuringFlush = typeof optimisticTs === 'number' && optimisticTs > flushStartMs;
-            if (!reWrittenDuringFlush) {
-              flushDirtyKeysRef.current.delete(k);
-              delete (dirtyValuesRef.current as any)[k];
-              clearOptimisticWrite(k);
-              clearedKeys.push(k);
-            } else {
-              reDirtiedFlushedKeys.push(k);
-            }
+            flushDirtyKeysRef.current.delete(k);
+            delete (dirtyValuesRef.current as any)[k];
+            clearOptimisticWrite(k);
+            clearedKeys.push(k);
           });
           if (newVer > 0 && newVer > lastAckVersionRef.current) lastAckVersionRef.current = newVer;
           if (newVer > 0) {
@@ -4743,9 +4716,6 @@ export default function App() {
           else flushDirtyRef.current = true;
           if (clearedKeys.length > 0) {
             console.log(`[Sync] Cleared dirty after ${newVer} (${clearedKeys.join(', ')})`);
-          }
-          if (reDirtiedFlushedKeys.length > 0) {
-            console.log(`[Sync] ${reDirtiedFlushedKeys.length} key(s) were re-edited during flush — staying dirty for the next pass: ${reDirtiedFlushedKeys.join(', ')}`);
           }
           // Clear pending queue on successful flush
           clearPendingQueue();
@@ -4829,7 +4799,6 @@ const conflict = consumeConflictData();
       // Flush errors MUST NOT force a redirect to login — the session + role snapshot
       // were preserved above, so the next boot (or the online re-fuel) recovers cleanly.
       console.warn('[PHP API] Flush error:', err);
-      console.log('Flush error, session preserved');
       try {
         if (currentUser) {
           localStorage.setItem('tradecore_user', JSON.stringify(currentUser));
@@ -6032,7 +6001,6 @@ const conflict = consumeConflictData();
       const isImpersonating = !!localStorage.getItem('tradecore_root_backup');
       if (isSuperScope || isImpersonating) {
         usersSyncedRef.current = true;
-        console.log('[Scope] Super Admin / root / impersonation active — user not in per-company list, skipping termination check (safe company switch)');
         return;
       }
       // Regular users: Do NOT treat as deleted/terminated while (a) the server
@@ -6053,7 +6021,6 @@ const conflict = consumeConflictData();
         ((currentUser as any)?.createdAt != null &&
           Math.abs(Date.now() - new Date(String((currentUser as any)?.createdAt)).getTime()) < 1200000);
       if (freshAccount) {
-        console.log('[Scope] Freshly-created account — skipping missing-row termination (snapshot lag safe)');
         return;
       }
       // User was deleted/terminated from the database by Admin/Super Admin
