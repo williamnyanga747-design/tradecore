@@ -1614,7 +1614,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-23');
+    console.log('[TradeCore] build 2026-09-08-24');
   }, []);
 
   useEffect(() => {
@@ -6045,9 +6045,9 @@ const conflict = consumeConflictData();
     }
 
     if (isSuperScopeUser(currentUser)) {
-      const activeCompanies = companies.filter(c => !c.isDeleted);
-      const activeBranches = branches.filter(b => !b.isDeleted);
-      const activeStores = stores.filter(s => !s.isDeleted);
+      const activeCompanies = companies.filter(c => c && !c.isDeleted);
+      const activeBranches = branches.filter(b => b && !b.isDeleted);
+      const activeStores = stores.filter(s => s && !s.isDeleted);
 
       // GLOBAL VIEW: keep the last concrete company so state stays stable; do NOT
       // force-switch (a forced parentCo here would trip the resync effect and emit
@@ -6087,12 +6087,17 @@ const conflict = consumeConflictData();
         activeStId = firstActiveStore ? String(firstActiveStore.id) : null;
       }
       
-      if (currentCompanyId !== parentCo) setCurrentCompanyId(parentCo);
+      // BUILD 2026-09-08-24 (Req 3 — EXPLICIT-SWITCH-ONLY): a background snapshot /
+      // flush can refresh the collections below, but it must NEVER move an already-bound,
+      // valid company. Company changes are user-click-only; the scope is only auto-bound
+      // when nothing valid is bound yet (boot / role defaulting).
+      if (parentCo != null && !activeCompanies.some(c => sameId(c.id, currentCompanyId))) setCurrentCompanyId(parentCo);
       if (currentBranchId !== activeBrId) setCurrentBranchId(activeBrId);
       if (currentStoreId !== activeStId) setCurrentStoreId(activeStId);
     } else if (currentUser.role === 'Admin') {
-      const activeBranches = branches.filter(b => !b.isDeleted);
-      const activeStores = stores.filter(s => !s.isDeleted);
+      const activeCompanies = companies.filter(c => c && !c.isDeleted);
+      const activeBranches = branches.filter(b => b && !b.isDeleted);
+      const activeStores = stores.filter(s => s && !s.isDeleted);
 
       const parentCo = currentUser.companyId != null ? String(currentUser.companyId) : null;
 
@@ -6108,11 +6113,14 @@ const conflict = consumeConflictData();
         activeStId = firstActiveStore ? String(firstActiveStore.id) : null;
       }
 
-      if (currentCompanyId !== parentCo) setCurrentCompanyId(parentCo);
+      if (parentCo != null && !activeCompanies.some(c => sameId(c.id, currentCompanyId))) setCurrentCompanyId(parentCo);
       if (currentBranchId !== activeBrId) setCurrentBranchId(activeBrId);
       if (currentStoreId !== activeStId) setCurrentStoreId(activeStId);
     } else {
-      if (currentCompanyId !== currentUser.companyId && currentUser.companyId != null) setCurrentCompanyId(String(currentUser.companyId));
+      // BUILD 2026-09-08-24 (Req 3): never auto-flip an already-bound valid company
+      // from a background sync; only bind the session user's company when no company
+      // is bound (or the bound one is no longer a real company).
+      if (currentUser.companyId != null && (!currentCompanyId || !companies.some(c => sameId(c.id, currentCompanyId)))) setCurrentCompanyId(String(currentUser.companyId));
       if (currentBranchId !== currentUser.branchId && currentUser.branchId != null) setCurrentBranchId(String(currentUser.branchId));
       if (currentStoreId !== currentUser.storeId && currentUser.storeId != null) setCurrentStoreId(String(currentUser.storeId));
     }

@@ -27,7 +27,17 @@ export default function RootTraReportsPanel({ companies, orders, translate: t, o
     [activeCompanies, orders, month]
   );
 
-  const filteredRows = companyFilter === '' ? rows : rows.filter(r => r[1] === companyFilter);
+  // BUILD 2026-09-08-24 (Req 5 — INDEX GUARD): the dropdown binds a COMPANY ID
+  // (number), but each row's [1] cell is the company NAME — `r[1] === companyFilter`
+  // never matched, so the filter silently emptied the table. Normalize BOTH sides to
+  // strings, and refuse to touch a row that is not a real array (a null hole during a
+  // company-switch re-render crashed with "Cannot read properties of undefined
+  // (reading '1')").
+  const filteredRows = companyFilter === '' ? rows : rows.filter(r => {
+    if (!r || !Array.isArray(r)) return false;
+    const comp = activeCompanies.find(c => String(c.id) === String(companyFilter));
+    return !!comp && String(r[1]) === String(comp.name);
+  });
 
   const scopedCompany = (name: string) => activeCompanies.find(c => c.name === name);
 
@@ -143,13 +153,14 @@ export default function RootTraReportsPanel({ companies, orders, translate: t, o
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map(r => {
-                  const name = String(r[1]);
+                {filteredRows.map((r, i) => {
+                  if (!r || !Array.isArray(r)) return null;
+                  const name = String(r[1] ?? '');
                   const comp = scopedCompany(name);
                   const isOpen = expanded === comp?.id;
                   const tinVerified = !!comp?.tinVerified;
                   return (
-                    <React.Fragment key={r[0]}>
+                    <React.Fragment key={String(r[0] ?? i)}>
                       <tr className="border-t border-gray-50 hover:bg-gray-50/50">
                         <td className="px-4 py-2.5 font-bold text-gray-900">{name}</td>
                         <td className="px-4 py-2.5 font-mono font-bold text-gray-700">{comp?.tinNumber || <span className="text-red-500">{t('No TIN')}</span>}</td>

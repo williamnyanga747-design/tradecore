@@ -6,6 +6,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-24] - 2026-09-12
+
+### Build 2026-09-08-24 — MULTI-DEVICE SCOPE & CRUD ALIGNMENT (SWITCH-ONLY-ON-CLICK + ARRAY-INDEX CRASH GUARDS)
+
+Store Management showed an empty table while the top bar displayed the active store ('MAJENGO SHOPS'), and the UI crashed with `TypeError: Cannot read properties of undefined (reading '1')` inside `Array.filter` during company scope switches.
+
+**Root causes**:
+1. Automatic company switching — the background role-scope sync effect force-rebound `currentCompanyId` from the session user's company on EVERY snapshot/flush collection change, desyncing the state value from the persisted `active_company_id` the top bar reads.
+2. Scope mismatch — the Store Management table compared `branch.companyId` against a possibly-different `currentCompanyId` state value, so the table filtered to zero rows while the header still showed the persisted active store.
+3. Bare array-index reads — `r[1]` in an `Array.filter`/`Array.map` predicate with no row guard crashed (`reading '1'`) if a row were null/hole; the same predicate also compared a company NAME to the dropdown's numeric company ID, silently emptying the report.
+
+**Fixes**:
+1. **EXPLICIT-SWITCH-ONLY company binding (Req 3)** — role-scope effect never auto-flips an already-bound valid company; it only auto-binds when nothing is bound (boot/role defaulting). Company switches happen ONLY on explicit UI clicks.
+2. **Store Management scope alignment (Req 4)** — the store table resolves the active company exactly like the top bar (`String(localStorage active_company_id)` → user `company_id`/`companyId` → `currentCompanyId`) and matches each store by its own `companyId` (via its branch as fallback) with loose string equality. Super Admin still sees all stores.
+3. **Defensive array-index guards (Req 5)** — null/malformed row guards (`if (!item) return false`) added to the store/branch scope filters and RootTraReportsPanel; the TRA company filter now compares company NAME (row `[1]`) to the selected company's NAME with `String()` coercion, fixing both the crash and the always-empty filtered report.
+4. **Verified present (builds 12/19/20/21)** — Add/Edit/Delete Store/Branch/Category/User already commit direct to MySQL (`v2_upsert_store`, `v2_upsert_branch`→`v2_upsert_store`, `v2_upsert_category`, `v2_upsert_user_account`) via the atomic diffed-delta flush (no localStorage-only persistence), and snapshots are assembled live from `stores`/`branches`/`categories`/`user_accounts` tables so Device B receives Device A's writes on refresh.
+
+**Acceptance**: adding a Store/Branch/Category/User writes straight to MySQL; other devices receive the rows live; a page refresh keeps the data (from MySQL, not IndexedDB); the Store Management table and the top bar always show the same active company; no `reading '1'` Array.filter crash during company switches.
+
+---
+
 ## [1.0.9-build-23] - 2026-09-12
 
 ### Build 2026-09-08-23 — SEARCH/FILTER CRASH-SAFETY (TOLOWERCASE NORMALIZATION)

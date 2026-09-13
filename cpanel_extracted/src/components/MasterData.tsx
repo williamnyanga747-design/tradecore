@@ -838,10 +838,36 @@ export default function MasterData({
       );
 
     case 'stores':
+      // BUILD 2026-09-08-24 (Req 4 — SCOPE ALIGNMENT): the Store Management table must
+      // match the TOP-BAR company scope. The top bar (header dropdown) resolves the active
+      // company from persisted localStorage first, then the session user. The old filter
+      // compared branch.companyId against raw currentCompanyId — when the two sources
+      // disaggregate (a background role-scope effect re-flipped the state value), the table
+      // rendered empty while the top bar still showed the persisted active store.
+      const activeCompanyId = String(
+        localStorage.getItem('active_company_id') ||
+        localStorage.getItem('company_id') ||
+        (currentUser as any)?.company_id ||
+        (currentUser as any)?.companyId ||
+        currentCompanyId ||
+        ''
+      );
+      const storeCompanyId = (st: any): string => {
+        if (!st) return '';
+        const own = st.company_id ?? st.companyId;
+        if (own != null && String(own) !== '' && String(own) !== 'none') return String(own);
+        const br = branches.find(b => b && sameId(b.id, st.branchId));
+        return br ? String((br as any).company_id ?? br.companyId ?? '') : '';
+      };
       const allowedBranches = branches
-        .filter(b => !b.isDeleted && (isSuperAdmin || sameId(b.companyId, currentCompanyId)))
+        .filter(b => b && !b.isDeleted && (isSuperAdmin || String((b as any).company_id ?? b.companyId ?? '') === activeCompanyId))
         .map(b => b.id);
-      const storeData = stores.filter(s => !s.isDeleted && allowedBranches.includes(s.branchId));
+      const storeData = stores.filter(s => {
+        // Defensive guard (Req 5): a null/malformed store row must never crash the filter.
+        if (!s || s.isDeleted) return false;
+        if (isSuperAdmin) return true;
+        return storeCompanyId(s) === activeCompanyId;
+      });
 
       return (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
