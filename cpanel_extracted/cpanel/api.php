@@ -1614,6 +1614,20 @@ try {
                 error_log('[TradeCore API] get_state blob failed: ' . $e->getMessage());
             }
         }
+        // BUILD 2026-09-08-30: when the blob doesn't exist yet (first flush not fired),
+        // still assemble from MySQL so branches/stores/categories/users/products are
+        // served even on a brand-new deployment where tradecore_system_state is empty.
+        if ($pdo) {
+            try {
+                $assembled = tcAssembleDynamicSnapshot($pdo, '', []);
+                if (count($assembled) > 0) {
+                    echo json_encode(["changed" => true, "server_ts" => $now, "version" => 0, "_version" => 0, "_assembled" => 1, "state" => $assembled]);
+                    exit();
+                }
+            } catch (Throwable $e) {
+                error_log('[TradeCore API] get_state fresh-assemble failed: ' . $e->getMessage());
+            }
+        }
         echo json_encode(["changed" => true, "server_ts" => $now, "version" => 0, "state" => ["products" => [], "users" => [], "companies" => []]]);
         exit();
     }
@@ -2203,6 +2217,24 @@ try {
                         }
                     }
                     unset($cu);
+                }
+
+                // 4b. MYSQL OVERLAY (BUILD 2026-09-08-30): before writing the blob,
+                // overlay branches/stores/categories from MySQL so the blob always
+                // contains current MySQL truth. This prevents a flush from a single
+                // client clobbering branches/stores/categories that another client
+                // wrote via the v2_* atomic endpoints.
+                if ($pdo) {
+                    try {
+                        $mysqlOverlay = tcAssembleDynamicSnapshot($pdo, '', []);
+                        foreach (['branches', 'stores', 'categories'] as $overlayKey) {
+                            if (!empty($mysqlOverlay[$overlayKey])) {
+                                $toPersist[$overlayKey] = $mysqlOverlay[$overlayKey];
+                            }
+                        }
+                    } catch (Throwable $eOverlay) {
+                        error_log('[TradeCore API] save_state MySQL overlay failed: ' . $eOverlay->getMessage());
+                    }
                 }
 
                 // 4. Auto-increment version (monotonic, never goes backward)

@@ -6,6 +6,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-30] - 2026-09-13
+
+### Build 2026-09-08-30 — DATA PERSISTENCE FIX (get_state blob-missing + save_state overlay)
+
+Data still disappeared on refresh after build 29. Root cause identified in the PHP `get_state` handler.
+
+**Root cause (Path B — blob missing)**: `get_state` for superadmin/global scope (`$companyId = ''`) always takes Path B (line 1555+), which reads from `tradecore_system_state` blob. If the blob row doesn't exist (first refresh after fresh deploy, or cleared blob), the code fell through to line 1617 returning `{"products":[],"users":[],"companies":[]}` WITHOUT calling `tcAssembleDynamicSnapshot`. Branches/stores/categories from MySQL were completely ignored.
+
+**Root cause (save_state blob overwrite)**: When the blob flush writes to `tradecore_system_state`, it only included what the client sent. Since DIRECT_SYNC_KEYS (branches/stores/categories) are excluded from the blob flush after build 28, the blob could be written WITHOUT these fields. On the next `get_state` read with an existing blob, the assembler ran at line 1609 and overlaid MySQL data — but if another client had written branches/stores to MySQL after the blob was last written, the stale blob could cause inconsistent reads.
+
+**Fixes**:
+1. `api.php` get_state Path B (~line 1625): Added fallback that calls `tcAssembleDynamicSnapshot($pdo, '', [])` when the blob row doesn't exist, so MySQL-assembled data is served even on first load
+2. `api.php` save_state (~line 2228): Added MySQL overlay step — before writing the blob, overlay `branches`, `stores`, `categories` from `tcAssembleDynamicSnapshot` so the blob always contains current MySQL truth
+
+**Build markers**: `2026-09-08-30`, `v1.0.9-30`
+
+---
+
 ## [1.0.9-build-29] - 2026-09-13
 
 ### Build 2026-09-08-29 — CONSOLE SPAM FIX + INFINITE SYNC LOOP FIX
