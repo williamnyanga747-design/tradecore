@@ -1614,7 +1614,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-24');
+    console.log('[TradeCore] build 2026-09-08-25');
   }, []);
 
   useEffect(() => {
@@ -4186,6 +4186,24 @@ export default function App() {
         // atomic endpoints. Diffed delta (create/edit/delete), never the state blob, so
         // there is NO 13.4KB flush + version bump + 409 Conflict for these records.
         if (DIRECT_SYNC_KEYS.has(key)) {
+          // BUILD 2026-09-08-25 (Req 1c — DYNAMIC-SCOPE SUBMISSION GATE): resolve the active
+          // company AT THE MOMENT OF SUBMISSION (never a stale form closure). If nothing is
+          // bound (no active_company_id in storage, no session user company, empty
+          // currentCompanyId) AND the changed records carry no company_id of their own,
+          // posting would hit the server's degenerate-scope gate or write into a phantom
+          // '' scope — a record no device can ever read. Reject with a clear UI toast so a
+          // SuperAdmin switching companies mid-form cannot silently lose a CRUD write.
+          // companies self-scope by id; categories self-scope via their 'co_<id>:<name>'
+          // string prefix — neither needs the flush-level scope.
+          if (key !== 'companies' && key !== 'categories' && companyId === '') {
+            const rejectDelta = directDeltaParts((current as any)[key], val);
+            const hasRecScope = Array.isArray(rejectDelta.upsert) && rejectDelta.upsert.some((rec: any) => !!rec && !!(rec.company_id ?? rec.companyId));
+            if (!hasRecScope) {
+              console.error('[Direct MySQL] ' + key + ' mutation blocked: no active company scope and no per-record company_id.');
+              toast.error('Save blocked: no active company selected. Pick a company in the top bar and retry.');
+              continue;
+            }
+          }
           // BUILD 2026-09-08-20 (Direct MySQL CRUD): categories are stored in state as
           // company-scoped STRING keys ('co_<companyId>:<name>'), NOT id-objects — the
           // id-keyed directDeltaParts diff would never see a change. Diff the raw string

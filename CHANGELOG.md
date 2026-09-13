@@ -6,6 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-25] - 2026-09-12
+
+### Build 2026-09-08-25 — SUPERADMIN MULTI-COMPANY CRUD SCOPE PERSISTENCE (DYNAMIC BINDING + REJECT INVALID SCOPE + CRASH-PROOFED INDEX READS)
+
+A SuperAdmin working across multiple companies could submit a store/branch/category/user CRUD write while no active company was bound to the current session — the write fell through to a phantom `''` scope (a record no device could ever read) or was dropped by the server's degenerate-scope gate with no user feedback.
+
+**Fixes**:
+1. **Dynamic active-company submission gate (Req 1c)** — the atomic direct-MySQL flush now resolves the active company **at submission time** (`getActiveCompanyScope(currentCompanyId, currentUser)`, dynamized, not a stale form closure). If no scope is bound **and** the changed records carry no `company_id` of their own, the post is rejected with `console.error` + a clear red toast (`Save blocked: no active company selected. Pick a company in the top bar and retry.`) instead of silently producing an invisible/scoped-to-`''` row. `companies` (self-scoped by id) and `categories` (self-scoped by their `co_<id>:<name>` prefix) are exempt.
+2. **Array-index crash removal (Req 2)** — full-source audit of every `[1]` tuple-index read (`filter`/`map`/`reduce`/`match`/`split`/`Object.entries`) across `src/`: only provably-safe guarded sites remain (`if (m)`, `if (liveMatch)`, string-true `split`, always-array `Object.entries().sort`). The last unguarded `r[1]` in `Array.filter` (RootTraReportsPanel) was already fixed in build 24, and `v2ListCategories` now null/hole-guards each row *before* reading index `1` (`trimmed === ''` early-return) — reconciling the exact 'reading 1' crash the legacy deployed bundle showed.
+3. **Verified present — optimistic pin (Req 3)** — `applyData` overlays in-flight `directDeltaGuards` snapshots over stale remote arrays (App.tsx 2306–2316, independent of `isRemoteApply`), and company-switch uses `waitForDirectDeltas`; a background poll/SSE/Global-View fetch arriving mid-delta cannot wipe a just-added local record before MySQL settles.
+4. **Verified present — universal delete + scope injection (Req 4)** — `v2_delete_store` (`UPDATE stores SET deleted_at=? WHERE id=? AND company_id=?`), `v2_delete_branch`→`v2_delete_store`, `v2_delete_product`, `v2_delete_category`, `v2_delete_user_account` (with `v2_delete_user` alias) all soft-delete under the target `company_id` behind `tcGuardUserMutation` (super-admin gate, `root_mandate` immunity), `tcBumpMainStateVersion`, blob merge + audit trail. Every `v2UpsertStore/Branch/Category/UserAccount` payload already injects `company_id` via the `companyKey()` spread (`normalizedPersistence.ts` 205–330).
+
+**Acceptance**: SuperAdmin CRUD always resolves/persists to the exact active company at the live submission moment; an invalid/unbound scope shows a toast and blocks instead of silently writing to `''`; `reading '1'` is impossible on the current bundle; background sync can never revert a pending local write; deletes are company-scoped and audit-logged.
+
+---
+
 ## [1.0.9-build-24] - 2026-09-12
 
 ### Build 2026-09-08-24 — MULTI-DEVICE SCOPE & CRUD ALIGNMENT (SWITCH-ONLY-ON-CLICK + ARRAY-INDEX CRASH GUARDS)

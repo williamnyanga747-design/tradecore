@@ -286,13 +286,18 @@ export async function v2ListCategories(companyId?: string | number): Promise<Cat
   return res.list
     .filter((c): c is string => typeof c === 'string' && c.trim() !== '')
     .map((key) => {
+      // BUILD 2026-09-08-25 (Req 2 — INDEX GUARD): guard the row BEFORE reading tuple
+      // indexes — a null/hole row would throw "Cannot read properties of undefined
+      // (reading '1')" at `m[1]`. exec() on a non-string is also guarded.
+      const trimmed = typeof key === 'string' ? key.trim() : '';
+      if (trimmed === '') return { key: String(key ?? ''), companyId: sv(companyId) || '1', name: String(key ?? '') };
       // BUILD 2026-09-08-18: company ids are STRING UUIDs — parseInt mints NaN. Keep the
       // raw string from the "co_<id>:<name>" prefix so Category.companyId is the actual
       // company the category belongs to (used for ranking + scoping).
-      const m = /^co_([^:]+):(.+)$/s.exec(key.trim());
+      const m = /^co_([^:]+):(.+)$/s.exec(trimmed);
       return m
-        ? { key, companyId: sv(m[1]) || '1', name: m[2] }
-        : { key, companyId: sv(companyId) || '1', name: key.trim() };
+        ? { key: trimmed, companyId: sv(m[1]) || '1', name: m[2] }
+        : { key: trimmed, companyId: sv(companyId) || '1', name: trimmed };
     });
 }
 
