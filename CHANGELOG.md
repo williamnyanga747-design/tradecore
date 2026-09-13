@@ -6,6 +6,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and ver
 
 ---
 
+## [1.0.9-build-28] - 2026-09-13
+
+### Build 2026-09-08-28 — DATA RESURRECTION FIX + V2 TIMEOUT FIX
+
+Two issues reported after build 27:
+1. **Deleted data reappearing** ("data the nyuma zilizofutika zimerudi") — previously deleted branches/stores/categories were resurrecting on refresh
+2. **Different browsers showing different data** ("browser inatoa data tofauti ingawa system ni moja") — cross-device sync broken
+3. **AbortError on v2 list endpoints** — `v2_list_companies` and `v2_list_branches` timing out at 12s
+
+**Root cause (data resurrection)**: Build 27 added DIRECT_SYNC_KEYS (branches/stores/categories) to `flushDirtyKeysRef` and `dirtyValuesRef`, meaning these collections were being sent BOTH through the direct MySQL v2_* endpoints AND the state blob via `save_state`. When a 409 Conflict occurred, the rebase logic merged local state over server state using last-write-wins — resurrecting deleted items that existed in the stale local blob but had been deleted on the server.
+
+**Root cause (AbortError)**: The `v2Post` transport had a 12-second timeout. On a slow server, `v2_list_companies` and `v2_list_branches` were exceeding this timeout, causing the boot reconciliation to fail and falling back to stale blob data.
+
+**Fixes**:
+1. **`src/App.tsx:4057–4060`** — Reverted DIRECT_SYNC_KEYS inclusion in `flushDirtyKeysRef`. These collections now commit ONLY through v2_* atomic MySQL endpoints, never through the state blob. The comment was updated to reflect this.
+2. **`src/App.tsx:4063–4066`** — Reverted DIRECT_SYNC_KEYS inclusion in `dirtyValuesRef`. Same rationale as above.
+3. **`src/utils/normalizedPersistence.ts:154`** — Increased `v2Post` timeout from 12s (12000ms) to 30s (30000ms) to handle slow server responses without aborting.
+
+---
+
 ## [1.0.9-build-26] - 2026-09-12
 
 ### Build 2026-09-08-26 — UNDEFINED STOCK CRASH FIX (`reading '1'`)

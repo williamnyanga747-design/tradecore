@@ -1614,7 +1614,7 @@ export default function App() {
   useEffect(() => {
     if ((window as any).__TRADECORE_BUILD_LOGGED__) return;
     (window as any).__TRADECORE_BUILD_LOGGED__ = true;
-    console.log('[TradeCore] build 2026-09-08-27');
+    console.log('[TradeCore] build 2026-09-08-28');
   }, []);
 
   useEffect(() => {
@@ -4054,15 +4054,15 @@ export default function App() {
     // and avoid last-write-wins resurrection (e.g. Device B's stale blob reviving a deleted product).
     // IMPORTANT: auditTrails is excluded from dirty tracking — it is database-only and not
     // part of the sync blob. Including it causes an infinite 78->0 loop.
-    // DIRECT_SYNC_KEYS are ALSO included in blob flush as a reliability backstop: if the
-    // direct MySQL handler fails silently (network/auth), the blob flush ensures the data
-    // persists and is available on the next snapshot assembly.
-    try { Object.keys(updatedFields || {}).forEach(k => { if (!NON_SYNCED_KEYS.has(k)) { flushDirtyKeysRef.current.add(k); stampOptimisticWrite(k); } }); } catch {}
+    // DIRECT_SYNC_KEYS are EXCLUDED from blob flush: these collections commit ONLY through
+    // the v2_* atomic MySQL endpoints. Including them in the state blob causes a 409 Conflict
+    // rebase that resurrects deleted items via last-write-wins merge.
+    try { Object.keys(updatedFields || {}).forEach(k => { if (!NON_SYNCED_KEYS.has(k) && !DIRECT_SYNC_KEYS.has(k)) { flushDirtyKeysRef.current.add(k); stampOptimisticWrite(k); } }); } catch {}
     // Snapshot the exact values so a 409 rebase can replay the user's edits on top
     // of the fresh server blob (data survives even if dbStateRef gets overwritten).
     try {
       Object.keys(updatedFields || {}).forEach((k: string) => {
-        if (!NON_SYNCED_KEYS.has(k)) (dirtyValuesRef.current as any)[k] = (updatedFields as any)[k];
+        if (!NON_SYNCED_KEYS.has(k) && !DIRECT_SYNC_KEYS.has(k)) (dirtyValuesRef.current as any)[k] = (updatedFields as any)[k];
       });
     } catch {}
     

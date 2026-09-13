@@ -135,7 +135,7 @@ async function resolveApiUrl(): Promise<string> {
 
 /**
  * Targeted atomic POST to the v2 dispatch. Mirrors apiPost's transport: JSON body,
- * operator + bearer headers, 12s timeout, outer-signal ignore (writes must finish).
+ * operator + bearer headers, 30s timeout, outer-signal ignore (writes must finish).
  */
 async function v2Post<T>(action: string, payload: Record<string, unknown>): Promise<T | null> {
   try {
@@ -151,7 +151,7 @@ async function v2Post<T>(action: string, payload: Record<string, unknown>): Prom
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
     try {
       const response = await fetch(url, {
         method: 'POST',
