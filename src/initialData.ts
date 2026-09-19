@@ -152,7 +152,8 @@ export const defaultHomepageContent: HomepageContent = {
     { q: 'Is my business data secure?', a: 'Yes. All passwords are hashed with Bcrypt, every database call uses prepared statements, connections are encrypted, and every action is written to a tamper-proof audit trail.' },
     { q: 'Can I try TradeCore before paying?', a: 'Absolutely. Use the "Start 1-Day Free Demo" button to explore the full platform with a demo company, store and sample data — no payment required.' },
     { q: 'Do you provide training and support?', a: 'Yes. We provide onboarding guidance and responsive support by phone or email. Enterprise customers also get a dedicated account manager.' }
-  ]
+  ],
+  sponsors: []
 };
 
 export const defaultSiteConfig: SiteConfig = {
@@ -346,7 +347,7 @@ export const defaultStores: Store[] = [
 ];
 
 export const defaultUsers: User[] = [
-  { id: 4, username: 'root_mandate', password: 'sha256$83d902232c93a96990cd3013fb694df1b3e3031e6afb8fb1e402f0478c0de7d4', role: 'Super Admin', name: 'Root Mandate', email: 'globaltradecore@gmail.com', companyId: null, branchId: null, storeId: null, firstLogin: true, status: 'Active', isRoot: true },
+  { id: 4, username: 'root_mandate', password: 'sha256$5811b73dea1a2b5991ab4a0e887b70604d3bf745716d66059884b2a0ff24ba46', role: 'Super Admin', name: 'Root Mandate', email: 'globaltradecore@gmail.com', companyId: null, branchId: null, storeId: null, firstLogin: true, status: 'Active', isRoot: true },
   { id: 5, username: 'superadmin', password: 'sha256$daa62f6fcc24de4977b4c73eb5cf2f78e56950e2e0c4de2316399a09a1139890', role: 'Super Admin', name: 'Global Super Admin', email: 'superadmin@tradecore.com', companyId: null, branchId: null, storeId: null, firstLogin: true, status: 'Active' },
   { id: 1, username: 'admin', password: 'sha256$afe1b7a51c5b5201f3c79f903de5a513172de6760d8ae3be64edf7959c14d3ec', role: 'Admin', name: 'Alpha Manager', email: 'admin@tradecore.com', companyId: 1, branchId: null, storeId: null, firstLogin: true, status: 'Active' },
   { id: 2, username: 'retailer', password: 'sha256$42f164df6191123a8a2d18507b2b54fe78782349aee758230557c95905a7a776', role: 'Retailer', name: 'Sarah Chen', email: 'retail@tradecore.com', companyId: 1, branchId: 1, storeId: 1, firstLogin: true, status: 'Active' },

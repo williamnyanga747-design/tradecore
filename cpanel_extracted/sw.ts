@@ -1,4 +1,4 @@
-﻿/// <reference lib="webworker" />
+/// <reference lib="webworker" />
 
 // TradeCore custom Service Worker (injectManifest mode).
 //
@@ -356,8 +356,8 @@ self.addEventListener('unhandledrejection', (event) => {
     // ---------------------------------------------------------------------------
     try {
       setCatchHandler(async ({ event }) => {
-        if (event && 'request' in event && event.request) {
-          const req = event.request;
+        if (event && 'request' in (event as any) && (event as any).request) {
+          const req = (event as any).request as Request;
           const dest = req.destination || ((req as any).mode === 'navigate' ? 'document' : '');
           if (dest === 'document' || dest === '' || !req.destination) {
             const cache = await caches.open('html-cache').catch(() => null);

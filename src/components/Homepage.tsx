@@ -3,10 +3,10 @@ import {
   Zap, ArrowRight, LogIn, UserPlus, BarChart3, Package, ShoppingCart, FileText, ShieldCheck, Globe2, Phone, Mail,
   LayoutDashboard, Boxes, Wallet, Users, MessageSquare, ChevronDown, ChevronLeft, ChevronRight, Send,
   CheckCircle2, Star, Target, Heart, Lightbulb, Scale, Cpu, Layers, ClipboardCheck, Lock, TrendingUp, Eye,
-  Sparkles, Quote, Store
+  Sparkles, Quote, Store, Handshake, ExternalLink, Globe
 } from 'lucide-react';
 import { getPublicTheme, PublicTheme, GoldenTopLine, PublicThemeToggle } from '../utils/publicTheme';
-import { Company, MarketplaceProduct, HomepageContent, SiteConfig } from '../types';
+import { Company, MarketplaceProduct, HomepageContent, SiteConfig, Sponsor } from '../types';
 import { isProductVisible } from './marketplace/MarketplaceShared';
 import { defaultHomepageContent } from '../initialData';
 
@@ -41,11 +41,26 @@ interface HomepageProps {
   onGoMarketplace?: (path: string) => void;
   homepageContent?: HomepageContent;
   siteConfig?: SiteConfig;
+  sponsors?: Sponsor[];
 }
 
 type HomeTab = 'overview' | 'features' | 'pricing' | 'about' | 'faq';
 
-export default function Homepage({ translate: t, theme, onToggleTheme, onRegister, onLogin, onStartDemo, onSubmitContact, marketplaceCompanies = [], marketplaceProducts = [], onGoMarketplace, homepageContent, siteConfig }: HomepageProps) {
+export default function Homepage({
+  translate: t,
+  theme,
+  onToggleTheme,
+  onRegister,
+  onLogin,
+  onStartDemo,
+  onSubmitContact,
+  marketplaceCompanies = [],
+  marketplaceProducts = [],
+  onGoMarketplace,
+  homepageContent,
+  siteConfig,
+  sponsors = []
+}: HomepageProps) {
   const th = getPublicTheme(theme);
   const milk = theme === 'milk';
   const content = homepageContent || defaultHomepageContent;
@@ -55,6 +70,14 @@ export default function Homepage({ translate: t, theme, onToggleTheme, onRegiste
     const Icon = CONTENT_ICONS[name] || Package;
     return <Icon className={cls} />;
   };
+
+  // Active Sponsors for Homepage display
+  const activeSponsors = React.useMemo(() => {
+    const list = (sponsors && sponsors.length > 0 ? sponsors : content.sponsors) || [];
+    return list
+      .filter((s: Sponsor) => (s.is_active === 1 || s.is_active === true || s.is_active === undefined) && !s.deleted_at)
+      .sort((a: Sponsor, b: Sponsor) => (a.sort_order || 0) - (b.sort_order || 0));
+  }, [sponsors, content.sponsors]);
 
   const [tab, setTab] = useState<HomeTab>('overview');
   const [faqOpen, setFaqOpen] = useState<number | null>(0);
@@ -260,6 +283,122 @@ export default function Homepage({ translate: t, theme, onToggleTheme, onRegiste
             </div>
           </section>
 
+          {/* Wadhamini Rasmi / Official Sponsors */}
+          {activeSponsors.length > 0 && (
+            <section className="max-w-6xl mx-auto px-5 pb-12">
+              {sectionTitle(
+                t('Wadhamini Rasmi / Official Sponsors'),
+                t('Wadhamini na Washirika Wetu'),
+                t('Mashirika na taasisi za kibiashara zinazowezesha na kukuza biashara za Tanzania kupitia mfumo wa Global TradeCore.')
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
+                {activeSponsors.map((sp: Sponsor) => {
+                  const tier = (sp.tier || 'gold').toLowerCase();
+                  const isPlatinum = tier === 'platinum';
+                  const isGold = tier === 'gold';
+                  const isSilver = tier === 'silver';
+
+                  let borderClass = 'border-amber-400/70';
+                  let tierBadge = 'bg-amber-100 text-amber-800 border-amber-300';
+                  let tierLabel = 'Gold Mdhamini';
+
+                  if (isPlatinum) {
+                    borderClass = 'border-2 border-amber-500 shadow-md sm:col-span-2 lg:col-span-1 bg-gradient-to-b from-amber-50/70 to-white';
+                    tierBadge = 'bg-gradient-to-r from-amber-500 to-yellow-500 text-gray-900 border-amber-400 font-black';
+                    tierLabel = 'Platinum Mdhamini';
+                  } else if (isGold) {
+                    borderClass = 'border-amber-400/80';
+                    tierBadge = 'bg-amber-100 text-amber-800 border-amber-300';
+                    tierLabel = 'Gold Mdhamini';
+                  } else if (isSilver) {
+                    borderClass = 'border-slate-300';
+                    tierBadge = 'bg-slate-100 text-slate-700 border-slate-300';
+                    tierLabel = 'Silver Mdhamini';
+                  } else {
+                    borderClass = 'border-orange-300';
+                    tierBadge = 'bg-orange-100 text-orange-800 border-orange-300';
+                    tierLabel = 'Bronze Mdhamini';
+                  }
+
+                  const hasUrl = !!sp.website_url;
+                  const href = hasUrl ? (sp.website_url!.startsWith('http') ? sp.website_url! : `https://${sp.website_url!}`) : undefined;
+
+                  const cardBody = (
+                    <div className={`${th.featureCard} ${borderClass} rounded-2xl p-6 flex flex-col justify-between items-center text-center transition-all duration-200 hover:-translate-y-1 relative overflow-hidden group shadow-xs h-full`}>
+                      {/* Tier Badge */}
+                      <div className="w-full flex justify-between items-center mb-3">
+                        <span className={`inline-flex items-center gap-1 text-[9px] uppercase tracking-wider font-extrabold px-2.5 py-0.5 rounded-full border ${tierBadge}`}>
+                          <Handshake className="w-2.5 h-2.5" />
+                          {tierLabel}
+                        </span>
+                        {hasUrl && (
+                          <span className="text-gray-400 group-hover:text-amber-600 transition">
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Logo or Fallback Name */}
+                      <div className={`${isPlatinum ? 'h-24 max-w-[220px]' : 'h-18 max-w-[160px]'} w-full flex items-center justify-center my-3 transition-transform duration-200 group-hover:scale-105`}>
+                        {sp.logo_url ? (
+                          <img
+                            src={sp.logo_url}
+                            alt={sp.name}
+                            className="max-h-full max-w-full object-contain filter drop-shadow-xs"
+                            onError={(e) => {
+                              (e.target as HTMLElement).style.display = 'none';
+                            }}
+                          />
+                        ) : (
+                          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center font-black text-amber-600 text-2xl">
+                            {(sp.name || 'S').charAt(0)}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Name & Description */}
+                      <div className="mt-2 w-full">
+                        <div className={`font-black text-sm ${th.strongText} group-hover:text-amber-600 transition truncate`}>
+                          {sp.name}
+                        </div>
+                        {sp.description && (
+                          <p className={`text-[11px] ${th.textMuted} font-medium mt-1 line-clamp-2 leading-relaxed`}>
+                            {sp.description}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Website URL footer */}
+                      {hasUrl && (
+                        <div className="mt-4 pt-2.5 border-t border-gray-100 w-full flex items-center justify-center gap-1 text-[11px] font-bold text-amber-600 group-hover:underline">
+                          <Globe className="w-3 h-3" />
+                          <span className="truncate max-w-[180px]">{sp.website_url!.replace(/^https?:\/\//, '')}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+
+                  if (hasUrl) {
+                    return (
+                      <a
+                        key={sp.id}
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block h-full cursor-pointer focus:outline-none"
+                        title={`${sp.name} - ${sp.website_url}`}
+                      >
+                        {cardBody}
+                      </a>
+                    );
+                  }
+
+                  return <div key={sp.id} className="h-full">{cardBody}</div>;
+                })}
+              </div>
+            </section>
+          )}
+
           {/* Corporate profile card + mission */}
           <section className="max-w-6xl mx-auto px-5 pb-12">
             <div className={`${th.missionCard} ${th.cardBorder} rounded-2xl p-7 md:p-9 grid md:grid-cols-2 gap-6 items-center`}>
@@ -351,7 +490,7 @@ export default function Homepage({ translate: t, theme, onToggleTheme, onRegiste
             {visibleFeatures.map(f => (
               <div key={f.title} className={`${th.card} ${th.cardBorder} rounded-2xl p-5 hover:-translate-y-1 transition duration-200 flex flex-col`}>
                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-3 ${milk ? 'bg-amber-100 text-amber-700' : 'bg-amber-400/15 text-amber-300 border border-amber-400/30'}`}>
-                  <f.icon className="w-5 h-5" />
+                  {contentIcon(f.icon, 'w-5 h-5')}
                 </div>
                 <div className={`text-[9px] font-black uppercase tracking-widest ${th.brandText}`}>{f.tag}</div>
                 <div className={`text-sm font-black mt-1 ${th.strongText}`}>{f.title}</div>

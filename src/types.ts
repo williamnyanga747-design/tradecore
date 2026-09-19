@@ -529,6 +529,25 @@ export type CurrencyType = 'USD' | 'TZS' | 'KES' | 'UGD' | 'UGX' | 'RWF' | 'EUR'
 
 export type LanguageType = 'en' | 'sw' | 'fr' | 'es';
 
+export type SponsorTier = 'platinum' | 'gold' | 'silver' | 'bronze';
+
+export interface Sponsor {
+  id: string;
+  sponsor_id?: string;
+  company_id?: string | null;
+  name: string;
+  logo_url?: string;
+  website_url?: string;
+  description?: string;
+  tier: SponsorTier;
+  is_active: number | boolean;
+  sort_order: number;
+  status?: string;
+  created_at?: number;
+  updated_at?: number;
+  deleted_at?: number | null;
+}
+
 export interface HomepageContent {
   heroTitle: string;
   heroSubtitle: string;
@@ -544,6 +563,7 @@ export interface HomepageContent {
   coreValues: { icon: string; title: string; desc: string }[];
   testimonials: { name: string; role: string; quote: string; stars: number }[];
   faqItems: { q: string; a: string }[];
+  sponsors?: Sponsor[];
 }
 
 export interface SiteConfig {
@@ -573,6 +593,8 @@ export interface Settings {
   siteConfig?: SiteConfig; // Global site branding & contact info (ROOT editor)
   marketplaceRegions?: string[]; // Editable Tanzania region list (ROOT editor)
   homepageMeta?: { title?: string; description?: string }; // SEO meta for the public homepage
+  sponsors?: Sponsor[];
+  globalSponsors?: Sponsor[];
   // --- New billing model (ROOT_MANDATE editable) ---
   currencies?: Currency[]; // owner-defined exchange rates (TZS base)
   subscriptionPlans?: TradeSubscriptionPlan[]; // direct/commission plans

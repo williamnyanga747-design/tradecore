@@ -15,7 +15,7 @@ class ErrorBoundary extends Component<{children: React.ReactNode}, {error: Error
           <h2 style={{ color: '#fbbf24' }}>TradeCore crashed — open DevTools Console</h2>
           <pre style={{ whiteSpace: 'pre-wrap', color: '#f87171' }}>{this.state.error.message}</pre>
           <pre style={{ whiteSpace: 'pre-wrap', color: '#94a3b8', fontSize: 11 }}>{this.state.error.stack}</pre>
-          <button onClick={() => { localStorage.clear(); caches.keys().then(n => n.forEach(k => caches.delete(k))).then(() => location.reload()); }} style={{ marginTop: 16, padding: '8px 16px', background: '#c41e3a', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+          <button onClick={() => { localStorage.clear(); if ('caches' in window) { caches.keys().then(n => n.forEach(k => caches.delete(k))).catch(() => {}).finally(() => location.reload()); } else { location.reload(); } }} style={{ marginTop: 16, padding: '8px 16px', background: '#c41e3a', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
             Clear All Cache &amp; Reload
           </button>
         </div>
@@ -27,10 +27,13 @@ class ErrorBoundary extends Component<{children: React.ReactNode}, {error: Error
 }
 
 window.onerror = (msg, src, line, col, err) => {
-  console.error('[TradeCore Global Error]', msg, err);
+  console.warn('[TradeCore Global Error]', msg, err);
 };
 window.onunhandledrejection = (e) => {
-  console.error('[TradeCore Unhandled]', e.reason);
+  try {
+    e?.preventDefault?.();
+  } catch {}
+  console.warn('[TradeCore Unhandled]', e?.reason);
 };
 
 installSafeStorage();

@@ -215,13 +215,34 @@ function tcEnsureNormalizedTables($pdo) {
         // ONLY after a successful password change), 30-minute expiry. This table is NOT part of
         // the state blob — full-state flushes / 409 rebases can never overwrite a token.
         $pdo->exec("CREATE TABLE IF NOT EXISTS password_reset_tokens (id VARCHAR(64) PRIMARY KEY, token_hash CHAR(64) NOT NULL, user_id VARCHAR(64) NOT NULL, company_id VARCHAR(64) DEFAULT NULL, email VARCHAR(190) NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, consumed TINYINT(1) NOT NULL DEFAULT 0, UNIQUE KEY uniq_prt_hash (token_hash), INDEX idx_prt_hash_consumed (token_hash, consumed)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // Sponsors / Wadhamini table (Build 08-20 - Tanzaniatradecore.co.tz)
+        $pdo->exec("CREATE TABLE IF NOT EXISTS sponsors (
+          id VARCHAR(36) PRIMARY KEY,
+          sponsor_id VARCHAR(36) UNIQUE,
+          company_id VARCHAR(36) NULL COMMENT 'NULL=global homepage, co_xxx=specific company',
+          name VARCHAR(255) NOT NULL,
+          logo_url VARCHAR(500) NULL,
+          website_url VARCHAR(500) NULL,
+          description TEXT NULL,
+          tier ENUM('platinum','gold','silver','bronze') DEFAULT 'gold',
+          is_active TINYINT(1) DEFAULT 1,
+          sort_order INT DEFAULT 0,
+          status VARCHAR(20) DEFAULT 'ACTIVE',
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          deleted_at BIGINT NULL,
+          INDEX idx_company (company_id),
+          INDEX idx_active_sort (is_active, sort_order)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
         // BUILD 2026-09-08-17: legacy schemas (e.g. 001_multi_store_location.sql stores,
         // and the deployed companies table) defined created_at/updated_at as DATETIME/TIMESTAMP
         // while the ENTIRE stack writes BIGINT epoch-seconds ($now = time()). An epoch int like
         // 1789066134 into a DATETIME column dies with 'SQLSTATE[22007]: 1292 Incorrect datetime
         // value for column created_at'. Detect such columns, convert existing string rows to
         // epoch-seconds, then MODIFY to BIGINT so the epoch contract holds on every table.
-        tcEnsureEpochTimestamps($pdo, ['companies', 'stores', 'stock_categories', 'products', 'user_accounts', 'audit_trails']);
+        tcEnsureEpochTimestamps($pdo, ['companies', 'stores', 'stock_categories', 'products', 'user_accounts', 'audit_trails', 'sponsors']);
         $done = true;
     } catch (Throwable $e) {
         error_log('[TradeCore API] tcEnsureNormalizedTables failed: ' . $e->getMessage());
@@ -808,6 +829,22 @@ function tcAssembleDynamicSnapshot($pdo, $companyId = '', $data = []) {
         } catch (Throwable $e) { error_log('[TradeCore API] assemble ' . $tbl . ' failed: ' . $e->getMessage()); }
     }
 
+    // sponsors / wadhamini (Build 08-20 - Tanzaniatradecore.co.tz)
+    try {
+        if ($scope !== '') {
+            $stSp = $pdo->prepare("SELECT * FROM sponsors WHERE (company_id=:cid OR company_id IS NULL) AND deleted_at IS NULL AND is_active=1 ORDER BY sort_order ASC");
+            $stSp->execute([':cid' => (string)$scope]);
+            $data['sponsors'] = $stSp->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } else {
+            $stSp = $pdo->query("SELECT * FROM sponsors WHERE deleted_at IS NULL AND is_active=1 ORDER BY sort_order ASC");
+            $data['sponsors'] = $stSp ? ($stSp->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        }
+        $stGSp = $pdo->query("SELECT * FROM sponsors WHERE company_id IS NULL AND deleted_at IS NULL AND is_active=1 ORDER BY sort_order ASC");
+        $data['globalSponsors'] = $stGSp ? ($stGSp->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+    } catch (Throwable $eSp) {
+        error_log('[TradeCore API] assemble sponsors failed: ' . $eSp->getMessage());
+    }
+
     $data['_assembled'] = 1;
     return $data;
 }
@@ -823,6 +860,146 @@ function tcBumpMainStateVersion($pdo) {
     try {
         $pdo->prepare("UPDATE tradecore_system_state SET version=COALESCE(version,0)+1, updated_at=NOW() WHERE doc_key='main_state'")->execute();
     } catch (Throwable $e) { error_log('[TradeCore API] tcBumpMainStateVersion failed: ' . $e->getMessage()); }
+}
+
+if (!function_exists('getPDO')) {
+    function getPDO() {
+        global $pdo;
+        if ($pdo instanceof PDO) return $pdo;
+        try {
+            $dbCreds = @include(__DIR__ . '/config/db.php');
+            if (!is_array($dbCreds)) $dbCreds = @include(dirname(__DIR__, 2) . '/config/db.php');
+            if (!is_array($dbCreds)) $dbCreds = ['host'=>(getenv('TC_DB_HOST')?:'localhost'),'name'=>(getenv('TC_DB_NAME')?:'tanzatrade_tradecore_erp'),'user'=>(getenv('TC_DB_USER')?:'tanzatrade_tanzatrade'),'pass'=>(getenv('TC_DB_PASS')?:'')];
+            $pdo = new PDO(
+                "mysql:host=" . $dbCreds['host'] . ";dbname=" . $dbCreds['name'] . ";charset=utf8mb4",
+                $dbCreds['user'],
+                $dbCreds['pass'],
+                [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false]
+            );
+            return $pdo;
+        } catch (Throwable $e) {
+            error_log('[getPDO] ' . $e->getMessage());
+            return null;
+        }
+    }
+}
+
+// SPONSORS / WADHAMINI ATOMIC BACKEND HANDLERS (Build 08-20 - Tanzaniatradecore.co.tz)
+function v2_upsert_sponsor($data) {
+    $pdo = function_exists('getPDO') ? getPDO() : null;
+    if (!$pdo) {
+        global $pdo;
+    }
+    if (!$pdo) return ['success' => false, 'error' => 'Database connection failed'];
+    try {
+        $rawId = $data['id'] ?? $data['sponsor_id'] ?? null;
+        $id = $rawId ? (string)$rawId : bin2hex(random_bytes(18));
+        $name = trim((string)($data['name'] ?? ''));
+        if ($name === '') throw new Exception('name required');
+        $company_id = (isset($data['company_id']) && $data['company_id'] !== '' && $data['company_id'] !== null) ? (string)$data['company_id'] : null;
+        $logo = (string)($data['logo_url'] ?? '');
+        $website = (string)($data['website_url'] ?? '');
+        $description = (string)($data['description'] ?? '');
+        $tier = strtolower((string)($data['tier'] ?? 'gold'));
+        if (!in_array($tier, ['platinum', 'gold', 'silver', 'bronze'])) $tier = 'gold';
+        $sort = (int)($data['sort_order'] ?? 0);
+        $active = (isset($data['is_active']) && ($data['is_active'] === 0 || $data['is_active'] === '0' || $data['is_active'] === false)) ? 0 : 1;
+        $now = time();
+
+        $sql = "INSERT INTO sponsors (id, sponsor_id, company_id, name, logo_url, website_url, description, tier, is_active, sort_order, status, created_at, updated_at, deleted_at)
+                VALUES (:id, :id, :cid, :name, :logo, :web, :desc, :tier, :active, :sort, 'ACTIVE', :now, :now, NULL)
+                ON DUPLICATE KEY UPDATE
+                    name = VALUES(name),
+                    logo_url = VALUES(logo_url),
+                    website_url = VALUES(website_url),
+                    description = VALUES(description),
+                    tier = VALUES(tier),
+                    is_active = VALUES(is_active),
+                    sort_order = VALUES(sort_order),
+                    status = 'ACTIVE',
+                    updated_at = :now2,
+                    deleted_at = NULL";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':id' => $id,
+            ':cid' => $company_id,
+            ':name' => $name,
+            ':logo' => $logo,
+            ':web' => $website,
+            ':desc' => $description,
+            ':tier' => $tier,
+            ':active' => $active,
+            ':sort' => $sort,
+            ':now' => $now,
+            ':now2' => $now,
+        ]);
+
+        if (function_exists('tcBumpMainStateVersion')) tcBumpMainStateVersion($pdo);
+        if (function_exists('tcBlobMerge')) {
+            try {
+                $rowMerge = [
+                    'id' => $id, 'sponsor_id' => $id, 'company_id' => $company_id,
+                    'name' => $name, 'logo_url' => $logo, 'website_url' => $website,
+                    'description' => $description, 'tier' => $tier, 'is_active' => $active,
+                    'sort_order' => $sort, 'status' => 'ACTIVE', 'created_at' => $now,
+                    'updated_at' => $now
+                ];
+                tcBlobMerge($pdo, 'sponsors', $rowMerge);
+            } catch (Throwable $eB) {}
+        }
+        $stmtSel = $pdo->prepare("SELECT * FROM sponsors WHERE id=? LIMIT 1");
+        $stmtSel->execute([$id]);
+        $row = $stmtSel->fetch(PDO::FETCH_ASSOC);
+        return ['success' => true, 'data' => $row, 'id' => $id];
+    } catch (Throwable $e) {
+        error_log("[v2_upsert_sponsor] " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+function v2_delete_sponsor($data) {
+    $pdo = function_exists('getPDO') ? getPDO() : null;
+    if (!$pdo) {
+        global $pdo;
+    }
+    if (!$pdo) return ['success' => false, 'error' => 'Database connection failed'];
+    try {
+        $id = (string)($data['id'] ?? $data['sponsor_id'] ?? '');
+        if ($id === '') return ['success' => false, 'error' => 'id required'];
+        $now = time();
+        $stmt = $pdo->prepare("UPDATE sponsors SET deleted_at=:now, status='DELETED', is_active=0 WHERE id=:id");
+        $stmt->execute([':id' => $id, ':now' => $now]);
+        if (function_exists('tcBumpMainStateVersion')) tcBumpMainStateVersion($pdo);
+        if (function_exists('tcBlobMerge')) {
+            try { tcBlobMerge($pdo, 'sponsors', null, $id); } catch (Throwable $eB) {}
+        }
+        return ['success' => true, 'id' => $id];
+    } catch (Throwable $e) {
+        error_log("[v2_delete_sponsor] " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+function v2_list_sponsors($data = []) {
+    $pdo = function_exists('getPDO') ? getPDO() : null;
+    if (!$pdo) {
+        global $pdo;
+    }
+    if (!$pdo) return ['success' => false, 'error' => 'Database connection failed'];
+    try {
+        $cid = $data['company_id'] ?? null;
+        if ($cid !== null && $cid !== '') {
+            $stmt = $pdo->prepare("SELECT * FROM sponsors WHERE (company_id=:cid OR company_id IS NULL) AND deleted_at IS NULL ORDER BY sort_order ASC");
+            $stmt->execute([':cid' => (string)$cid]);
+        } else {
+            $stmt = $pdo->query("SELECT * FROM sponsors WHERE deleted_at IS NULL ORDER BY sort_order ASC");
+        }
+        $rows = $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        return ['success' => true, 'list' => $rows, 'data' => $rows, 'count' => count($rows)];
+    } catch (Throwable $e) {
+        error_log("[v2_list_sponsors] " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
 }
 
 // Append-only normalized audit row + legacy audit_logs back-compat.
@@ -1541,7 +1718,7 @@ try {
                 // stock) that the writer just persisted via the v2 endpoints.
                 if ($since === 0) {
                     $asData = tcAssembleDynamicSnapshot($pdo, $companyId, []);
-                    foreach (['companies', 'branches', 'stores', 'users', 'categories', 'stockItems', 'marketplaceProducts', 'salesOrders', 'marketplaceOrders'] as $okey) {
+                    foreach (['companies', 'branches', 'stores', 'users', 'categories', 'stockItems', 'marketplaceProducts', 'salesOrders', 'marketplaceOrders', 'sponsors', 'globalSponsors'] as $okey) {
                         if (isset($asData[$okey]) && is_array($asData[$okey]) && count($asData[$okey]) > 0) $result[$okey] = $asData[$okey];
                     }
                     if (isset($asData['marketplaceProducts']) && !isset($result['products'])) $result['products'] = $asData['marketplaceProducts'];
@@ -2234,7 +2411,7 @@ try {
                 if ($pdo) {
                     try {
                         $mysqlOverlay = tcAssembleDynamicSnapshot($pdo, '', []);
-                        foreach (['branches', 'stores', 'categories'] as $overlayKey) {
+                        foreach (['branches', 'stores', 'categories', 'sponsors'] as $overlayKey) {
                             $preCount = is_array($toPersist[$overlayKey] ?? null) ? count($toPersist[$overlayKey]) : 0;
                             $overlayCount = is_array($mysqlOverlay[$overlayKey] ?? null) ? count($mysqlOverlay[$overlayKey]) : 0;
                             error_log('[DIAG-save_state] overlay ' . $overlayKey . ': pre=' . $preCount . ' mysql=' . $overlayCount);
@@ -4037,6 +4214,70 @@ try {
                 } catch (Throwable $e) { error_log('[TradeCore API] v2_get_audit_trails failed: ' . $e->getMessage()); }
             }
             echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "server_ts" => $now]);
+            exit();
+        }
+
+        // ---- v2_upsert_sponsor ---------------------------------------------------
+        if ($action === 'v2_upsert_sponsor') {
+            $payload = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['sponsor'] ?? null) ? $v2in['sponsor'] : $v2in);
+            $res = v2_upsert_sponsor($payload);
+            $res['server_ts'] = $now;
+            echo json_encode($res);
+            exit();
+        }
+
+        // ---- v2_delete_sponsor ---------------------------------------------------
+        if ($action === 'v2_delete_sponsor') {
+            $payload = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['sponsor'] ?? null) ? $v2in['sponsor'] : $v2in);
+            $res = v2_delete_sponsor($payload);
+            $res['server_ts'] = $now;
+            echo json_encode($res);
+            exit();
+        }
+
+        // ---- v2_list_sponsors ---------------------------------------------------
+        if ($action === 'v2_list_sponsors' || $action === 'v2_list_sponsor') {
+            $res = v2_list_sponsors($v2in);
+            $res['server_ts'] = $now;
+            echo json_encode($res);
+            exit();
+        }
+
+        // ---- v2_upload_sponsor_logo ----------------------------------------------
+        if ($action === 'v2_upload_sponsor_logo') {
+            $uploadsDir = __DIR__ . '/uploads/sponsors';
+            if (!is_dir($uploadsDir)) {
+                @mkdir($uploadsDir, 0777, true);
+            }
+            $fileUrl = '';
+            if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
+                $ext = pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION) ?: 'png';
+                $safeName = 'sponsor_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
+                $target = $uploadsDir . '/' . $safeName;
+                if (move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
+                    $fileUrl = '/cpanel/uploads/sponsors/' . $safeName;
+                }
+            } elseif (!empty($v2in['data_base64']) || !empty($v2in['file_data'])) {
+                $b64 = $v2in['data_base64'] ?? $v2in['file_data'];
+                if (preg_match('/^data:image\/(\w+);base64,/', $b64, $m)) {
+                    $ext = $m[1];
+                    $b64 = substr($b64, strpos($b64, ',') + 1);
+                } else {
+                    $ext = 'png';
+                }
+                $decoded = base64_decode($b64);
+                if ($decoded !== false) {
+                    $safeName = 'sponsor_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
+                    $target = $uploadsDir . '/' . $safeName;
+                    file_put_contents($target, $decoded);
+                    $fileUrl = '/cpanel/uploads/sponsors/' . $safeName;
+                }
+            }
+            if ($fileUrl !== '') {
+                echo json_encode(["success" => true, "url" => $fileUrl, "logo_url" => $fileUrl, "server_ts" => $now]);
+            } else {
+                echo json_encode(["success" => false, "error" => "No file uploaded or failed to save", "server_ts" => $now]);
+            }
             exit();
         }
 

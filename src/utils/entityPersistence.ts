@@ -31,7 +31,7 @@ async function apiUrl(): Promise<string> {
   const { apiUrl: cfg } = getPhpConfig();
   if (cfg && !cfg.endsWith('/api.php')) return (_apiUrl = cfg);
   if (!_resolving) {
-    _resolving = discoverApiUrl().then((f) => { _apiUrl = f; return f; }).finally(() => { _resolving = null; });
+    _resolving = discoverApiUrl().then((f) => { _apiUrl = f; return f; }).catch(() => null).finally(() => { _resolving = null; });
   }
   const found = await _resolving;
   return found || cfg || '/cpanel/api.php';

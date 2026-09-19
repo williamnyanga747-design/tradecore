@@ -26,6 +26,7 @@ import {
   discoverApiUrl
 } from './api';
 import { sv, isValidCompanyScope } from './idUtils';
+import type { Sponsor } from '../types';
 
 export interface Company {
   id: string | number;
@@ -124,6 +125,7 @@ async function resolveApiUrl(): Promise<string> {
         cachedApiUrl = found;
         return found;
       })
+      .catch(() => null)
       .finally(() => {
         resolvingApiUrl = null;
       });
@@ -404,4 +406,32 @@ export async function v2FetchCompanyState(companyId: string | number): Promise<V
     console.warn('[PBS v2] v2FetchCompanyState failed:', error);
     return null;
   }
+}
+
+// ----------------------------------------------------------------------------
+// SPONSORS / WADHAMINI (Build 08-20 - Tanzaniatradecore.co.tz)
+// ----------------------------------------------------------------------------
+export async function v2ListSponsors(companyId?: string | number | null): Promise<Sponsor[]> {
+  const payload: Record<string, unknown> = {};
+  if (companyId) payload.company_id = sv(companyId);
+  const resp = await v2Post<{ success: boolean; list?: Sponsor[]; data?: Sponsor[] }>('v2_list_sponsors', payload);
+  return (resp?.list || resp?.data || []) as Sponsor[];
+}
+
+export async function v2UpsertSponsor(sponsor: Partial<Sponsor>): Promise<{ success: boolean; data?: Sponsor; error?: string; id?: string } | null> {
+  const payload: Record<string, unknown> = {
+    ...sponsor,
+    company_id: sponsor.company_id ? sv(sponsor.company_id) : null
+  };
+  return await v2Post<{ success: boolean; data?: Sponsor; error?: string; id?: string }>('v2_upsert_sponsor', { entity: payload });
+}
+
+export async function v2DeleteSponsor(id: string | number): Promise<boolean> {
+  const resp = await v2Post<{ success: boolean }>('v2_delete_sponsor', { id: sv(id) });
+  return !!resp?.success;
+}
+
+export async function v2UploadSponsorLogo(dataBase64: string): Promise<string | null> {
+  const resp = await v2Post<{ success: boolean; url?: string; logo_url?: string }>('v2_upload_sponsor_logo', { data_base64: dataBase64 });
+  return resp?.url || resp?.logo_url || null;
 }

@@ -32,15 +32,173 @@ function getGeminiClient(): GoogleGenAI {
 
 // Mock/Proxy PHP Sync API Endpoint for local/container dev environment
 let inMemoryPhpState: any = null;
+let inMemorySponsors: any[] = [
+  {
+    id: 'sp_crdb_01',
+    sponsor_id: 'sp_crdb_01',
+    company_id: null,
+    name: 'CRDB Bank Plc',
+    logo_url: 'https://images.unsplash.com/photo-1559526324-4b87b5e36e44?w=200&auto=format&fit=crop&q=60',
+    website_url: 'https://crdbbank.co.tz',
+    description: 'Benki kiongozi Tanzania inayowezesha wafanyabiashara wa ndani na wa kimataifa.',
+    tier: 'platinum',
+    is_active: 1,
+    sort_order: 1,
+    status: 'ACTIVE',
+    created_at: 1726000000,
+    updated_at: 1726000000,
+    deleted_at: null
+  },
+  {
+    id: 'sp_nmb_02',
+    sponsor_id: 'sp_nmb_02',
+    company_id: null,
+    name: 'NMB Bank Plc',
+    logo_url: 'https://images.unsplash.com/photo-1541354329998-f4d9a9f9297f?w=200&auto=format&fit=crop&q=60',
+    website_url: 'https://nmbbank.co.tz',
+    description: 'Karibu katika benki inayoaminika na mamilioni ya Watanzania kwa mikopo na malipo.',
+    tier: 'gold',
+    is_active: 1,
+    sort_order: 2,
+    status: 'ACTIVE',
+    created_at: 1726000000,
+    updated_at: 1726000000,
+    deleted_at: null
+  },
+  {
+    id: 'sp_vodacom_03',
+    sponsor_id: 'sp_vodacom_03',
+    company_id: null,
+    name: 'Vodacom M-Pesa',
+    logo_url: 'https://images.unsplash.com/photo-1563986768609-322da13575f3?w=200&auto=format&fit=crop&q=60',
+    website_url: 'https://vodacom.co.tz',
+    description: 'Mfumo wa kidijitali wa malipo na miamala ya biashara nchini kote.',
+    tier: 'gold',
+    is_active: 1,
+    sort_order: 3,
+    status: 'ACTIVE',
+    created_at: 1726000000,
+    updated_at: 1726000000,
+    deleted_at: null
+  }
+];
 
-app.all("/api/php_sync.php", (req, res) => {
+const handlePhpApi = (req: express.Request, res: express.Response) => {
   const action = req.query.action || req.body?.action;
-  
-  if (req.method === "GET" || action === "get_state") {
+  const now = Math.floor(Date.now() / 1000);
+
+  // v2_upsert_sponsor
+  if (action === 'v2_upsert_sponsor') {
+    const raw = req.body?.entity || req.body?.sponsor || req.body || {};
+    const id = String(raw.id || raw.sponsor_id || `sp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
+    const name = String(raw.name || '').trim();
+    if (!name) {
+      return res.json({ success: false, error: 'name required', server_ts: now });
+    }
+    const idx = inMemorySponsors.findIndex(s => s.id === id || s.sponsor_id === id);
+    const existing = idx >= 0 ? inMemorySponsors[idx] : null;
+    const updatedSponsor = {
+      id,
+      sponsor_id: id,
+      company_id: raw.company_id || null,
+      name,
+      logo_url: raw.logo_url || '',
+      website_url: raw.website_url || '',
+      description: raw.description || '',
+      tier: (raw.tier || 'gold').toLowerCase(),
+      is_active: (raw.is_active === 0 || raw.is_active === '0' || raw.is_active === false) ? 0 : 1,
+      sort_order: Number(raw.sort_order ?? 0),
+      status: 'ACTIVE',
+      created_at: existing?.created_at || now,
+      updated_at: now,
+      deleted_at: null
+    };
+
+    if (idx >= 0) {
+      inMemorySponsors[idx] = updatedSponsor;
+    } else {
+      inMemorySponsors.push(updatedSponsor);
+    }
+
+    return res.json({
+      success: true,
+      data: updatedSponsor,
+      id,
+      server_ts: now
+    });
+  }
+
+  // v2_delete_sponsor
+  if (action === 'v2_delete_sponsor') {
+    const raw = req.body?.entity || req.body?.sponsor || req.body || {};
+    const id = String(raw.id || raw.sponsor_id || req.query.id || '');
+    if (!id) {
+      return res.json({ success: false, error: 'id required', server_ts: now });
+    }
+    const idx = inMemorySponsors.findIndex(s => s.id === id || s.sponsor_id === id);
+    if (idx >= 0) {
+      inMemorySponsors[idx].deleted_at = now;
+      inMemorySponsors[idx].status = 'DELETED';
+      inMemorySponsors[idx].is_active = 0;
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // v2_list_sponsors
+  if (action === 'v2_list_sponsors' || action === 'v2_list_sponsor') {
+    const cid = req.query.company_id || req.body?.company_id;
+    let list = inMemorySponsors.filter(s => !s.deleted_at);
+    if (cid) {
+      list = list.filter(s => s.company_id === cid || s.company_id === null);
+    }
+    list.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    return res.json({
+      success: true,
+      list,
+      data: list,
+      count: list.length,
+      server_ts: now
+    });
+  }
+
+  // v2_upload_sponsor_logo
+  if (action === 'v2_upload_sponsor_logo') {
+    const b64 = req.body?.data_base64 || req.body?.file_data || '';
+    if (b64) {
+      return res.json({
+        success: true,
+        url: b64,
+        logo_url: b64,
+        server_ts: now
+      });
+    }
+    return res.json({
+      success: true,
+      url: '/cpanel/uploads/sponsors/default_sponsor.png',
+      logo_url: '/cpanel/uploads/sponsors/default_sponsor.png',
+      server_ts: now
+    });
+  }
+
+  const activeSponsors = inMemorySponsors
+    .filter(s => !s.deleted_at && (s.is_active === 1 || s.is_active === true))
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  const activeGlobalSponsors = inMemorySponsors
+    .filter(s => !s.deleted_at && (s.is_active === 1 || s.is_active === true) && !s.company_id)
+    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+
+  if (req.method === "GET" || action === "get_state" || action === "snapshot") {
+    const resData = inMemoryPhpState ? { ...inMemoryPhpState } : {};
+    resData.sponsors = activeSponsors;
+    resData.globalSponsors = activeGlobalSponsors;
+    resData._assembled = 1;
     return res.json({
       success: true,
       status: "ok",
-      data: inMemoryPhpState
+      _assembled: 1,
+      sponsors: activeSponsors,
+      globalSponsors: activeGlobalSponsors,
+      data: resData
     });
   }
 
@@ -53,13 +211,18 @@ app.all("/api/php_sync.php", (req, res) => {
     return res.json({
       success: true,
       status: "ok",
+      _assembled: 1,
       message: "Data successfully synchronized with PHP backend",
       timestamp: new Date().toISOString()
     });
   }
 
-  res.json({ success: true, status: "ok" });
-});
+  res.json({ success: true, status: "ok", _assembled: 1 });
+};
+
+app.all("/api/php_sync.php", handlePhpApi);
+app.all("/api/api.php", handlePhpApi);
+app.all("/cpanel/api.php", handlePhpApi);
 
 // API routes FIRST
 app.post("/api/ai-assist", async (req, res) => {

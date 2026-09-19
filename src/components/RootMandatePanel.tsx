@@ -18,8 +18,10 @@ import {
   VoiceSearchLog, QrScanLog,
   CollectionRecord, CollectionSetting, WebhookLog, AdminEarning, CollectionNetwork, CollectionStatus, CollectionMode,
   Offer, OfferMessage, GroupDeal, GroupDealParticipant, InstallmentPlan, InstallmentOrder, InstallmentPayment,
-  Delivery, DeliveryUpdate, LiveStream, LiveComment, LoyaltyCustomer, LoyaltyTransaction, WhatsappConversation, NotificationLog
+  Delivery, DeliveryUpdate, LiveStream, LiveComment, LoyaltyCustomer, LoyaltyTransaction, WhatsappConversation, NotificationLog,
+  Sponsor
 } from '../types';
+import HomepageControl from '../panels/RootMandate/HomepageControl';
 import { defaultHomepageContent } from '../initialData';
 import { getPhpConfig } from '../utils/api';
 import { sameId } from '../utils/idUtils';
@@ -48,6 +50,8 @@ interface RootMandatePanelProps {
   securityLogs: SecurityLog[];
   rolePermissions: Record<string, string[]>;
   settings: Settings;
+  sponsors?: Sponsor[];
+  onUpdateSponsors?: (next: Sponsor[]) => void;
   translate: (text: string) => string;
   onSaveSettings: (next: Settings) => void;
   onVerifyCompany: (id: number) => void;
@@ -178,6 +182,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
     currentUser, users, companies, branches, stores, products, orders, clicks, categories,
     reviews, productViews,
     auditTrails, securityLogs, rolePermissions, settings, translate: t,
+    sponsors: rawSponsors, onUpdateSponsors,
     onSaveSettings, onVerifyCompany, onBanCompany, onDeleteCompany, onApproveProduct,
     onUpdateProducts, onDeleteProduct, onUpdateUsers, onUpdateCategories, onUpdateCompanies,
     onUpdateOrders, onUpdateReviewStatus, currencies, subscriptionPlans, companySubscriptions,
@@ -311,6 +316,7 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
 
   const tabBtn = (key: RootTab, label: string, icon: React.ReactNode) => (
     <button
+      key={key}
       onClick={() => setTab(key)}
       className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition ${
         tab === key ? 'bg-brand text-white shadow' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
@@ -905,111 +911,127 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
     );
 
     return (
-      <div className="space-y-4">
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <div className="font-bold text-gray-900 text-sm">{t('Public Homepage Editor')}</div>
-              <div className="text-[11px] text-gray-500 font-medium">{t('Edits go live on the pre-login homepage instantly (saved to the database).')}</div>
+      <HomepageControl
+        translate={t}
+        canManage={true}
+        sponsors={rawSponsors || settings.sponsors || []}
+        onSponsorsChange={(updated) => {
+          if (onUpdateSponsors) {
+            onUpdateSponsors(updated);
+          }
+          updateSettings({
+            sponsors: updated,
+            homepageContent: { ...content, sponsors: updated }
+          });
+          logAction('Sponsors Updated', `ROOT_MANDATE updated sponsors collection (${updated.length} sponsors).`);
+        }}
+      >
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="font-bold text-gray-900 text-sm">{t('Public Homepage Editor')}</div>
+                <div className="text-[11px] text-gray-500 font-medium">{t('Edits go live on the pre-login homepage instantly (saved to the database).')}</div>
+              </div>
+              <button onClick={persist} className="px-4 py-2 bg-brand text-white rounded-lg text-xs font-bold inline-flex items-center gap-1.5"><Save className="w-4 h-4" /> {saved ? t('Saved!') : t('Save Hero')}</button>
             </div>
-            <button onClick={persist} className="px-4 py-2 bg-brand text-white rounded-lg text-xs font-bold inline-flex items-center gap-1.5"><Save className="w-4 h-4" /> {saved ? t('Saved!') : t('Save Hero')}</button>
+            <div className="space-y-3">
+              {input(t('Hero Title'), heroTitle, setHeroTitle)}
+              {input(t('Hero Subtitle'), heroSubtitle, setHeroSubtitle, true)}
+            </div>
           </div>
-          <div className="space-y-3">
-            {input(t('Hero Title'), heroTitle, setHeroTitle)}
-            {input(t('Hero Subtitle'), heroSubtitle, setHeroSubtitle, true)}
-          </div>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-            <div className="font-bold text-gray-900 text-sm mb-3">{t('Hero Stats')}</div>
-            <div className="space-y-2">{heroStatsEditor}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+              <div className="font-bold text-gray-900 text-sm mb-3">{t('Hero Stats')}</div>
+              <div className="space-y-2">{heroStatsEditor}</div>
+            </div>
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+              <div className="font-bold text-gray-900 text-sm mb-3">{t('Overview Section')}</div>
+              <div className="space-y-2">
+                {input(t('Section Title'), content.overviewTitle, v => updateHomepage({ overviewTitle: v }))}
+                {input(t('Section Text'), content.overviewText, v => updateHomepage({ overviewText: v }), true)}
+              </div>
+            </div>
           </div>
+
           <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-            <div className="font-bold text-gray-900 text-sm mb-3">{t('Overview Section')}</div>
+            <div className="font-bold text-gray-900 text-sm mb-3">{t('Overview Features')} ({content.overviewFeatures.length})</div>
             <div className="space-y-2">
-              {input(t('Section Title'), content.overviewTitle, v => updateHomepage({ overviewTitle: v }))}
-              {input(t('Section Text'), content.overviewText, v => updateHomepage({ overviewText: v }), true)}
+              {content.overviewFeatures.map((f, i) => (
+                <div key={i} className="flex gap-2 items-center">
+                  {iconPicker(f.icon, v => updateHomepage({ overviewFeatures: content.overviewFeatures.map((x, j) => j === i ? { ...x, icon: v } : x) }))}
+                  <input value={f.title} onChange={e => updateHomepage({ overviewFeatures: content.overviewFeatures.map((x, j) => j === i ? { ...x, title: e.target.value } : x) })} placeholder={t('Title')} className="w-40 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                  <input value={f.desc} onChange={e => updateHomepage({ overviewFeatures: content.overviewFeatures.map((x, j) => j === i ? { ...x, desc: e.target.value } : x) })} placeholder={t('Description')} className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div className="font-bold text-gray-900 text-sm mb-3">{t('Feature Carousel')} ({content.featureCarousel.length})</div>
+            <div className="space-y-2">
+              {content.featureCarousel.map((f, i) => (
+                <div key={i} className="flex gap-2 items-center">
+                  {iconPicker(f.icon, v => updateHomepage({ featureCarousel: content.featureCarousel.map((x, j) => j === i ? { ...x, icon: v } : x) }))}
+                  <input value={f.title} onChange={e => updateHomepage({ featureCarousel: content.featureCarousel.map((x, j) => j === i ? { ...x, title: e.target.value } : x) })} placeholder={t('Title')} className="w-44 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                  <input value={f.tag} onChange={e => updateHomepage({ featureCarousel: content.featureCarousel.map((x, j) => j === i ? { ...x, tag: e.target.value } : x) })} placeholder={t('Tag')} className="w-28 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                  <input value={f.desc} onChange={e => updateHomepage({ featureCarousel: content.featureCarousel.map((x, j) => j === i ? { ...x, desc: e.target.value } : x) })} placeholder={t('Description')} className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div className="font-bold text-gray-900 text-sm mb-3">{t('Pricing Tiers')} ({content.pricingTiers.length})</div>
+            <div className="space-y-3">
+              {content.pricingTiers.map((p, i) => (
+                <div key={i} className="border border-gray-200 rounded-lg p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-gray-700">{t('Tier')} {i + 1} {p.popular && <span className="ml-1 text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full">{t('POPULAR')}</span>}</span>
+                    <label className="flex items-center gap-1 text-[11px] font-bold text-gray-600"><input type="checkbox" checked={p.popular} onChange={e => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, popular: e.target.checked } : x) })} /> {t('Popular')}</label>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {input(t('Name'), p.name, v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, name: v } : x) }))}
+                    {input(t('Price'), p.price, v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, price: v } : x) }))}
+                    {input(t('Period'), p.period, v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, period: v } : x) }))}
+                    {input(t('Tagline'), p.tagline, v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, tagline: v } : x) }))}
+                  </div>
+                  {input(t('Features (one per line)'), p.features.join('\n'), v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, features: v.split('\n').map(s => s.trim()).filter(Boolean) } : x) }), true)}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div className="font-bold text-gray-900 text-sm mb-3">{t('Testimonials')} ({content.testimonials.length})</div>
+            <div className="space-y-2">
+              {content.testimonials.map((ts, i) => (
+                <div key={i} className="flex gap-2 items-center">
+                  <input value={ts.name} onChange={e => updateHomepage({ testimonials: content.testimonials.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })} placeholder={t('Name')} className="w-36 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                  <input value={ts.role} onChange={e => updateHomepage({ testimonials: content.testimonials.map((x, j) => j === i ? { ...x, role: e.target.value } : x) })} placeholder={t('Role')} className="w-44 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                  <select value={ts.stars} onChange={e => updateHomepage({ testimonials: content.testimonials.map((x, j) => j === i ? { ...x, stars: Number(e.target.value) } : x) })} className="px-2 py-1.5 border border-gray-300 rounded text-xs outline-none">
+                    {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}★</option>)}
+                  </select>
+                  <input value={ts.quote} onChange={e => updateHomepage({ testimonials: content.testimonials.map((x, j) => j === i ? { ...x, quote: e.target.value } : x) })} placeholder={t('Quote')} className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+            <div className="font-bold text-gray-900 text-sm mb-3">{t('FAQ')} ({content.faqItems.length})</div>
+            <div className="space-y-2">
+              {content.faqItems.map((f, i) => (
+                <div key={i} className="border border-gray-200 rounded-lg p-3 space-y-2">
+                  <input value={f.q} onChange={e => updateHomepage({ faqItems: content.faqItems.map((x, j) => j === i ? { ...x, q: e.target.value } : x) })} placeholder={t('Question')} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
+                  <textarea rows={2} value={f.a} onChange={e => updateHomepage({ faqItems: content.faqItems.map((x, j) => j === i ? { ...x, a: e.target.value } : x) })} placeholder={t('Answer')} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm outline-none resize-none" />
+                </div>
+              ))}
             </div>
           </div>
         </div>
-
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <div className="font-bold text-gray-900 text-sm mb-3">{t('Overview Features')} ({content.overviewFeatures.length})</div>
-          <div className="space-y-2">
-            {content.overviewFeatures.map((f, i) => (
-              <div key={i} className="flex gap-2 items-center">
-                {iconPicker(f.icon, v => updateHomepage({ overviewFeatures: content.overviewFeatures.map((x, j) => j === i ? { ...x, icon: v } : x) }))}
-                <input value={f.title} onChange={e => updateHomepage({ overviewFeatures: content.overviewFeatures.map((x, j) => j === i ? { ...x, title: e.target.value } : x) })} placeholder={t('Title')} className="w-40 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-                <input value={f.desc} onChange={e => updateHomepage({ overviewFeatures: content.overviewFeatures.map((x, j) => j === i ? { ...x, desc: e.target.value } : x) })} placeholder={t('Description')} className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <div className="font-bold text-gray-900 text-sm mb-3">{t('Feature Carousel')} ({content.featureCarousel.length})</div>
-          <div className="space-y-2">
-            {content.featureCarousel.map((f, i) => (
-              <div key={i} className="flex gap-2 items-center">
-                {iconPicker(f.icon, v => updateHomepage({ featureCarousel: content.featureCarousel.map((x, j) => j === i ? { ...x, icon: v } : x) }))}
-                <input value={f.title} onChange={e => updateHomepage({ featureCarousel: content.featureCarousel.map((x, j) => j === i ? { ...x, title: e.target.value } : x) })} placeholder={t('Title')} className="w-44 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-                <input value={f.tag} onChange={e => updateHomepage({ featureCarousel: content.featureCarousel.map((x, j) => j === i ? { ...x, tag: e.target.value } : x) })} placeholder={t('Tag')} className="w-28 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-                <input value={f.desc} onChange={e => updateHomepage({ featureCarousel: content.featureCarousel.map((x, j) => j === i ? { ...x, desc: e.target.value } : x) })} placeholder={t('Description')} className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <div className="font-bold text-gray-900 text-sm mb-3">{t('Pricing Tiers')} ({content.pricingTiers.length})</div>
-          <div className="space-y-3">
-            {content.pricingTiers.map((p, i) => (
-              <div key={i} className="border border-gray-200 rounded-lg p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-gray-700">{t('Tier')} {i + 1} {p.popular && <span className="ml-1 text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full">{t('POPULAR')}</span>}</span>
-                  <label className="flex items-center gap-1 text-[11px] font-bold text-gray-600"><input type="checkbox" checked={p.popular} onChange={e => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, popular: e.target.checked } : x) })} /> {t('Popular')}</label>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  {input(t('Name'), p.name, v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, name: v } : x) }))}
-                  {input(t('Price'), p.price, v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, price: v } : x) }))}
-                  {input(t('Period'), p.period, v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, period: v } : x) }))}
-                  {input(t('Tagline'), p.tagline, v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, tagline: v } : x) }))}
-                </div>
-                {input(t('Features (one per line)'), p.features.join('\n'), v => updateHomepage({ pricingTiers: content.pricingTiers.map((x, j) => j === i ? { ...x, features: v.split('\n').map(s => s.trim()).filter(Boolean) } : x) }), true)}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <div className="font-bold text-gray-900 text-sm mb-3">{t('Testimonials')} ({content.testimonials.length})</div>
-          <div className="space-y-2">
-            {content.testimonials.map((ts, i) => (
-              <div key={i} className="flex gap-2 items-center">
-                <input value={ts.name} onChange={e => updateHomepage({ testimonials: content.testimonials.map((x, j) => j === i ? { ...x, name: e.target.value } : x) })} placeholder={t('Name')} className="w-36 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-                <input value={ts.role} onChange={e => updateHomepage({ testimonials: content.testimonials.map((x, j) => j === i ? { ...x, role: e.target.value } : x) })} placeholder={t('Role')} className="w-44 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-                <select value={ts.stars} onChange={e => updateHomepage({ testimonials: content.testimonials.map((x, j) => j === i ? { ...x, stars: Number(e.target.value) } : x) })} className="px-2 py-1.5 border border-gray-300 rounded text-xs outline-none">
-                  {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n}★</option>)}
-                </select>
-                <input value={ts.quote} onChange={e => updateHomepage({ testimonials: content.testimonials.map((x, j) => j === i ? { ...x, quote: e.target.value } : x) })} placeholder={t('Quote')} className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4">
-          <div className="font-bold text-gray-900 text-sm mb-3">{t('FAQ')} ({content.faqItems.length})</div>
-          <div className="space-y-2">
-            {content.faqItems.map((f, i) => (
-              <div key={i} className="border border-gray-200 rounded-lg p-3 space-y-2">
-                <input value={f.q} onChange={e => updateHomepage({ faqItems: content.faqItems.map((x, j) => j === i ? { ...x, q: e.target.value } : x) })} placeholder={t('Question')} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm outline-none" />
-                <textarea rows={2} value={f.a} onChange={e => updateHomepage({ faqItems: content.faqItems.map((x, j) => j === i ? { ...x, a: e.target.value } : x) })} placeholder={t('Answer')} className="w-full px-2 py-1.5 border border-gray-300 rounded text-sm outline-none resize-none" />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      </HomepageControl>
     );
   };
 

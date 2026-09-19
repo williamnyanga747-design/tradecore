@@ -517,7 +517,7 @@ function safeDrain() {
  * Returns a cleanup function for effect-based mounting.
  */
 export function registerOnlineSync(opts?: { onDrain?: (summary: DrainSummary) => void; endpoint?: string }): () => void {
-  void getEngine(); // open the DB + hydrate the mirror eagerly at mount.
+  void getEngine().catch(() => null); // open the DB + hydrate the mirror eagerly at mount.
 
   const handleOnline = () => {
     safeDrain();
