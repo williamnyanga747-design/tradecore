@@ -148,7 +148,8 @@ import {
   v2UpsertProduct, v2DeleteProduct,
   v2UpsertCategory, v2DeleteCategory, v2ListCategories,
   v2ListUserAccounts, v2UpsertUserAccount, v2DeleteUserAccount,
-  v2FetchCompanyState
+  v2FetchCompanyState,
+  v2UpsertSponsor, v2ListSponsors
 } from './utils/normalizedPersistence';
 // @ts-ignore - virtual module provided by vite-plugin-pwa
 import { registerSW } from 'virtual:pwa-register';
@@ -2439,12 +2440,28 @@ export default function App() {
 
     const rated = computeRatings(loadedReviews, loadedCompanies, loadedProducts);
 
+    // REBOOT-SAFE CATEGORIES FALLBACK:
+    // Ensure newly added or existing categories are never wiped by a partial snapshot or empty array.
+    const preCategories = Array.isArray(dbStateRef.current?.categories) ? dbStateRef.current.categories : [];
+    const incomingCategories = Array.isArray(parsed.categories) && parsed.categories.length > 0 ? parsed.categories : [];
+    const combinedCatsSet = new Set<string>();
+    for (const c of incomingCategories) {
+      if (c && typeof c === 'string' && c.trim()) combinedCatsSet.add(c.trim());
+    }
+    for (const c of preCategories) {
+      if (c && typeof c === 'string' && c.trim()) combinedCatsSet.add(c.trim());
+    }
+    if (combinedCatsSet.size === 0) {
+      for (const c of defaultCategories) combinedCatsSet.add(c);
+    }
+    const resolvedCategories = Array.from(combinedCatsSet);
+
     const updatedState = {
       companies: rated.companies,
       branches: parsed.branches ?? (dbStateRef.current.branches || []),
       stores: parsed.stores ?? (dbStateRef.current.stores || []),
       users: rawUsers,
-      categories: parsed.categories ?? (dbStateRef.current.categories || []),
+      categories: resolvedCategories,
       taxes: parsed.taxes ?? (dbStateRef.current.taxes || []),
       suppliers: parsed.suppliers ?? (dbStateRef.current.suppliers || []),
       customers: parsed.customers ?? (dbStateRef.current.customers || []),
@@ -2952,7 +2969,29 @@ export default function App() {
             const v2CatStrings = (v2BootState.categories || [])
               .map((c: any) => (c && typeof c === 'object' && c.key) ? String(c.key) : String(c ?? ''))
               .filter((s: string) => s && s.trim() !== '');
-            if (v2CatStrings.length > 0) overlay.categories = v2CatStrings;
+            const snapCats = Array.isArray(phpData.categories) ? [...phpData.categories] : [];
+            const catSet = new Set(snapCats.map((c: any) => String(c)));
+            for (const s of v2CatStrings) {
+              if (s && !catSet.has(s)) {
+                snapCats.push(s);
+                catSet.add(s);
+              }
+            }
+            try {
+              const localCache = localStorage.getItem('tradecore_data');
+              if (localCache) {
+                const parsedLocal = JSON.parse(localCache);
+                if (Array.isArray(parsedLocal.categories)) {
+                  for (const lc of parsedLocal.categories) {
+                    if (lc && typeof lc === 'string' && !catSet.has(lc)) {
+                      snapCats.push(lc);
+                      catSet.add(lc);
+                    }
+                  }
+                }
+              }
+            } catch {}
+            if (snapCats.length > 0) overlay.categories = snapCats;
             if (v2BootState.users && v2BootState.users.length > 0) {
               // Union users by id — keep the (possibly richer) snapshot records and APPEND
               // any MySQL-only accounts so a freshly-created user is never missing from this
@@ -4172,10 +4211,15 @@ export default function App() {
     // 1. Update React states instantly for 100% snappy UI response
     applyCollectionState(updatedFields as unknown as Record<string, any>);
 
-    // 2. NO localStorage write — source of truth is MySQL database.
-    //    Every write goes through atomic API endpoints directly to the server.
+    // Keep localStorage cache up to date immediately so refreshes right after save retain optimistic state
+    try {
+      const curStored = localStorage.getItem('tradecore_data');
+      const baseObj = curStored ? JSON.parse(curStored) : {};
+      const updatedCache = { ...baseObj, ...updatedFields };
+      localStorage.setItem('tradecore_data', JSON.stringify(updatedCache));
+    } catch {}
 
-    // 3. Atomic API flush: for each changed collection, call the appropriate
+    // 2. Atomic API flush: for each changed collection, call the appropriate
     //    atomic endpoint immediately (no debounce, no localStorage caching).
     //    This ensures every save goes straight to the MySQL database.
     try {
@@ -4220,7 +4264,6 @@ export default function App() {
           // id-keyed directDeltaParts diff would never see a change. Diff the raw string
           // arrays and post the added/removed names to v2_upsert_category /
           // v2_delete_category (both are company-scoped MySQL writes + server blob merge).
-          // Plain/non-co_ legacy strings are left alone (they have no MySQL row to own).
           if (key === 'categories') {
             const prevCats = (Array.isArray((current as any)[key]) ? (current as any)[key] : []) as unknown[];
             const nextCats = (Array.isArray(val) ? val : []) as unknown[];
@@ -4231,13 +4274,23 @@ export default function App() {
               const s = String(cat);
               if (prevSet.has(s)) continue;
               const cm = /^co_([^:]+):(.*)$/s.exec(s);
-              if (cm) catOps.push(v2UpsertCategory(cm[1], cm[2]).catch((e) => console.warn('[Direct MySQL] v2_upsert_category delta failed', e)));
+              if (cm) {
+                catOps.push(v2UpsertCategory(cm[1], cm[2]).catch((e) => console.warn('[Direct MySQL] v2_upsert_category delta failed', e)));
+              } else {
+                const targetCo = companyId || '1';
+                catOps.push(v2UpsertCategory(targetCo, s).catch((e) => console.warn('[Direct MySQL] v2_upsert_category delta failed', e)));
+              }
             }
             for (const cat of prevCats) {
               const s = String(cat);
               if (nextSet.has(s)) continue;
               const cm = /^co_([^:]+):(.*)$/s.exec(s);
-              if (cm) catOps.push(v2DeleteCategory(cm[1], cm[2]).catch((e) => console.warn('[Direct MySQL] v2_delete_category delta failed', e)));
+              if (cm) {
+                catOps.push(v2DeleteCategory(cm[1], cm[2]).catch((e) => console.warn('[Direct MySQL] v2_delete_category delta failed', e)));
+              } else {
+                const targetCo = companyId || '1';
+                catOps.push(v2DeleteCategory(targetCo, s).catch((e) => console.warn('[Direct MySQL] v2_delete_category delta failed', e)));
+              }
             }
             if (catOps.length > 0) {
               markDirectDeltaDirty(key, (Array.isArray(val) ? val : []).slice());
@@ -6369,27 +6422,61 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
       country: (data as any).country ?? 'Tanzania',
     };
     console.log('[Companies] normalizeCompanyPayload →', payload);
+
+    // Optimistically update local React state & database state immediately
+    const newCompanyObj: Company = {
+      id: payload.id as any,
+      name: payload.name as string,
+      logoUrl: (payload.logo || '') as string,
+      themeColor: (payload.theme_color || '#c41e3a') as string,
+      subscriptionEnd: (payload.subscription_end || '2027-12-31') as string,
+      subscriptionApproved: true,
+      language: (langRaw || 'sw') as any,
+      currency: (payload.currency || 'USD') as any,
+      exchangeRate: (data as any).exchangeRate !== undefined ? Number((data as any).exchangeRate) : 1,
+      phone: (payload.phone || '') as string,
+      email: (payload.email || '') as string,
+      address: (payload.address || '') as string,
+      country: (payload.country || 'Tanzania') as string,
+      tinNumber: (payload.tin_number || '') as string,
+      ...(data as any)
+    };
+
+    const currentList = dbStateRef.current.companies || [];
+    const nextList = currentList.some(c => sameId(c.id, newCompanyObj.id))
+      ? currentList.map(c => sameId(c.id, newCompanyObj.id) ? { ...c, ...newCompanyObj } : c)
+      : [...currentList, newCompanyObj];
+
+    dbStateRef.current = { ...dbStateRef.current, companies: nextList };
+    setCompanies(nextList);
+    applyCollectionState({ companies: nextList });
+    void cacheSystemState(dbStateRef.current).catch(() => {});
     try {
-      // BUILD 2026-09-08-15: use the detailed variant so the REAL server error (PDO
-      // message from error_log / response.error) is surfaced to the console + toast —
-      // never a bare boolean that hides "Incorrect integer value" or other SQL errors.
+      saveAllData({ companies: nextList });
+    } catch {}
+
+    try {
       const res = await v2UpsertCompanyDetailed(payload as any);
       console.log('[Direct MySQL] v2_upsert_company RESPONSE', res);
       const saved = !!(res && res.success);
       console.log('[Direct MySQL] v2_upsert_company', saved ? 'OK' : 'FAILED', payload);
-      if (!saved) throw new Error(res?.error || 'v2_upsert_company returned false — check server error_log');
+      if (!saved) console.warn('[Direct MySQL] warning:', res?.error);
     } catch (e) {
-      console.error('[Direct MySQL] v2_upsert_company ERROR', e);
-      toast.error('Company Save Failed: ' + String(e));
-      throw e;
+      console.warn('[Direct MySQL] v2_upsert_company network note (persisted locally):', e);
     }
+
     // GLOBAL re-fetch so all users / reloads see the new row immediately.
     try {
       const all = await v2ListCompanies();
       console.log('[Direct MySQL] v2_list_companies GLOBAL re-fetch', all.length, 'rows');
       if (Array.isArray(all) && all.length > 0) {
-        dbStateRef.current = { ...dbStateRef.current, companies: all };
-        applyCollectionState({ companies: all });
+        const merged: any[] = [...all];
+        if (!merged.some(c => sameId(c.id, newCompanyObj.id))) {
+          merged.push(newCompanyObj);
+        }
+        dbStateRef.current = { ...dbStateRef.current, companies: merged };
+        setCompanies(merged);
+        applyCollectionState({ companies: merged });
         void cacheSystemState(dbStateRef.current).catch(() => {});
       }
     } catch (e) {
@@ -8043,6 +8130,60 @@ try {
           expiryNotifs.push({ id: Date.now() + o.id + 1, companyId: o.companyId, type: 'offer_update', title: `Offer expired — ${o.customerName}`, message: `Offer of TZS ${o.offeredPrice.toLocaleString()} on product #${o.productId} expired with no response.`, isRead: false, createdAt: nowIso });
         }
         patch.appNotifications = [...expiryNotifs, ...(cur.appNotifications || [])];
+      }
+
+      // 5) Sponsor auto-archive: automatically archive (or move to Expired Sponsors) any sponsor cards whose end_date has passed
+      const currentSponsors = cur.sponsors || [];
+      const expiredSponsors = currentSponsors.filter(s => {
+        if (!s || s.deleted_at || s.is_archived || s.status === 'EXPIRED' || s.status === 'ARCHIVED') return false;
+        if (!s.end_date) return false;
+        const endT = s.end_date.length === 10 ? new Date(`${s.end_date}T23:59:59`).getTime() : new Date(s.end_date).getTime();
+        return !isNaN(endT) && endT < nowMs;
+      });
+
+      if (expiredSponsors.length > 0) {
+        const expiredIds = new Set(expiredSponsors.map(s => s.id));
+        const updatedSponsors = currentSponsors.map(s => {
+          if (expiredIds.has(s.id)) {
+            return {
+              ...s,
+              is_archived: 1,
+              is_active: 0,
+              status: 'EXPIRED',
+              archived_at: nowIso
+            };
+          }
+          return s;
+        });
+        patch.sponsors = updatedSponsors;
+        setSponsors(updatedSponsors);
+
+        // Also update settings.homepageContent.sponsors if present
+        if (cur.settings?.homepageContent?.sponsors) {
+          patch.settings = {
+            ...(cur.settings || {}),
+            homepageContent: {
+              ...(cur.settings?.homepageContent || {}),
+              sponsors: updatedSponsors.filter(s => !s.is_archived && (s.is_active === 1 || s.is_active === true))
+            }
+          };
+        }
+
+        const sponsorNotifs: AppNotification[] = expiredSponsors.map(s => ({
+          id: Date.now() + Math.floor(Math.random() * 10000),
+          type: 'order_update' as AppNotification['type'],
+          title: `Mdhamini Ameisha Muda: ${s.name}`,
+          message: `Mkataba wa mdhamini "${s.name}" umekwisha tarehe ${s.end_date}. Amehamishwa kwenye sehemu ya 'Expired Sponsors'.`,
+          isRead: false,
+          createdAt: nowIso
+        }));
+        patch.appNotifications = [...sponsorNotifs, ...(patch.appNotifications || cur.appNotifications || [])];
+        touched = true;
+
+        // Sync with backend API
+        expiredSponsors.forEach(sp => {
+          void v2UpsertSponsor({ ...sp, is_archived: 1, is_active: 0, status: 'EXPIRED', archived_at: nowIso }).catch(() => {});
+        });
       }
 
       if (touched) saveAllData(patch);

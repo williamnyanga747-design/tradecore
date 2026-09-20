@@ -71,11 +71,21 @@ export default function Homepage({
     return <Icon className={cls} />;
   };
 
-  // Active Sponsors for Homepage display
+  // Active Sponsors for Homepage display (excludes expired or archived sponsors)
   const activeSponsors = React.useMemo(() => {
     const list = (sponsors && sponsors.length > 0 ? sponsors : content.sponsors) || [];
+    const now = Date.now();
     return list
-      .filter((s: Sponsor) => (s.is_active === 1 || s.is_active === true || s.is_active === undefined) && !s.deleted_at)
+      .filter((s: Sponsor) => {
+        if (!s) return false;
+        if (s.deleted_at || s.is_archived || s.status === 'EXPIRED' || s.status === 'ARCHIVED') return false;
+        if (s.is_active === 0 || s.is_active === false) return false;
+        if (s.end_date) {
+          const endT = s.end_date.length === 10 ? new Date(`${s.end_date}T23:59:59`).getTime() : new Date(s.end_date).getTime();
+          if (!isNaN(endT) && endT < now) return false;
+        }
+        return true;
+      })
       .sort((a: Sponsor, b: Sponsor) => (a.sort_order || 0) - (b.sort_order || 0));
   }, [sponsors, content.sponsors]);
 

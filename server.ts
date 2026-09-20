@@ -83,9 +83,52 @@ let inMemorySponsors: any[] = [
   }
 ];
 
+let inMemoryCompanies: any[] = [
+  { id: 1, company_id: '1', name: "Alpha Global Retail Corp", logo_url: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=120&auto=format&fit=crop&q=60", logoUrl: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=120&auto=format&fit=crop&q=60", subscriptionEnd: "2027-12-31", subscription_end: "2027-12-31", is_active: 1, status: 'active', country: "Tanzania", tin_number: "100-200-300", tinNumber: "100-200-300" },
+  { id: 2, company_id: '2', name: "Beta Distributors Ltd", logo_url: "https://images.unsplash.com/photo-1542744094-3a31f103e35f?w=120&auto=format&fit=crop&q=60", logoUrl: "https://images.unsplash.com/photo-1542744094-3a31f103e35f?w=120&auto=format&fit=crop&q=60", subscriptionEnd: "2026-11-30", subscription_end: "2026-11-30", is_active: 1, status: 'active', country: "Tanzania", tin_number: "200-300-400", tinNumber: "200-300-400" },
+  { id: 3, company_id: '3', name: "Apex Commercial Holdings", logo_url: "https://images.unsplash.com/photo-1507679799987-c73779587ccf?w=120&auto=format&fit=crop&q=60", logoUrl: "https://images.unsplash.com/photo-1507679799987-c73779587ccf?w=120&auto=format&fit=crop&q=60", subscriptionEnd: "2026-06-30", subscription_end: "2026-06-30", is_active: 1, status: 'active', country: "Tanzania", tin_number: "300-400-500", tinNumber: "300-400-500" }
+];
+
+let inMemoryStores: any[] = [
+  { id: 1, store_id: '1', company_id: '1', name: 'Main Store', type: 'store', is_active: 1 },
+  { id: 2, store_id: '2', company_id: '1', name: 'Kariakoo Branch', type: 'branch', is_active: 1 }
+];
+
+let inMemoryCategories: string[] = [
+  'co_1:Cereals', 'co_1:Oil', 'co_1:Household', 'co_1:Building', 'co_1:Electronics',
+  'co_2:Cereals', 'co_2:Oil', 'co_2:Household', 'co_2:Building', 'co_2:Electronics',
+  'co_3:Cereals', 'co_3:Oil', 'co_3:Household', 'co_3:Building', 'co_3:Electronics',
+  'Cereals', 'Oil', 'Household', 'Building', 'Electronics'
+];
+
+function archiveExpiredSponsors(): number {
+  const now = Date.now();
+  let count = 0;
+  for (const s of inMemorySponsors) {
+    if (!s.deleted_at && !s.is_archived && s.status !== 'EXPIRED' && s.status !== 'ARCHIVED' && s.end_date) {
+      const endT = s.end_date.length === 10 ? new Date(`${s.end_date}T23:59:59`).getTime() : new Date(s.end_date).getTime();
+      if (!isNaN(endT) && endT < now) {
+        s.is_archived = 1;
+        s.is_active = 0;
+        s.status = 'EXPIRED';
+        s.archived_at = now;
+        s.updated_at = Math.floor(now / 1000);
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
+// Auto-run sponsor archive check every 30 seconds
+setInterval(archiveExpiredSponsors, 30000);
+
 const handlePhpApi = (req: express.Request, res: express.Response) => {
   const action = req.query.action || req.body?.action;
   const now = Math.floor(Date.now() / 1000);
+
+  // Check and auto-archive expired sponsors before responding
+  archiveExpiredSponsors();
 
   // v2_upsert_sponsor
   if (action === 'v2_upsert_sponsor') {
@@ -97,6 +140,23 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     }
     const idx = inMemorySponsors.findIndex(s => s.id === id || s.sponsor_id === id);
     const existing = idx >= 0 ? inMemorySponsors[idx] : null;
+
+    const endDate = raw.end_date || existing?.end_date || null;
+    const startDate = raw.start_date || existing?.start_date || null;
+
+    // Check if end_date has already passed
+    let isExpired = false;
+    if (endDate) {
+      const endT = endDate.length === 10 ? new Date(`${endDate}T23:59:59`).getTime() : new Date(endDate).getTime();
+      if (!isNaN(endT) && endT < Date.now()) {
+        isExpired = true;
+      }
+    }
+
+    const isArchived = (raw.is_archived === 1 || raw.is_archived === true || raw.status === 'EXPIRED' || raw.status === 'ARCHIVED' || isExpired) ? 1 : 0;
+    const isActive = isArchived ? 0 : ((raw.is_active === 0 || raw.is_active === '0' || raw.is_active === false) ? 0 : 1);
+    const status = isArchived ? (raw.status === 'ARCHIVED' ? 'ARCHIVED' : 'EXPIRED') : (isActive ? 'ACTIVE' : 'INACTIVE');
+
     const updatedSponsor = {
       id,
       sponsor_id: id,
@@ -106,9 +166,13 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       website_url: raw.website_url || '',
       description: raw.description || '',
       tier: (raw.tier || 'gold').toLowerCase(),
-      is_active: (raw.is_active === 0 || raw.is_active === '0' || raw.is_active === false) ? 0 : 1,
+      is_active: isActive,
       sort_order: Number(raw.sort_order ?? 0),
-      status: 'ACTIVE',
+      status,
+      start_date: startDate,
+      end_date: endDate,
+      is_archived: isArchived,
+      archived_at: isArchived ? (raw.archived_at || Date.now()) : null,
       created_at: existing?.created_at || now,
       updated_at: now,
       deleted_at: null
@@ -180,15 +244,186 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     });
   }
 
+  // --- MASTER DATA: COMPANIES ---
+  if (action === 'v2_list_companies') {
+    return res.json({
+      success: true,
+      list: inMemoryCompanies,
+      data: inMemoryCompanies,
+      count: inMemoryCompanies.length,
+      server_ts: now
+    });
+  }
+
+  if (action === 'v2_upsert_company') {
+    const raw = req.body?.entity || req.body?.company || req.body || {};
+    const id = raw.id !== undefined && raw.id !== null && raw.id !== '' ? raw.id : (raw.company_id || `co_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    const name = String(raw.name || '').trim();
+    if (!name) {
+      return res.json({ success: false, error: 'Company name is required', server_ts: now });
+    }
+    const idx = inMemoryCompanies.findIndex(c => String(c.id) === String(id) || String(c.company_id) === String(id));
+    const existing = idx >= 0 ? inMemoryCompanies[idx] : {};
+    const updatedCompany = {
+      ...existing,
+      ...raw,
+      id,
+      company_id: String(raw.company_id || id),
+      name,
+      tin_number: raw.tin_number ?? raw.tinNumber ?? existing.tin_number ?? '',
+      tinNumber: raw.tin_number ?? raw.tinNumber ?? existing.tinNumber ?? '',
+      theme_color: raw.theme_color ?? raw.themeColor ?? existing.theme_color ?? '#c41e3a',
+      themeColor: raw.theme_color ?? raw.themeColor ?? existing.themeColor ?? '#c41e3a',
+      subscription_end: raw.subscription_end ?? raw.subscriptionEnd ?? existing.subscription_end ?? '2027-12-31',
+      subscriptionEnd: raw.subscription_end ?? raw.subscriptionEnd ?? existing.subscriptionEnd ?? '2027-12-31',
+      subscriptionApproved: true,
+      language: raw.language ?? existing.language ?? 'en',
+      currency: raw.currency ?? existing.currency ?? 'USD',
+      exchangeRate: raw.exchangeRate !== undefined ? Number(raw.exchangeRate) : (existing.exchangeRate ?? 1),
+      is_active: 1,
+      status: 'active',
+      updated_at: now
+    };
+
+    if (idx >= 0) {
+      inMemoryCompanies[idx] = updatedCompany;
+    } else {
+      inMemoryCompanies.push(updatedCompany);
+    }
+
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.companies)) {
+      const pIdx = inMemoryPhpState.companies.findIndex((c: any) => String(c.id) === String(id) || String(c.company_id) === String(id));
+      if (pIdx >= 0) inMemoryPhpState.companies[pIdx] = updatedCompany;
+      else inMemoryPhpState.companies.push(updatedCompany);
+    }
+
+    return res.json({
+      success: true,
+      id: String(id),
+      data: updatedCompany,
+      server_ts: now
+    });
+  }
+
+  if (action === 'v2_delete_company') {
+    const id = String(req.body?.id || req.query.id || '');
+    inMemoryCompanies = inMemoryCompanies.filter(c => String(c.id) !== id && String(c.company_id) !== id);
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.companies)) {
+      inMemoryPhpState.companies = inMemoryPhpState.companies.filter((c: any) => String(c.id) !== id && String(c.company_id) !== id);
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- MASTER DATA: STORES & BRANCHES ---
+  if (action === 'v2_list_stores' || action === 'v2_list_branches') {
+    const cid = String(req.query.company_id || req.body?.company_id || '');
+    let list = inMemoryStores;
+    if (cid) {
+      list = list.filter(s => String(s.company_id) === cid || String(s.companyId) === cid);
+    }
+    if (action === 'v2_list_branches') {
+      list = list.filter(s => s.type === 'branch');
+    }
+    return res.json({
+      success: true,
+      list,
+      data: list,
+      count: list.length,
+      server_ts: now
+    });
+  }
+
+  if (action === 'v2_upsert_store') {
+    const raw = req.body?.entity || req.body?.store || req.body || {};
+    const id = raw.id || `st_${Date.now()}`;
+    const idx = inMemoryStores.findIndex(s => String(s.id) === String(id));
+    const updated = { ...raw, id, updated_at: now };
+    if (idx >= 0) inMemoryStores[idx] = updated;
+    else inMemoryStores.push(updated);
+    return res.json({ success: true, id: String(id), data: updated, server_ts: now });
+  }
+
+  if (action === 'v2_delete_store') {
+    const id = String(req.body?.id || req.query.id || '');
+    inMemoryStores = inMemoryStores.filter(s => String(s.id) !== id);
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- MASTER DATA: CATEGORIES ---
+  if (action === 'v2_list_categories') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.body?.companyId || '');
+    let list = inMemoryCategories;
+    if (cid && cid !== 'all') {
+      const prefix = `co_${cid}:`;
+      list = list.filter(c => c.startsWith(prefix) || (cid === '1' && !c.includes(':')));
+    }
+    return res.json({
+      success: true,
+      list,
+      data: list,
+      count: list.length,
+      server_ts: now
+    });
+  }
+
+  if (action === 'v2_upsert_category') {
+    const cid = String(req.body?.company_id || req.query.company_id || req.body?.companyId || '1');
+    const name = String(req.body?.name || req.body?.category_name || '').trim();
+    if (!name) {
+      return res.json({ success: false, error: 'Category name is required', server_ts: now });
+    }
+    const catEntry = `co_${cid}:${name}`;
+    if (!inMemoryCategories.includes(catEntry)) {
+      inMemoryCategories.push(catEntry);
+    }
+    if (cid === '1' && !inMemoryCategories.includes(name)) {
+      inMemoryCategories.push(name);
+    }
+    if (inMemoryPhpState) {
+      if (!Array.isArray(inMemoryPhpState.categories)) inMemoryPhpState.categories = [...inMemoryCategories];
+      if (!inMemoryPhpState.categories.includes(catEntry)) inMemoryPhpState.categories.push(catEntry);
+    }
+    return res.json({ success: true, id: `nc_${cid}_${name}`, server_ts: now });
+  }
+
+  if (action === 'v2_delete_category') {
+    const cid = String(req.body?.company_id || req.query.company_id || req.body?.companyId || '');
+    const name = String(req.body?.name || req.body?.category_name || '').trim();
+    if (name) {
+      const catEntry = cid ? `co_${cid}:${name}` : '';
+      inMemoryCategories = inMemoryCategories.filter(c => {
+        if (catEntry && c === catEntry) return false;
+        if (!cid && c === name) return false;
+        if (cid === '1' && c === name) return false;
+        return true;
+      });
+      if (inMemoryPhpState && Array.isArray(inMemoryPhpState.categories)) {
+        inMemoryPhpState.categories = inMemoryPhpState.categories.filter((c: any) => {
+          if (catEntry && c === catEntry) return false;
+          if (!cid && c === name) return false;
+          if (cid === '1' && c === name) return false;
+          return true;
+        });
+      }
+    }
+    return res.json({ success: true, server_ts: now });
+  }
+
   const activeSponsors = inMemorySponsors
-    .filter(s => !s.deleted_at && (s.is_active === 1 || s.is_active === true))
+    .filter(s => !s.deleted_at && !s.is_archived && s.status !== 'EXPIRED' && s.status !== 'ARCHIVED' && (s.is_active === 1 || s.is_active === true))
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   const activeGlobalSponsors = inMemorySponsors
-    .filter(s => !s.deleted_at && (s.is_active === 1 || s.is_active === true) && !s.company_id)
+    .filter(s => !s.deleted_at && !s.is_archived && s.status !== 'EXPIRED' && s.status !== 'ARCHIVED' && (s.is_active === 1 || s.is_active === true) && !s.company_id)
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
 
   if (req.method === "GET" || action === "get_state" || action === "snapshot") {
     const resData = inMemoryPhpState ? { ...inMemoryPhpState } : {};
+    if (!resData.companies || !Array.isArray(resData.companies) || resData.companies.length === 0) {
+      resData.companies = inMemoryCompanies;
+    }
+    if (!resData.categories || !Array.isArray(resData.categories) || resData.categories.length === 0) {
+      resData.categories = inMemoryCategories;
+    }
     resData.sponsors = activeSponsors;
     resData.globalSponsors = activeGlobalSponsors;
     resData._assembled = 1;
@@ -198,21 +433,34 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       _assembled: 1,
       sponsors: activeSponsors,
       globalSponsors: activeGlobalSponsors,
+      companies: inMemoryCompanies,
+      categories: inMemoryCategories,
       data: resData
     });
   }
 
-  if (req.method === "POST" || action === "save_state") {
+  if (action === "save_state" || (!action && req.method === "POST" && (req.body?.data || req.body?.companies || req.body?.settings))) {
     if (req.body && req.body.data) {
       inMemoryPhpState = req.body.data;
     } else if (req.body) {
       inMemoryPhpState = req.body;
     }
+    if (inMemoryPhpState?.companies && Array.isArray(inMemoryPhpState.companies)) {
+      // Sync into inMemoryCompanies while preserving IDs
+      inMemoryCompanies = inMemoryPhpState.companies;
+    }
+    if (inMemoryPhpState?.categories && Array.isArray(inMemoryPhpState.categories)) {
+      for (const c of inMemoryPhpState.categories) {
+        if (c && typeof c === 'string' && !inMemoryCategories.includes(c)) {
+          inMemoryCategories.push(c);
+        }
+      }
+    }
     return res.json({
       success: true,
       status: "ok",
       _assembled: 1,
-      message: "Data successfully synchronized with PHP backend",
+      message: "Data successfully synchronized with backend",
       timestamp: new Date().toISOString()
     });
   }

@@ -14,7 +14,7 @@ import { performCascadeDelete } from '../utils/cascadeDelete';
 import { toast } from '../utils/toast';
 import { getStoreCategories, getCompanyCategories, formatCompanyCategory, cleanCategoryName } from '../utils/categoryHelper';
 import { sv, sameId, getActiveCompanyScope } from '../utils/idUtils';
-import { v2DeleteCategory } from '../utils/normalizedPersistence';
+import { v2DeleteCategory, v2UpsertCategory } from '../utils/normalizedPersistence';
 import LocationPicker from './marketplace/LocationPicker';
 
 interface MasterDataProps {
@@ -256,7 +256,9 @@ export default function MasterData({
         // endpoint FIRST and only purge the local collection on success, so a failed
         // server delete can never leave a desk that still shows the category while the
         // DB (and every other device) has already dropped it.
-        const cid = currentCompanyId != null ? String(currentCompanyId) : (currentUser?.companyId != null ? String(currentUser.companyId) : '');
+        const cid = currentCompanyId != null && String(currentCompanyId).trim() !== ''
+          ? String(currentCompanyId)
+          : (currentUser?.companyId != null && String(currentUser.companyId).trim() !== '' ? String(currentUser.companyId) : '1');
         if (cid) {
           // Deletes the row from the normalized stock_categories MySQL table AND removes
           // it from the shared blob — no ghost category can resurrect on the next
@@ -462,19 +464,47 @@ export default function MasterData({
         if (addCompany) {
           try {
             const newId = await addCompany(cleanCompany);
+            const newCo: any = {
+              ...cleanCompany,
+              id: newId,
+              company_id: newId,
+              is_default: false,
+              created_by: 'root_mandate'
+            };
+            const nextCompanies = companies.some(c => sameId(c.id, newId))
+              ? companies.map(c => sameId(c.id, newId) ? { ...c, ...newCo } : c)
+              : [...companies, newCo];
             const nextSettings = {
               ...settings,
               companyLanguages: { ...(settings?.companyLanguages || {}), [newId]: coLang },
               companyCurrencies: { ...(settings?.companyCurrencies || {}), [newId]: coCurr },
               companyExchangeRates: { ...(settings?.companyExchangeRates || {}), [newId]: coRate }
             };
-            saveAllData({ settings: nextSettings });
+            saveAllData({ companies: nextCompanies, settings: nextSettings });
+            toast.success(t('Company registered successfully!'));
             logAction('Create Company', `Registered new Company: ${data.name} (id=${newId})`);
-          } catch (e) {
+          } catch (e: any) {
             console.error('[MasterData] addCompany failed', e);
+            toast.error(t('Failed to save company: ') + (e?.message || String(e)));
+            const nextId = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `co_${Date.now()}`;
+            const newCo: any = {
+              ...cleanCompany,
+              id: nextId,
+              company_id: nextId,
+              is_default: false,
+              created_by: 'root_mandate'
+            };
+            const nextCompanies = [...companies, newCo];
+            const nextSettings = {
+              ...settings,
+              companyLanguages: { ...(settings?.companyLanguages || {}), [nextId]: coLang },
+              companyCurrencies: { ...(settings?.companyCurrencies || {}), [nextId]: coCurr },
+              companyExchangeRates: { ...(settings?.companyExchangeRates || {}), [nextId]: coRate }
+            };
+            saveAllData({ companies: nextCompanies, settings: nextSettings });
           }
         } else {
-          const nextId = Math.max(0, ...companies.map(c => c.id)) + 1;
+          const nextId = Math.max(0, ...companies.map(c => Number(c.id) || 0)) + 1;
           const newCo: any = {
             ...cleanCompany,
             id: nextId,
@@ -489,6 +519,7 @@ export default function MasterData({
             companyExchangeRates: { ...(settings?.companyExchangeRates || {}), [nextId]: coRate }
           };
           saveAllData({ companies: [...companies, newCo], settings: nextSettings });
+          toast.success(t('Company registered successfully!'));
           logAction('Create Company', `Registered new Company: ${data.name}`);
         }
       }
@@ -594,27 +625,32 @@ export default function MasterData({
     } else if (type === 'category') {
       if (!data.name?.trim()) return;
       const cleanName = data.name.trim();
+      const coId = currentCompanyId != null && String(currentCompanyId).trim() !== ''
+        ? String(currentCompanyId)
+        : (currentUser?.companyId != null && String(currentUser.companyId).trim() !== '' ? String(currentUser.companyId) : '1');
       // Drop any null/empty/legacy entries so a malformed categories array can never
       // crash the filter or leak `null` into the persisted blob.
       const safeCats = (categories || []).filter(c => c && typeof c === 'string' && c.trim());
-      const newCatName = currentCompanyId ? formatCompanyCategory(cleanName, currentCompanyId) : cleanName;
-      if (safeCats.some(c => c === newCatName)) {
+      const newCatName = formatCompanyCategory(cleanName, coId);
+      if (safeCats.some(c => c === newCatName || (cleanCategoryName(c).toLowerCase() === cleanName.toLowerCase() && (c.startsWith(`co_${coId}:`) || (coId === '1' && !c.includes(':')))))) {
         toast.warning(t('Category already exists!'));
         return;
+      }
+      // Call direct v2UpsertCategory so MySQL database is updated immediately
+      try {
+        await v2UpsertCategory(coId, cleanName);
+      } catch (err) {
+        console.warn('[MasterData] v2UpsertCategory direct call error:', err);
       }
       // Persist immediately + synchronize with the backend blob (categories are stored
       // company-scoped as "co_<companyId>:<name>" so they survive reloads, company
       // switches and re-fetches without being wiped).
-      // CATEGORY CRUD DIRTY-MARKING (2026-09-07-02): BOTH the categories collection AND
-      // the owning companies collection are explicitly dirty-marked + force-flushed so
-      // the sync engine transmits the new record immediately (the key-based shouldFlush
-      // releases this delta regardless of its byte size). The modal stays mounted until
-      // the optimistic mutation promise settles — no detached-form submission can cancel.
       await saveAllData({
         categories: [...safeCats, newCatName],
         companies
       });
       logAction('Create Category', `Created Category: ${cleanName}`);
+      toast.success(t('Category created successfully!'));
     } else if (type === 'tax') {
       const rate = parseFloat(data.rate) || 0;
       const compId = currentCompanyId ?? currentUser?.companyId ?? null;
@@ -1235,7 +1271,7 @@ export default function MasterData({
             )}
           </div>
           <ul className="divide-y divide-gray-100">
-            {getCompanyCategories(categories, currentCompanyId).map((c, i) => (
+            {getCompanyCategories(categories, currentCompanyId || currentUser?.companyId || '1').map((c, i) => (
               <li key={i} className="px-6 py-4 flex justify-between items-center hover:bg-gray-50/50">
                 <span className="font-bold text-gray-800">{cleanCategoryName(c)}</span>
                 {isAdmin && (

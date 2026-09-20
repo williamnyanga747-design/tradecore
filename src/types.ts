@@ -543,6 +543,10 @@ export interface Sponsor {
   is_active: number | boolean;
   sort_order: number;
   status?: string;
+  start_date?: string | null;
+  end_date?: string | null;
+  is_archived?: number | boolean;
+  archived_at?: number | string | null;
   created_at?: number;
   updated_at?: number;
   deleted_at?: number | null;

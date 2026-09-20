@@ -31,6 +31,8 @@ import { Stars, VerifiedBadge, TZS } from './marketplace/MarketplaceShared';
 import AnalyticsLineChart from './marketplace/AnalyticsLineChart';
 import LeafletMap from './marketplace/LeafletMap';
 
+const EMPTY_SPONSORS: Sponsor[] = [];
+
 interface RootMandatePanelProps {
   currentUser: User;
   users: User[];
@@ -313,28 +315,6 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
   const updateSettings = (patch: Partial<Settings>) => onSaveSettings({ ...settings, ...patch });
 
   const updateHomepage = (patch: Partial<HomepageContent>) => updateSettings({ homepageContent: { ...content, ...patch } });
-
-  const tabBtn = (key: RootTab, label: string, icon: React.ReactNode) => (
-    <button
-      key={key}
-      onClick={() => setTab(key)}
-      className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition ${
-        tab === key ? 'bg-brand text-white shadow' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
-      }`}
-    >
-      {icon}
-      {label}
-      {key === 'overview' && pendingCompanies.length > 0 && (
-        <span className="bg-red-500 text-white text-[10px] rounded-full px-1.5">{pendingCompanies.length}</span>
-      )}
-      {key === 'products' && pendingProducts.length > 0 && (
-        <span className="bg-amber-500 text-white text-[10px] rounded-full px-1.5">{pendingProducts.length}</span>
-      )}
-      {key === 'collections' && pendingCollections.length > 0 && (
-        <span className="bg-amber-500 text-white text-[10px] rounded-full px-1.5">{pendingCollections.length}</span>
-      )}
-    </button>
-  );
 
   const confirm = (type: string, id: number, label: string) => setConfirmTarget({ type, id, label });
   const runConfirm = () => {
@@ -914,16 +894,18 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
       <HomepageControl
         translate={t}
         canManage={true}
-        sponsors={rawSponsors || settings.sponsors || []}
+        sponsors={rawSponsors || settings.sponsors || EMPTY_SPONSORS}
         onSponsorsChange={(updated) => {
-          if (onUpdateSponsors) {
-            onUpdateSponsors(updated);
-          }
-          updateSettings({
-            sponsors: updated,
-            homepageContent: { ...content, sponsors: updated }
-          });
-          logAction('Sponsors Updated', `ROOT_MANDATE updated sponsors collection (${updated.length} sponsors).`);
+          setTimeout(() => {
+            if (onUpdateSponsors) {
+              onUpdateSponsors(updated);
+            }
+            updateSettings({
+              sponsors: updated,
+              homepageContent: { ...content, sponsors: updated }
+            });
+            logAction('Sponsors Updated', `ROOT_MANDATE updated sponsors collection (${updated.length} sponsors).`);
+          }, 0);
         }}
       >
         <div className="space-y-4">
@@ -2880,7 +2862,27 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
 
       {/* Tab bar */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-thin">
-        {TABS.map(tb => tabBtn(tb.key, tb.label, tb.icon))}
+        {TABS.map(tb => (
+          <button
+            key={tb.key}
+            onClick={() => setTab(tb.key)}
+            className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold whitespace-nowrap transition ${
+              tab === tb.key ? 'bg-brand text-white shadow' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
+            }`}
+          >
+            {tb.icon}
+            {tb.label}
+            {tb.key === 'overview' && pendingCompanies.length > 0 && (
+              <span className="bg-red-500 text-white text-[10px] rounded-full px-1.5">{pendingCompanies.length}</span>
+            )}
+            {tb.key === 'products' && pendingProducts.length > 0 && (
+              <span className="bg-amber-500 text-white text-[10px] rounded-full px-1.5">{pendingProducts.length}</span>
+            )}
+            {tb.key === 'collections' && pendingCollections.length > 0 && (
+              <span className="bg-amber-500 text-white text-[10px] rounded-full px-1.5">{pendingCollections.length}</span>
+            )}
+          </button>
+        ))}
       </div>
 
       {/* Tab content */}
