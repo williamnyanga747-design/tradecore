@@ -149,9 +149,9 @@ export default function RegisterCompany({ plans, payNumbers, translate: t, theme
     if (!email.trim() || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return 'A valid email address is required';
     if (!phone.trim()) return 'Phone number is required';
     if (!companyName.trim()) return 'Company name is required';
-    // TRA COMPLIANCE — TIN required by TRA law
-    const cleanTin = tinNumber.replace(/-/g, '');
-    if (!cleanTin || !/^\d{9,12}$/.test(cleanTin)) return 'TIN Number (TRA) is required — 9 to 12 digits.';
+    // TRA COMPLIANCE — TIN is optional during registration
+    const cleanTin = tinNumber.replace(/-/g, '').trim();
+    if (cleanTin && !/^\d{9,12}$/.test(cleanTin)) return 'TIN Number must be 9 to 12 digits if provided.';
     if (isVatRegistered && !vrnNumber.trim()) return 'VRN is required when you are VAT registered.';
     if (!password) return 'Password is required';
     if (password.length < 6) return 'Password must be at least 6 characters';
@@ -338,12 +338,12 @@ export default function RegisterCompany({ plans, payNumbers, translate: t, theme
                 </div>
                 <div className="grid md:grid-cols-2 gap-4">
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-gray-400 block tracking-wider uppercase">{t('TIN Number')} *</label>
+                    <label className="text-[10px] font-bold text-gray-400 block tracking-wider uppercase">{t('TIN Number (Optional)')}</label>
                     <input
                       value={tinNumber}
                       onChange={(e) => setTinNumber(e.target.value.replace(/[^0-9\-]/g, ''))}
                       className={inputCls}
-                      placeholder="123-456-789"
+                      placeholder="123-456-789 (Optional)"
                       maxLength={14}
                     />
                   </div>

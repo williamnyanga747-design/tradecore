@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { Package, CheckCircle2, XCircle, Truck, Search, ChevronDown, Store, Phone, MapPin, Calendar, FileText, ShieldCheck, Boxes, Lock, Archive, ArchiveRestore, Trash2, RotateCcw } from 'lucide-react';
 import { Company, MarketplaceOrder, MarketplaceOrderStatus, User } from '../types';
 import StatusStepper from './marketplace/StatusStepper';
@@ -63,6 +63,19 @@ export default function MarketplaceOrdersPanel({
       .filter(o => !q || safeLower(o.orderNumber).includes(q) || safeLower(o.customerName).includes(q) || safeLower(o.customerPhone).replace(/\s/g, '').includes(q.replace(/\s/g, '')))
       .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   }, [orders, currentCompanyId, filter, search, viewTab]);
+
+  const [ordersPage, setOrdersPage] = useState<number>(1);
+  const ORDERS_PAGE_SIZE = 30;
+
+  useEffect(() => {
+    setOrdersPage(1);
+  }, [search, filter, viewTab, currentCompanyId]);
+
+  const totalOrderPages = Math.max(1, Math.ceil(scopedOrders.length / ORDERS_PAGE_SIZE));
+  const currentOrdersPage = Math.min(ordersPage, totalOrderPages);
+  const paginatedScopedOrders = useMemo(() => {
+    return scopedOrders.slice((currentOrdersPage - 1) * ORDERS_PAGE_SIZE, currentOrdersPage * ORDERS_PAGE_SIZE);
+  }, [scopedOrders, currentOrdersPage]);
 
   const viewCounts = useMemo(() => {
     const base = currentCompanyId ? orders.filter(o => sameId(o.companyId, currentCompanyId)) : orders;
@@ -244,7 +257,7 @@ export default function MarketplaceOrdersPanel({
         </div>
       ) : (
         <div className="space-y-3">
-          {scopedOrders.map(o => {
+          {paginatedScopedOrders.map(o => {
             const company = companyFor(o.companyId);
             const action = nextAction(o.status);
             const isExpanded = expanded === o.id;
@@ -456,8 +469,33 @@ export default function MarketplaceOrdersPanel({
       )}
 
       {scopedOrders.length > 0 && (
-        <div className="text-center text-[10px] text-gray-400 font-semibold">
-          {scopedOrders.length} {countLabel} · {t('You can also track from the staff dashboard')} <Boxes className="inline w-3 h-3" />
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
+          <div className="text-[11px] text-gray-500 font-semibold">
+            {t('Showing')} <span className="font-bold text-gray-800">{(currentOrdersPage - 1) * ORDERS_PAGE_SIZE + 1}</span> - <span className="font-bold text-gray-800">{Math.min(currentOrdersPage * ORDERS_PAGE_SIZE, scopedOrders.length)}</span> {t('of')} <span className="font-bold text-gray-800">{scopedOrders.length}</span> {countLabel}
+          </div>
+          {scopedOrders.length > ORDERS_PAGE_SIZE && (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={currentOrdersPage <= 1}
+                onClick={() => setOrdersPage(prev => Math.max(1, prev - 1))}
+                className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              >
+                {t('Previous')}
+              </button>
+              <span className="text-xs font-bold text-gray-700 px-2">
+                {currentOrdersPage} / {totalOrderPages}
+              </span>
+              <button
+                type="button"
+                disabled={currentOrdersPage >= totalOrderPages}
+                onClick={() => setOrdersPage(prev => Math.min(totalOrderPages, prev + 1))}
+                className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              >
+                {t('Next')}
+              </button>
+            </div>
+          )}
         </div>
       )}
 

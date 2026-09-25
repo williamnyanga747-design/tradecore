@@ -65,9 +65,10 @@ export default function Reports({
   const companyStoreIds = useMemo(() => companyStores.map(s => s.id), [companyStores]);
 
   // Store match: explicit store wins; otherwise restrict to the active company's stores
-  const matchesStore = (id: number) => {
+  const matchesStore = (id?: number | string | null) => {
+    if (id == null) return true;
     if (currentStoreId) return sameId(id, currentStoreId);
-    return companyStoreIds.length === 0 || companyStoreIds.includes(id);
+    return companyStoreIds.length === 0 || companyStoreIds.some(csId => sameId(csId, id));
   };
 
   // Date states for Transaction Search

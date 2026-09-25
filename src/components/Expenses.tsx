@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Expense, Store } from '../types';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Expense, Store, Branch } from '../types';
 import { formatMoney, exportToExcel } from '../utils/format';
 import { handlePrintWithFallback } from '../utils/printHelper';
 import { safeLower } from '../utils/stateHelpers';
@@ -10,6 +10,8 @@ import { sameId } from '../utils/idUtils';
 interface ExpensesProps {
   expenses: Expense[];
   stores: Store[];
+  branches?: Branch[];
+  currentCompanyId?: string | number | null;
   currentStoreId: string | number | null;
   currency: string;
   exchangeRate: number;
@@ -22,6 +24,8 @@ interface ExpensesProps {
 export default function Expenses({
   expenses,
   stores,
+  branches,
+  currentCompanyId,
   currentStoreId,
   currency,
   exchangeRate,
@@ -49,15 +53,22 @@ export default function Expenses({
   const [description, setDescription] = useState('');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const activeStores = stores.filter(s => !s.isDeleted);
+  const activeStores = useMemo(() => stores.filter(s => !s.isDeleted), [stores]);
   const [storeId, setStoreId] = useState<string | number | null>(currentStoreId || (activeStores[0]?.id ?? null));
   const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Bank' | 'Mobile Money'>('Cash');
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
+  const [filterStoreId, setFilterStoreId] = useState<string>('all');
 
   const categories = ['Rent', 'Utilities', 'Salaries', 'Transport', 'Packaging', 'Marketing', 'Other'];
+
+  useEffect(() => {
+    if (currentStoreId) {
+      setStoreId(currentStoreId);
+    }
+  }, [currentStoreId]);
 
   const handleOpenAdd = () => {
     setEditingExpenseId(null);
@@ -92,6 +103,14 @@ export default function Expenses({
     const rawAmt = parseFloat(amount);
     const usdAmount = currency === 'TZS' ? rawAmt / exchangeRate : rawAmt;
 
+    const selectedStore = activeStores.find(s => sameId(s.id, storeId));
+    const storeBranch = selectedStore && branches ? branches.find(b => sameId(b.id, selectedStore.branchId)) : null;
+    const effectiveCompanyId = currentCompanyId
+      || (selectedStore as any)?.companyId
+      || storeBranch?.companyId;
+
+    const cleanStoreId = storeId != null && storeId !== '' && storeId !== 'all' ? (selectedStore ? selectedStore.id : storeId) : null;
+
     if (editingExpenseId !== null) {
       // Edit mode
       const updated = expenses.map(exp => {
@@ -102,7 +121,8 @@ export default function Expenses({
             description,
             amount: usdAmount,
             date,
-            storeId: Number(storeId),
+            storeId: cleanStoreId,
+            companyId: exp.companyId || effectiveCompanyId,
             paymentMethod
           };
         }
@@ -122,7 +142,8 @@ export default function Expenses({
         description,
         amount: usdAmount,
         date,
-        storeId: Number(storeId),
+        storeId: cleanStoreId,
+        companyId: effectiveCompanyId,
         paymentMethod
       };
       await onUpdateExpenses([newExp, ...expenses]);
@@ -147,19 +168,35 @@ export default function Expenses({
   };
 
   const getStoreName = (id: number | string | null) => {
+    if (id == null) return translate("General / HQ");
     return stores.find(s => sameId(s.id, id))?.name || `Store #${id}`;
   };
 
   // Filter local store and queries
-  const filteredExpenses = expenses.filter(exp => {
-    const matchStore = currentStoreId ? sameId(exp.storeId, currentStoreId) : true;
-    const matchCat = filterCategory ? exp.category === filterCategory : true;
-    const matchSearch = searchQuery
-      ? safeLower(exp.description).includes(searchQuery.toLowerCase()) ||
-        safeLower(exp.expenseNumber).includes(searchQuery.toLowerCase())
-      : true;
-    return matchStore && matchCat && matchSearch;
-  });
+  const filteredExpenses = useMemo(() => {
+    return expenses.filter(exp => {
+      const matchStore = filterStoreId !== 'all'
+        ? sameId(exp.storeId, filterStoreId)
+        : (currentStoreId ? (sameId(exp.storeId, currentStoreId) || exp.storeId == null) : true);
+      const matchCat = filterCategory ? exp.category === filterCategory : true;
+      const matchSearch = searchQuery
+        ? safeLower(exp.description).includes(searchQuery.toLowerCase()) ||
+          safeLower(exp.expenseNumber).includes(searchQuery.toLowerCase())
+        : true;
+      return matchStore && matchCat && matchSearch;
+    });
+  }, [expenses, filterStoreId, currentStoreId, filterCategory, searchQuery]);
+
+  const [currentPageNum, setCurrentPageNum] = useState<number>(1);
+  const EXPENSES_PAGE_SIZE = 50;
+
+  useEffect(() => {
+    setCurrentPageNum(1);
+  }, [searchQuery, filterCategory, currentStoreId]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredExpenses.length / EXPENSES_PAGE_SIZE));
+  const activePage = Math.min(currentPageNum, totalPages);
+  const paginatedExpenses = filteredExpenses.slice((activePage - 1) * EXPENSES_PAGE_SIZE, activePage * EXPENSES_PAGE_SIZE);
 
   const totalFilteredAmt = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
 
@@ -227,6 +264,16 @@ export default function Expenses({
             <option value="">All Categories</option>
             {categories.map(c => (
               <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+          <select
+            value={filterStoreId}
+            onChange={(e) => setFilterStoreId(e.target.value)}
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium text-gray-700"
+          >
+            <option value="all">{translate('All Stores & HQ')}</option>
+            {activeStores.map(s => (
+              <option key={s.id} value={s.id}>{s.name}</option>
             ))}
           </select>
         </div>
@@ -318,10 +365,11 @@ export default function Expenses({
               <div>
                 <label className="text-xs font-semibold text-gray-700 mb-1 block">Assigned Store</label>
                 <select
-                  value={storeId}
-                  onChange={(e) => setStoreId(e.target.value)}
+                  value={storeId ?? ''}
+                  onChange={(e) => setStoreId(e.target.value === '' ? null : e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium"
                 >
+                  <option value="">{translate('General / HQ (All Stores)')}</option>
                   {activeStores.map(s => (
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
@@ -397,7 +445,7 @@ export default function Expenses({
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filteredExpenses.map(exp => (
+              {paginatedExpenses.map(exp => (
                 <tr key={exp.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-5 py-3 font-bold text-brand font-mono">{exp.expenseNumber}</td>
                   <td className="px-5 py-3 text-gray-500 whitespace-nowrap">{exp.date}</td>
@@ -447,6 +495,34 @@ export default function Expenses({
             </tbody>
           </table>
         </div>
+        {filteredExpenses.length > 0 && (
+          <div className="p-3 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-3 bg-gray-50/50">
+            <span className="text-xs text-gray-500 font-medium">
+              Showing <span className="font-bold text-gray-800">{(activePage - 1) * EXPENSES_PAGE_SIZE + 1}</span> to <span className="font-bold text-gray-800">{Math.min(activePage * EXPENSES_PAGE_SIZE, filteredExpenses.length)}</span> of <span className="font-bold text-gray-800">{filteredExpenses.length}</span> expenses
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={activePage <= 1}
+                onClick={() => setCurrentPageNum(prev => Math.max(1, prev - 1))}
+                className="px-2.5 py-1 text-xs font-semibold rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              >
+                Previous
+              </button>
+              <span className="text-xs font-bold text-gray-700 px-2">
+                {activePage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={activePage >= totalPages}
+                onClick={() => setCurrentPageNum(prev => Math.min(totalPages, prev + 1))}
+                className="px-2.5 py-1 text-xs font-semibold rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       <ConfirmActionModal
         isOpen={confirmModal.isOpen}

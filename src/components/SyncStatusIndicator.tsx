@@ -188,3 +188,67 @@ export default function SyncStatusIndicator({
     </div>
   );
 }
+
+/**
+ * WhatsApp-style top-bar status banner for offline state and pending changes.
+ * Sits at the very top of the interface when the device is disconnected or
+ * syncing pending queued mutations.
+ */
+export function OfflineTopBar({ t = (text: string) => text }: { t?: (text: string) => string }) {
+  const snap = useSyncStatus();
+
+  // If online and no changes are pending or syncing, render nothing
+  if (snap.online && snap.pending === 0 && !snap.busy) {
+    return null;
+  }
+
+  if (!snap.online) {
+    return (
+      <div
+        id="offline-top-bar"
+        className="no-print w-full bg-amber-600 text-amber-50 px-4 py-1.5 flex items-center justify-between text-xs font-semibold shadow-md z-[9999] transition-all"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex items-center gap-2 mx-auto sm:mx-0">
+          <WifiOff className="w-3.5 h-3.5 shrink-0 text-amber-200 animate-pulse" />
+          <span>
+            {t('Offline')}
+            {snap.pending > 0
+              ? ` — ${snap.pending} ${t('changes pending')}`
+              : ` — ${t('No internet connection')}`}
+          </span>
+          <span className="hidden sm:inline text-amber-200/90 font-normal text-[11px]">
+            • {t('Changes saved locally; will sync automatically when back online')}
+          </span>
+        </div>
+        {snap.pending > 0 && (
+          <span className="hidden md:inline bg-amber-700/90 text-amber-100 text-[10px] px-2 py-0.5 rounded-full font-bold">
+            {snap.pending} {t('pending in queue')}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  if (snap.busy || snap.status === 'syncing') {
+    return (
+      <div
+        id="syncing-top-bar"
+        className="no-print w-full bg-sky-600 text-sky-50 px-4 py-1.5 flex items-center justify-between text-xs font-semibold shadow-md z-[9999] transition-all"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex items-center gap-2 mx-auto sm:mx-0">
+          <RefreshCw className="w-3.5 h-3.5 shrink-0 text-sky-200 animate-spin" />
+          <span>
+            {t('Syncing changes to server')}
+            {snap.total > 0 ? ` (${snap.total} ${t('remaining')})` : '…'}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}

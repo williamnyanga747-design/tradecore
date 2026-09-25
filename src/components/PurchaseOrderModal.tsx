@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
-import { Supplier, StockItem, PurchaseOrder, Store, Settings, POItem } from '../types';
+import React, { useState, useMemo, useRef } from 'react';
+import { Supplier, StockItem, PurchaseOrder, Store, Branch, Settings, POItem } from '../types';
 import { X, Search, Plus, Minus, Trash2, FileText, AlertTriangle, CheckCircle, Info } from 'lucide-react';
 import { formatMoney } from '../utils/format';
 import { safeLower } from '../utils/stateHelpers';
+import { sameId } from '../utils/idUtils';
 import { toast } from '../utils/toast';
 import { addFIFOBatch } from '../utils/fifo';
 
@@ -14,6 +15,8 @@ interface PurchaseOrderModalProps {
   purchaseOrders: PurchaseOrder[];
   currentStoreId: string | number | null;
   stores: Store[];
+  branches?: Branch[];
+  currentCompanyId?: string | number | null;
   saveAllData: (updatedFields: Partial<{
     purchaseOrders: PurchaseOrder[];
     stockItems: StockItem[];
@@ -34,6 +37,8 @@ export default function PurchaseOrderModal({
   purchaseOrders,
   currentStoreId,
   stores,
+  branches,
+  currentCompanyId,
   saveAllData,
   logAction,
   settings,
@@ -43,28 +48,36 @@ export default function PurchaseOrderModal({
 }: PurchaseOrderModalProps) {
   const activeCurrency = currency || settings.currency || 'USD';
   const activeExchangeRate = exchangeRate || settings.exchangeRate || 1;
-  const activeStores = stores.filter(s => !s.isDeleted);
-  const [selectedStoreId, setSelectedStoreId] = useState<number>(currentStoreId || activeStores[0]?.id || 1);
+  const activeStores = useMemo(() => stores.filter(s => !s.isDeleted), [stores]);
+  const [selectedStoreId, setSelectedStoreId] = useState<string | number>(currentStoreId || activeStores[0]?.id || 1);
 
   const activeSuppliersForStore = useMemo(() => {
-    return suppliers.filter(s => !s.storeId || s.storeId === selectedStoreId);
+    return suppliers.filter(s => !s.storeId || sameId(s.storeId, selectedStoreId));
   }, [suppliers, selectedStoreId]);
 
-  const [selectedSupplierId, setSelectedSupplierId] = useState<number>(activeSuppliersForStore[0]?.id || 1);
+  const [selectedSupplierId, setSelectedSupplierId] = useState<string | number>(activeSuppliersForStore[0]?.id || 1);
+
+  const prevIsOpenRef = useRef(isOpen);
 
   React.useEffect(() => {
-    if (isOpen) {
-      setSelectedStoreId(currentStoreId || activeStores[0]?.id || 1);
+    if (isOpen && !prevIsOpenRef.current) {
+      const defaultStore = activeStores.find(s => sameId(s.id, currentStoreId)) || activeStores[0];
+      if (defaultStore?.id != null) {
+        setSelectedStoreId(defaultStore.id);
+      } else if (currentStoreId != null) {
+        setSelectedStoreId(currentStoreId);
+      }
       setPoItems([]);
       setSearchQuery('');
       setErrorMsg(null);
       setReceiveImmediately(false);
       setActiveTab('catalog');
     }
-  }, [isOpen, currentStoreId]);
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen, currentStoreId, activeStores]);
 
   React.useEffect(() => {
-    if (activeSuppliersForStore.length > 0 && !activeSuppliersForStore.some(s => s.id === selectedSupplierId)) {
+    if (activeSuppliersForStore.length > 0 && !activeSuppliersForStore.some(s => sameId(s.id, selectedSupplierId))) {
       setSelectedSupplierId(activeSuppliersForStore[0].id);
     }
   }, [activeSuppliersForStore, selectedSupplierId]);
@@ -193,12 +206,20 @@ export default function PurchaseOrderModal({
 
     const maxId = purchaseOrders.length > 0 ? Math.max(...purchaseOrders.map(p => p.id)) : 0;
     const poNum = `PO-2024-${String(1003 + maxId).padStart(4, '0')}`;
+    const selectedStore = activeStores.find(s => sameId(s.id, selectedStoreId));
+    const storeBranch = selectedStore && branches ? branches.find(b => sameId(b.id, selectedStore.branchId)) : null;
+    const effectiveCompanyId = currentCompanyId
+      || (selectedStore as any)?.companyId
+      || (selectedStore as any)?.company_id
+      || storeBranch?.companyId
+      || (settings as any)?.companyId;
 
     const newPO: PurchaseOrder = {
       id: maxId + 1,
       poNumber: poNum,
-      supplierId: selectedSupplierId,
-      storeId: selectedStoreId,
+      supplierId: typeof selectedSupplierId === 'number' ? selectedSupplierId : (Number(selectedSupplierId) || selectedSupplierId as any),
+      storeId: selectedStore ? selectedStore.id : selectedStoreId,
+      companyId: effectiveCompanyId,
       date: new Date().toISOString().split('T')[0],
       status: receiveImmediately ? 'Received' : 'Pending',
       items: poItems.map(p => ({
@@ -428,15 +449,17 @@ export default function PurchaseOrderModal({
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-gray-500 uppercase">{t('Store')}</label>
                   <select
-                    value={selectedStoreId}
+                    value={String(selectedStoreId)}
                     onChange={(e) => {
-                      setSelectedStoreId(Number(e.target.value));
+                      const val = e.target.value;
+                      const matched = activeStores.find(s => String(s.id) === val);
+                      setSelectedStoreId(matched ? matched.id : val);
                       setErrorMsg(null);
                     }}
                     className="w-full px-2.5 py-1.5 border rounded-lg text-xs bg-white font-semibold outline-none"
                   >
                     {activeStores.map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
+                      <option key={String(s.id)} value={String(s.id)}>{s.name}</option>
                     ))}
                   </select>
                 </div>
@@ -444,12 +467,16 @@ export default function PurchaseOrderModal({
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-gray-500 uppercase">{t('Supplier')}</label>
                   <select
-                    value={selectedSupplierId}
-                    onChange={(e) => setSelectedSupplierId(Number(e.target.value))}
+                    value={String(selectedSupplierId)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const matched = suppliers.find(s => String(s.id) === val);
+                      setSelectedSupplierId(matched ? matched.id : val);
+                    }}
                     className="w-full px-2.5 py-1.5 border rounded-lg text-xs bg-white font-semibold outline-none"
                   >
                     {activeSuppliersForStore.map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
+                      <option key={String(s.id)} value={String(s.id)}>{s.name}</option>
                     ))}
                   </select>
                 </div>

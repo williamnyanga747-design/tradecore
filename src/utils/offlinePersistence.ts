@@ -72,6 +72,7 @@ export interface SyncStatusSnapshot {
   online: boolean;
   busy: boolean;
   total: number;
+  pending: number;
   sales: number;
   error: string | null;
 }
@@ -94,7 +95,7 @@ export function getSyncStatusSnapshot(): SyncStatusSnapshot {
   else if (!online) status = 'offline';
   else if (lastError !== null && total > 0) status = 'error';
   else status = 'synced';
-  return { status, online, busy, total, sales, error: lastError };
+  return { status, online, busy, total, pending: total, sales, error: lastError };
 }
 
 function notifyQueue() {
@@ -221,6 +222,7 @@ export function replaceQueue(ops: QueueOp[]): number {
 export function queueMutations(ops: QueueOp[]): number {
   if (!ops || ops.length === 0) return queueMirror.length;
   for (const op of ops) {
+    console.log('[Offline] Queued:', op.table, op.op, op.id);
     queueMirror.push({ ...op, status: 'pending' });
   }
   queueMirror.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
@@ -373,11 +375,43 @@ function resolveAction(item: QueueOp): { action: string; payload: Record<string,
   }
 
   // Products → v2 (atomic company-scoped upsert/delete + legacy mirror + blob merge).
-  if (item.table === 'marketplaceProducts') {
+  if (item.table === 'marketplaceProducts' || item.table === 'products') {
     if (item.op === 'upsert') {
       return { action: 'v2_upsert_product', payload: { entity: item.data, ...base } };
     }
     return { action: 'v2_delete_product', payload: { id: String(item.id), ...base } };
+  }
+
+  // Companies → v2.
+  if (item.table === 'companies') {
+    if (item.op === 'upsert') {
+      return { action: 'v2_upsert_company', payload: { entity: item.data } };
+    }
+    return { action: 'v2_delete_company', payload: { id: String(item.id) } };
+  }
+
+  // Sponsors → v2.
+  if (item.table === 'sponsors') {
+    if (item.op === 'upsert') {
+      return { action: 'v2_upsert_sponsor', payload: { entity: item.data } };
+    }
+    return { action: 'v2_delete_sponsor', payload: { id: String(item.id) } };
+  }
+
+  // Stores → v2.
+  if (item.table === 'stores') {
+    if (item.op === 'upsert') {
+      return { action: 'v2_upsert_store', payload: { entity: item.data, ...base } };
+    }
+    return { action: 'v2_delete_store', payload: { id: String(item.id), ...base } };
+  }
+
+  // Branches → v2.
+  if (item.table === 'branches') {
+    if (item.op === 'upsert') {
+      return { action: 'v2_upsert_branch', payload: { entity: item.data, ...base } };
+    }
+    return { action: 'v2_delete_branch', payload: { id: String(item.id), ...base } };
   }
 
   // Users → v2.
@@ -447,6 +481,7 @@ export async function drainSyncQueue(opts?: { endpoint?: string; onItem?: (item:
   if (items.length === 0) return summary;
 
   draining = true;
+  console.log(`[Sync] Pushing queue: ${items.length} items`);
   window.dispatchEvent(new CustomEvent(QUEUE_EVENT, { detail: { busy: true, pending: items.length } }));
   notifyQueue();
   const endpoint = resolveSyncEndpoint(opts?.endpoint);
@@ -462,6 +497,8 @@ export async function drainSyncQueue(opts?: { endpoint?: string; onItem?: (item:
 
       if (ok) {
         // COMMIT POINT: server committed to MySQL → now clear the client item.
+        const ackVer = body?.version ?? body?.server_version ?? body?.server_ts ?? 'ACK';
+        console.log(`[Sync] Server ACK version ${ackVer} for item: ${item.table} ${item.id}`);
         removeQueueItem(item.id);
         summary.synced++;
         opts?.onItem?.(item, true);

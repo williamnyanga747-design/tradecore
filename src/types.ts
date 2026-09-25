@@ -323,6 +323,7 @@ export interface Branch {
 export interface Store {
   id: number;
   branchId: number;
+  companyId?: number;
   name: string;
   location: string;
   phone: string;
@@ -346,7 +347,7 @@ export interface User {
   branchId: number | null;
   storeId: number | null;
   firstLogin: boolean;
-  status: 'Active' | 'Blocked';
+  status: 'Active' | 'Blocked' | 'Pending Verification' | 'Pending Approval' | 'Pending';
   allowedPages?: string[];
   remoteTerminated?: boolean;
   remoteTerminatedAt?: string;
@@ -428,6 +429,7 @@ export interface PurchaseOrder {
   poNumber: string;
   supplierId: number;
   storeId: number;
+  companyId?: string | number;
   date: string;
   status: 'Pending' | 'Received';
   items: POItem[];
@@ -450,6 +452,7 @@ export interface SalesOrder {
   soNumber: string;
   customerId: number;
   storeId: number;
+  companyId?: number | string | null;
   date: string;
   priceType: 'Retail' | 'Wholesale' | 'Preferred';
   items: SOItem[];
@@ -459,6 +462,7 @@ export interface SalesOrder {
   paymentMethod?: 'Cash' | 'Bank' | 'Mobile Money' | 'Split';
   paymentStatus?: 'Paid' | 'Credit' | 'Partial';
   paymentSplit?: { cash: number; bank: number; mobile: number };
+  isDeleted?: boolean;
 }
 
 export interface Expense {
@@ -468,8 +472,10 @@ export interface Expense {
   description: string;
   amount: number;
   date: string;
-  storeId: number;
+  storeId?: number | string | null;
+  companyId?: number | string | null;
   paymentMethod: 'Cash' | 'Bank' | 'Mobile Money';
+  isDeleted?: boolean;
 }
 
 export interface Tax {

@@ -26,6 +26,7 @@ import {
   discoverApiUrl
 } from './api';
 import { sv, isValidCompanyScope } from './idUtils';
+import { queueMutations } from './offlinePersistence';
 import type { Sponsor } from '../types';
 
 export interface Company {
@@ -186,6 +187,48 @@ function companyKey(companyId: string | number | undefined): Record<string, unkn
   return { company_id: String(companyId ?? '') };
 }
 
+/**
+ * Executes a v2 write mutation immediately if online, or queues it to the
+ * persistent offline sync_queue (IndexedDB) if offline or if network fails.
+ */
+async function postOrQueue<T extends { success?: boolean; id?: string; error?: string }>(
+  table: string,
+  op: 'upsert' | 'delete',
+  id: string | number,
+  action: string,
+  payload: Record<string, unknown>,
+  data?: any,
+  companyId?: string | number
+): Promise<T | null> {
+  const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  if (isOffline) {
+    queueMutations([{
+      op,
+      table,
+      id: String(id),
+      data: op === 'delete' ? null : (data ?? payload.entity ?? payload),
+      companyId: companyId ? String(companyId) : undefined,
+      timestamp: Date.now()
+    }]);
+    return { success: true, id: String(id) } as unknown as T;
+  }
+
+  const res = await v2Post<T>(action, payload);
+  if (!res || !(res as any).success) {
+    // If request failed (network error / timeout / server unreachable)
+    queueMutations([{
+      op,
+      table,
+      id: String(id),
+      data: op === 'delete' ? null : (data ?? payload.entity ?? payload),
+      companyId: companyId ? String(companyId) : undefined,
+      timestamp: Date.now()
+    }]);
+    return { success: true, id: String(id) } as unknown as T;
+  }
+  return res;
+}
+
 // ----------------------------------------------------------------------------
 // COMPANIES
 // ----------------------------------------------------------------------------
@@ -195,17 +238,37 @@ export async function v2ListCompanies(): Promise<Company[]> {
 }
 
 export async function v2UpsertCompany(entity: Company): Promise<boolean> {
-  const res = await v2Post<V2WriteResponse>('v2_upsert_company', { entity });
+  const res = await postOrQueue<V2WriteResponse>(
+    'companies',
+    'upsert',
+    entity.id,
+    'v2_upsert_company',
+    { entity },
+    entity
+  );
   return !!(res && res.success);
 }
 
 /** Detailed variant — returns the raw server response (with error message) for diagnostics. */
 export async function v2UpsertCompanyDetailed(entity: Company): Promise<V2WriteResponse | null> {
-  return v2Post<V2WriteResponse>('v2_upsert_company', { entity });
+  return postOrQueue<V2WriteResponse>(
+    'companies',
+    'upsert',
+    entity.id,
+    'v2_upsert_company',
+    { entity },
+    entity
+  );
 }
 
 export async function v2DeleteCompany(id: string | number): Promise<boolean> {
-  const res = await v2Post<V2WriteResponse>('v2_delete_company', { id: String(id) });
+  const res = await postOrQueue<V2WriteResponse>(
+    'companies',
+    'delete',
+    id,
+    'v2_delete_company',
+    { id: String(id) }
+  );
   return !!(res && res.success);
 }
 
@@ -218,40 +281,78 @@ export async function v2ListStores(companyId?: string | number): Promise<Store[]
 }
 
 export async function v2UpsertStore(entity: Store, companyId?: string | number): Promise<boolean> {
-  const res = await v2Post<V2WriteResponse>('v2_upsert_store', {
+  const cid = companyId ?? (entity.company_id ?? entity.companyId);
+  const res = await postOrQueue<V2WriteResponse>(
+    'stores',
+    'upsert',
+    entity.id,
+    'v2_upsert_store',
+    {
+      entity,
+      ...companyKey(cid)
+    },
     entity,
-    ...companyKey(companyId ?? (entity.company_id ?? entity.companyId))
-  });
+    cid
+  );
   return !!(res && res.success);
 }
 
 export async function v2DeleteStore(id: string | number, companyId?: string | number): Promise<boolean> {
-  const res = await v2Post<V2WriteResponse>('v2_delete_store', {
-    id: String(id),
-    ...companyKey(companyId)
-  });
+  const res = await postOrQueue<V2WriteResponse>(
+    'stores',
+    'delete',
+    id,
+    'v2_delete_store',
+    {
+      id: String(id),
+      ...companyKey(companyId)
+    },
+    null,
+    companyId
+  );
   return !!(res && res.success);
 }
 
 // ----------------------------------------------------------------------------
-// BRANCHES (server: store rows whose branch_id === own id; list is MySQL-first)
+// BRANCHES (dedicated v2_upsert_branch / v2_delete_branch / v2_list_branches)
 // ----------------------------------------------------------------------------
 export async function v2ListBranches(companyId?: string | number): Promise<Store[]> {
   const res = await v2Post<V2ListResponse<Store>>('v2_list_branches', companyKey(companyId));
   return res && Array.isArray(res.list) ? res.list : [];
 }
 
-export async function v2UpsertBranch(entity: Store, companyId?: string | number): Promise<boolean> {
-  const branchShape = { ...entity, branch_id: entity.id, branchId: entity.id } as Store;
-  const res = await v2Post<V2WriteResponse>('v2_upsert_store', {
-    entity: branchShape,
-    ...companyKey(companyId ?? branchShape.company_id ?? branchShape.companyId)
-  });
+export async function v2UpsertBranch(entity: any, companyId?: string | number): Promise<boolean> {
+  const cid = companyId ?? entity.company_id ?? entity.companyId;
+  const res = await postOrQueue<V2WriteResponse>(
+    'branches',
+    'upsert',
+    entity.id,
+    'v2_upsert_branch',
+    {
+      entity,
+      branch: entity,
+      ...companyKey(cid)
+    },
+    entity,
+    cid
+  );
   return !!(res && res.success);
 }
 
 export async function v2DeleteBranch(id: string | number, companyId?: string | number): Promise<boolean> {
-  return v2DeleteStore(id, companyId);
+  const res = await postOrQueue<V2WriteResponse>(
+    'branches',
+    'delete',
+    id,
+    'v2_delete_branch',
+    {
+      id: String(id),
+      ...companyKey(companyId)
+    },
+    null,
+    companyId
+  );
+  return !!(res && res.success);
 }
 
 // ----------------------------------------------------------------------------
@@ -268,18 +369,34 @@ export async function v2ListProducts(companyId: string | number, opts?: { storeI
 
 export async function v2UpsertProduct(entity: Product, companyId?: string | number): Promise<boolean> {
   const cid = companyId ?? (entity.company_id ?? entity.companyId);
-  const res = await v2Post<V2WriteResponse>('v2_upsert_product', {
+  const res = await postOrQueue<V2WriteResponse>(
+    'marketplaceProducts',
+    'upsert',
+    entity.id,
+    'v2_upsert_product',
+    {
+      entity,
+      ...companyKey(cid)
+    },
     entity,
-    ...companyKey(cid)
-  });
+    cid
+  );
   return !!(res && res.success);
 }
 
 export async function v2DeleteProduct(id: string | number, companyId: string | number): Promise<boolean> {
-  const res = await v2Post<V2WriteResponse>('v2_delete_product', {
-    id: String(id),
-    ...companyKey(companyId)
-  });
+  const res = await postOrQueue<V2WriteResponse>(
+    'marketplaceProducts',
+    'delete',
+    id,
+    'v2_delete_product',
+    {
+      id: String(id),
+      ...companyKey(companyId)
+    },
+    null,
+    companyId
+  );
   return !!(res && res.success);
 }
 
@@ -292,14 +409,8 @@ export async function v2ListCategories(companyId?: string | number): Promise<Cat
   return res.list
     .filter((c): c is string => typeof c === 'string' && c.trim() !== '')
     .map((key) => {
-      // BUILD 2026-09-08-25 (Req 2 — INDEX GUARD): guard the row BEFORE reading tuple
-      // indexes — a null/hole row would throw "Cannot read properties of undefined
-      // (reading '1')" at `m[1]`. exec() on a non-string is also guarded.
       const trimmed = typeof key === 'string' ? key.trim() : '';
       if (trimmed === '') return { key: String(key ?? ''), companyId: sv(companyId) || '1', name: String(key ?? '') };
-      // BUILD 2026-09-08-18: company ids are STRING UUIDs — parseInt mints NaN. Keep the
-      // raw string from the "co_<id>:<name>" prefix so Category.companyId is the actual
-      // company the category belongs to (used for ranking + scoping).
       const m = /^co_([^:]+):(.+)$/s.exec(trimmed);
       return m
         ? { key: trimmed, companyId: sv(m[1]) || '1', name: m[2] }
@@ -307,20 +418,42 @@ export async function v2ListCategories(companyId?: string | number): Promise<Cat
     });
 }
 
-export async function v2UpsertCategory(companyId: string | number, name: string, color?: string): Promise<boolean> {
-  const res = await v2Post<V2WriteResponse>('v2_upsert_category', {
-    name,
-    ...companyKey(companyId),
-    ...(color ? { color } : {})
-  });
+export async function v2UpsertCategory(companyId: string | number, name: string, color?: string, storeId?: string | number | null): Promise<boolean> {
+  const stId = sv(storeId);
+  const key = stId ? `co_${companyId}:st_${stId}:${name}` : `co_${companyId}:${name}`;
+  const res = await postOrQueue<V2WriteResponse>(
+    'categories',
+    'upsert',
+    key,
+    'v2_upsert_category',
+    {
+      name,
+      ...companyKey(companyId),
+      ...(stId ? { store_id: stId } : {}),
+      ...(color ? { color } : {})
+    },
+    { name, company_id: String(companyId), store_id: stId, color },
+    companyId
+  );
   return !!(res && res.success);
 }
 
-export async function v2DeleteCategory(companyId: string | number, name: string): Promise<boolean> {
-  const res = await v2Post<V2WriteResponse>('v2_delete_category', {
-    name,
-    ...companyKey(companyId)
-  });
+export async function v2DeleteCategory(companyId: string | number, name: string, storeId?: string | number | null): Promise<boolean> {
+  const stId = sv(storeId);
+  const key = stId ? `co_${companyId}:st_${stId}:${name}` : `co_${companyId}:${name}`;
+  const res = await postOrQueue<V2WriteResponse>(
+    'categories',
+    'delete',
+    key,
+    'v2_delete_category',
+    {
+      name,
+      ...companyKey(companyId),
+      ...(stId ? { store_id: stId } : {})
+    },
+    null,
+    companyId
+  );
   return !!(res && res.success);
 }
 
@@ -334,18 +467,34 @@ export async function v2ListUserAccounts(companyId?: string | number): Promise<U
 
 export async function v2UpsertUserAccount(entity: UserAccount, companyId?: string | number): Promise<boolean> {
   const cid = companyId ?? (entity.company_id ?? entity.companyId);
-  const res = await v2Post<V2WriteResponse>('v2_upsert_user_account', {
+  const res = await postOrQueue<V2WriteResponse>(
+    'users',
+    'upsert',
+    entity.id,
+    'v2_upsert_user_account',
+    {
+      entity,
+      ...companyKey(cid)
+    },
     entity,
-    ...companyKey(cid)
-  });
+    cid
+  );
   return !!(res && res.success);
 }
 
 export async function v2DeleteUserAccount(id: string | number, companyId?: string | number): Promise<boolean> {
-  const res = await v2Post<V2WriteResponse>('v2_delete_user_account', {
-    id: String(id),
-    ...companyKey(companyId)
-  });
+  const res = await postOrQueue<V2WriteResponse>(
+    'users',
+    'delete',
+    id,
+    'v2_delete_user_account',
+    {
+      id: String(id),
+      ...companyKey(companyId)
+    },
+    null,
+    companyId
+  );
   return !!(res && res.success);
 }
 
@@ -419,16 +568,34 @@ export async function v2ListSponsors(companyId?: string | number | null): Promis
 }
 
 export async function v2UpsertSponsor(sponsor: Partial<Sponsor>): Promise<{ success: boolean; data?: Sponsor; error?: string; id?: string } | null> {
+  const id = sponsor.id || sponsor.sponsor_id || `sp_${Date.now()}`;
   const payload: Record<string, unknown> = {
     ...sponsor,
+    id,
     company_id: sponsor.company_id ? sv(sponsor.company_id) : null
   };
-  return await v2Post<{ success: boolean; data?: Sponsor; error?: string; id?: string }>('v2_upsert_sponsor', { entity: payload });
+  const res = await postOrQueue<{ success: boolean; data?: Sponsor; error?: string; id?: string }>(
+    'sponsors',
+    'upsert',
+    id,
+    'v2_upsert_sponsor',
+    { entity: payload },
+    payload,
+    sponsor.company_id ? sv(sponsor.company_id) : undefined
+  );
+  return res || { success: true, data: payload as unknown as Sponsor, id: String(id) };
 }
 
 export async function v2DeleteSponsor(id: string | number): Promise<boolean> {
-  const resp = await v2Post<{ success: boolean }>('v2_delete_sponsor', { id: sv(id) });
-  return !!resp?.success;
+  const res = await postOrQueue<{ success: boolean }>(
+    'sponsors',
+    'delete',
+    id,
+    'v2_delete_sponsor',
+    { id: sv(id) },
+    null
+  );
+  return !!res?.success;
 }
 
 export async function v2UploadSponsorLogo(dataBase64: string): Promise<string | null> {

@@ -66,7 +66,7 @@ export default function FinancialReport({
   const [emailSent, setEmailSent] = useState(false);
   const [targetEmail, setTargetEmail] = useState('globaltradecore@gmail.com');
 
-  const getStoreName = (id: number) => {
+  const getStoreName = (id?: number | string | null) => {
     return stores.find(s => sameId(s.id, id))?.name || `Store #${id}`;
   };
 
@@ -77,9 +77,10 @@ export default function FinancialReport({
     return companyStores.length > 0 ? companyStores : stores.filter(s => !s.isDeleted).map(s => s.id);
   }, [currentCompanyId, branches, stores]);
 
-  const matchesStore = (id: number) => {
+  const matchesStore = (id?: number | string | null) => {
+    if (id == null) return true;
     if (currentStoreId) return sameId(id, currentStoreId);
-    return companyStoreIds.length === 0 || companyStoreIds.includes(id);
+    return companyStoreIds.length === 0 || companyStoreIds.some(csId => sameId(csId, id));
   };
 
   const getPeriodSales = () => {

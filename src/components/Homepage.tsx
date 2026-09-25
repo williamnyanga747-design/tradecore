@@ -7,7 +7,8 @@ import {
 } from 'lucide-react';
 import { getPublicTheme, PublicTheme, GoldenTopLine, PublicThemeToggle } from '../utils/publicTheme';
 import { Company, MarketplaceProduct, HomepageContent, SiteConfig, Sponsor } from '../types';
-import { isProductVisible } from './marketplace/MarketplaceShared';
+import { isProductVisible, isCompanySubscriptionExpired } from './marketplace/MarketplaceShared';
+import { sameId } from '../utils/idUtils';
 import { defaultHomepageContent } from '../initialData';
 
 const CONTENT_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -252,15 +253,25 @@ export default function Homepage({
                 </p>
                 <div className="flex flex-wrap gap-4 mt-4">
                   <div className="text-center">
-                    <div className={`text-xl font-black ${th.statValue}`}>{marketplaceCompanies.filter(c => c.isMarketplaceActive !== false).length}</div>
+                    <div className={`text-xl font-black ${th.statValue}`}>
+                      {marketplaceCompanies.filter(c => c.isMarketplaceActive !== false && c.subscriptionApproved === true && c.status !== 'Pending Payment' && c.status !== 'Pending' && !isCompanySubscriptionExpired(c)).length}
+                    </div>
                     <div className={`text-[9px] ${th.textDim} font-black uppercase tracking-wider`}>Companies</div>
                   </div>
                   <div className="text-center">
-                    <div className={`text-xl font-black ${th.statValue}`}>{marketplaceProducts.filter(isProductVisible).length}</div>
+                    <div className={`text-xl font-black ${th.statValue}`}>
+                      {marketplaceProducts.filter(p => {
+                        if (!isProductVisible(p)) return false;
+                        const co = marketplaceCompanies.find(c => sameId(c.id, p.companyId));
+                        return !co || (co.subscriptionApproved === true && co.status !== 'Pending Payment' && co.status !== 'Pending' && co.isMarketplaceActive !== false && !isCompanySubscriptionExpired(co));
+                      }).length}
+                    </div>
                     <div className={`text-[9px] ${th.textDim} font-black uppercase tracking-wider`}>Products</div>
                   </div>
                   <div className="text-center">
-                    <div className={`text-xl font-black ${th.statValue}`}>{marketplaceCompanies.filter(c => c.isVerified).length}</div>
+                    <div className={`text-xl font-black ${th.statValue}`}>
+                      {marketplaceCompanies.filter(c => (c.isVerified || c.subscriptionApproved === true) && c.status !== 'Pending Payment' && c.status !== 'Pending').length}
+                    </div>
                     <div className={`text-[9px] ${th.textDim} font-black uppercase tracking-wider`}>Verified</div>
                   </div>
                 </div>
@@ -272,7 +283,11 @@ export default function Homepage({
                 </button>
               </div>
               <div className="grid grid-cols-2 gap-3 w-full md:w-80">
-                {marketplaceProducts.filter(isProductVisible).slice(0, 4).map(p => (
+                {marketplaceProducts.filter(p => {
+                  if (!isProductVisible(p)) return false;
+                  const co = marketplaceCompanies.find(c => sameId(c.id, p.companyId));
+                  return !co || (co.subscriptionApproved === true && co.status !== 'Pending Payment' && co.status !== 'Pending' && co.isMarketplaceActive !== false && !isCompanySubscriptionExpired(co));
+                }).slice(0, 4).map(p => (
                   <div key={p.id} className={`${th.featureCard} ${th.cardBorder} rounded-xl overflow-hidden text-center`}>
                     <div className="h-16 overflow-hidden">
                       {p.image ? (

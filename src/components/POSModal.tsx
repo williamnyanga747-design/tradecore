@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Customer, StockItem, SalesOrder, Store, Settings, SOItem, PosShift } from '../types';
 import { X, Search, Plus, Minus, Trash2, ShoppingBag, AlertTriangle, CheckCircle, Info, Printer, TrendingUp, Calculator, Lock, Share2, Mail, Check, Clock, Layers } from 'lucide-react';
 import { formatMoney } from '../utils/format';
@@ -78,10 +78,12 @@ export default function POSModal({
   }, [stores, currentUser]);
   const [selectedStoreId, setSelectedStoreId] = useState<string | number | null>(currentStoreId || (activeStores[0]?.id ?? null));
 
+  const prevIsOpenRef = useRef(isOpen);
   useEffect(() => {
-    if (currentStoreId) {
+    if (isOpen && !prevIsOpenRef.current && currentStoreId) {
       setSelectedStoreId(currentStoreId);
     }
+    prevIsOpenRef.current = isOpen;
   }, [currentStoreId, isOpen]);
   const [priceType, setPriceType] = useState<'Retail' | 'Wholesale' | 'Preferred'>('Retail');
   const [searchQuery, setSearchQuery] = useState('');
@@ -325,6 +327,20 @@ export default function POSModal({
       return nameMatch || codeMatch || categoryMatch;
     });
   }, [stockItems, searchQuery]);
+
+  // Scalable catalog pagination (caps rendered DOM elements to 48 for 60fps performance)
+  const [catalogPage, setCatalogPage] = useState<number>(1);
+  const POS_PAGE_SIZE = 48;
+
+  useEffect(() => {
+    setCatalogPage(1);
+  }, [searchQuery]);
+
+  const totalCatalogPages = Math.max(1, Math.ceil(filteredProducts.length / POS_PAGE_SIZE));
+  const currentCatalogPage = Math.min(catalogPage, totalCatalogPages);
+  const paginatedCatalogProducts = useMemo(() => {
+    return filteredProducts.slice((currentCatalogPage - 1) * POS_PAGE_SIZE, currentCatalogPage * POS_PAGE_SIZE);
+  }, [filteredProducts, currentCatalogPage]);
 
   // Selected customer object
   const selectedCustomer = useMemo(() => {
@@ -1532,7 +1548,7 @@ export default function POSModal({
             {/* Catalog Items Grid */}
             <div className="flex-1 overflow-y-auto pr-1 scrollbar-thin">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 pb-4">
-                {filteredProducts.map(item => {
+                {paginatedCatalogProducts.map(item => {
                   const stockQty = getStockQty(item, selectedStoreId);
                   const currentPrice = getProductPrice(item);
                   const isOutOfStock = stockQty <= 0;
@@ -1603,6 +1619,35 @@ export default function POSModal({
                   </div>
                 )}
               </div>
+
+              {filteredProducts.length > POS_PAGE_SIZE && (
+                <div className="py-2.5 px-3 flex items-center justify-between border-t border-gray-200 bg-gray-50/80 rounded-xl mb-4">
+                  <span className="text-[11px] font-semibold text-gray-500">
+                    {t('Showing')} <span className="font-bold text-gray-800">{(currentCatalogPage - 1) * POS_PAGE_SIZE + 1}</span> - <span className="font-bold text-gray-800">{Math.min(currentCatalogPage * POS_PAGE_SIZE, filteredProducts.length)}</span> {t('of')} <span className="font-bold text-gray-800">{filteredProducts.length}</span> {t('items')}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={currentCatalogPage <= 1}
+                      onClick={() => setCatalogPage(prev => Math.max(1, prev - 1))}
+                      className="px-2.5 py-1 text-xs font-bold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                    >
+                      {t('Previous')}
+                    </button>
+                    <span className="text-xs font-bold text-gray-700 px-1.5">
+                      {currentCatalogPage} / {totalCatalogPages}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={currentCatalogPage >= totalCatalogPages}
+                      onClick={() => setCatalogPage(prev => Math.min(totalCatalogPages, prev + 1))}
+                      className="px-2.5 py-1 text-xs font-bold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                    >
+                      {t('Next')}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Mobile Floating Cart Quick Access Bar */}

@@ -1,14 +1,31 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+function getPort(): number {
+  const portArgIdx = process.argv.indexOf("--port");
+  if (portArgIdx !== -1 && process.argv[portArgIdx + 1]) {
+    const p = parseInt(process.argv[portArgIdx + 1], 10);
+    if (!isNaN(p)) return p;
+  }
+  return 3000;
+}
+const PORT = getPort();
 
 app.use(express.json());
+
+// Immediate health check endpoints so proxy health checks pass instantly
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok", uptime: process.uptime(), server_ts: Date.now() });
+});
+app.get("/healthz", (_req, res) => {
+  res.send("OK");
+});
 
 let aiClient: GoogleGenAI | null = null;
 
@@ -89,9 +106,16 @@ let inMemoryCompanies: any[] = [
   { id: 3, company_id: '3', name: "Apex Commercial Holdings", logo_url: "https://images.unsplash.com/photo-1507679799987-c73779587ccf?w=120&auto=format&fit=crop&q=60", logoUrl: "https://images.unsplash.com/photo-1507679799987-c73779587ccf?w=120&auto=format&fit=crop&q=60", subscriptionEnd: "2026-06-30", subscription_end: "2026-06-30", is_active: 1, status: 'active', country: "Tanzania", tin_number: "300-400-500", tinNumber: "300-400-500" }
 ];
 
+let inMemoryBranches: any[] = [
+  { id: 1, company_id: '1', companyId: '1', name: 'DSM HQ Main Branch', is_active: 1 },
+  { id: 2, company_id: '1', companyId: '1', name: 'DSM Northern Hub', is_active: 1 },
+  { id: 3, company_id: '2', companyId: '2', name: 'Beta Arusha Depot', is_active: 1 }
+];
+
 let inMemoryStores: any[] = [
-  { id: 1, store_id: '1', company_id: '1', name: 'Main Store', type: 'store', is_active: 1 },
-  { id: 2, store_id: '2', company_id: '1', name: 'Kariakoo Branch', type: 'branch', is_active: 1 }
+  { id: 1, store_id: '1', branch_id: 1, branchId: 1, company_id: '1', companyId: '1', name: 'DSM Store Alpha', location: 'Downtown', phone: '+255 22 1234', is_active: 1 },
+  { id: 2, store_id: '2', branch_id: 2, branchId: 2, company_id: '1', companyId: '1', name: 'DSM Store Beta', location: 'Uptown', phone: '+255 22 5678', is_active: 1 },
+  { id: 3, store_id: '3', branch_id: 3, branchId: 3, company_id: '2', companyId: '2', name: 'Arusha Warehouse', location: 'Industrial Block', phone: '+255 27 9876', is_active: 1 }
 ];
 
 let inMemoryCategories: string[] = [
@@ -100,6 +124,60 @@ let inMemoryCategories: string[] = [
   'co_3:Cereals', 'co_3:Oil', 'co_3:Household', 'co_3:Building', 'co_3:Electronics',
   'Cereals', 'Oil', 'Household', 'Building', 'Electronics'
 ];
+
+let inMemoryUsers: any[] = [
+  { id: 4, username: 'root_mandate', password: 'sha256$5811b73dea1a2b5991ab4a0e887b70604d3bf745716d66059884b2a0ff24ba46', role: 'Super Admin', name: 'Root Mandate', email: 'globaltradecore@gmail.com', companyId: null, branchId: null, storeId: null, firstLogin: true, status: 'Active', isRoot: true },
+  { id: 5, username: 'superadmin', password: 'sha256$daa62f6fcc24de4977b4c73eb5cf2f78e56950e2e0c4de2316399a09a1139890', role: 'Super Admin', name: 'Global Super Admin', email: 'superadmin@tradecore.com', companyId: null, branchId: null, storeId: null, firstLogin: true, status: 'Active' },
+  { id: 1, username: 'admin', password: 'sha256$afe1b7a51c5b5201f3c79f903de5a513172de6760d8ae3be64edf7959c14d3ec', role: 'Admin', name: 'Alpha Manager', email: 'admin@tradecore.com', companyId: 1, branchId: null, storeId: null, firstLogin: true, status: 'Active' },
+  { id: 2, username: 'retailer', password: 'sha256$42f164df6191123a8a2d18507b2b54fe78782349aee758230557c95905a7a776', role: 'Retailer', name: 'Sarah Chen', email: 'retail@tradecore.com', companyId: 1, branchId: 1, storeId: 1, firstLogin: true, status: 'Active' },
+  { id: 3, username: 'wholesaler', password: 'sha256$c56f4cad86de5e7c7656ae2e8a67a73994c0937dfe92360e4b4b773027917b0d', role: 'Wholesaler', name: 'Mike Wilson', email: 'wholesale@tradecore.com', companyId: 1, branchId: 2, storeId: 2, firstLogin: true, status: 'Active' }
+];
+
+const DB_FILE = path.join(process.cwd(), 'data', 'tradecore_server_state.json');
+
+function loadStateFromDisk() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const raw = fs.readFileSync(DB_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed.inMemoryPhpState) inMemoryPhpState = parsed.inMemoryPhpState;
+      if (Array.isArray(parsed.inMemoryCompanies) && parsed.inMemoryCompanies.length) inMemoryCompanies = parsed.inMemoryCompanies;
+      if (Array.isArray(parsed.inMemoryBranches) && parsed.inMemoryBranches.length) inMemoryBranches = parsed.inMemoryBranches;
+      if (Array.isArray(parsed.inMemoryStores) && parsed.inMemoryStores.length) inMemoryStores = parsed.inMemoryStores;
+      if (Array.isArray(parsed.inMemoryCategories) && parsed.inMemoryCategories.length) inMemoryCategories = parsed.inMemoryCategories;
+      if (Array.isArray(parsed.inMemoryUsers) && parsed.inMemoryUsers.length) inMemoryUsers = parsed.inMemoryUsers;
+      if (Array.isArray(parsed.inMemorySponsors) && parsed.inMemorySponsors.length) inMemorySponsors = parsed.inMemorySponsors;
+      console.log('[server.ts] Loaded persisted state from disk successfully.');
+    }
+  } catch (e) {
+    console.warn('[server.ts] Error reading state from disk:', e);
+  }
+}
+
+function saveStateToDisk() {
+  try {
+    const dir = path.dirname(DB_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const payload = {
+      inMemoryPhpState,
+      inMemoryCompanies,
+      inMemoryBranches,
+      inMemoryStores,
+      inMemoryCategories,
+      inMemoryUsers,
+      inMemorySponsors,
+      savedAt: new Date().toISOString()
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(payload, null, 2), 'utf-8');
+  } catch (e) {
+    console.warn('[server.ts] Error saving state to disk:', e);
+  }
+}
+
+// Initial load on server boot
+loadStateFromDisk();
 
 function archiveExpiredSponsors(): number {
   const now = Date.now();
@@ -123,6 +201,8 @@ function archiveExpiredSponsors(): number {
 // Auto-run sponsor archive check every 30 seconds
 setInterval(archiveExpiredSponsors, 30000);
 
+let inMemoryStateVersion = 100;
+
 const handlePhpApi = (req: express.Request, res: express.Response) => {
   const action = req.query.action || req.body?.action;
   const now = Math.floor(Date.now() / 1000);
@@ -130,13 +210,24 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
   // Check and auto-archive expired sponsors before responding
   archiveExpiredSponsors();
 
+  if (action === 'check_timestamp') {
+    return res.json({
+      success: true,
+      status: 'ok',
+      _assembled: 1,
+      version: inMemoryStateVersion,
+      server_ts: now,
+      lastUpdated: new Date().toISOString()
+    });
+  }
+
   // v2_upsert_sponsor
   if (action === 'v2_upsert_sponsor') {
     const raw = req.body?.entity || req.body?.sponsor || req.body || {};
     const id = String(raw.id || raw.sponsor_id || `sp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
     const name = String(raw.name || '').trim();
     if (!name) {
-      return res.json({ success: false, error: 'name required', server_ts: now });
+      return res.json({ success: false, error: 'name required', server_ts: now, version: inMemoryStateVersion, _assembled: 1 });
     }
     const idx = inMemorySponsors.findIndex(s => s.id === id || s.sponsor_id === id);
     const existing = idx >= 0 ? inMemorySponsors[idx] : null;
@@ -184,11 +275,15 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       inMemorySponsors.push(updatedSponsor);
     }
 
+    inMemoryStateVersion++;
     return res.json({
       success: true,
       data: updatedSponsor,
       id,
-      server_ts: now
+      server_ts: now,
+      version: inMemoryStateVersion,
+      server_version: inMemoryStateVersion,
+      _assembled: 1
     });
   }
 
@@ -197,7 +292,7 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     const raw = req.body?.entity || req.body?.sponsor || req.body || {};
     const id = String(raw.id || raw.sponsor_id || req.query.id || '');
     if (!id) {
-      return res.json({ success: false, error: 'id required', server_ts: now });
+      return res.json({ success: false, error: 'id required', server_ts: now, version: inMemoryStateVersion, _assembled: 1 });
     }
     const idx = inMemorySponsors.findIndex(s => s.id === id || s.sponsor_id === id);
     if (idx >= 0) {
@@ -205,7 +300,8 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       inMemorySponsors[idx].status = 'DELETED';
       inMemorySponsors[idx].is_active = 0;
     }
-    return res.json({ success: true, id, server_ts: now });
+    inMemoryStateVersion++;
+    return res.json({ success: true, id, server_ts: now, version: inMemoryStateVersion, server_version: inMemoryStateVersion, _assembled: 1 });
   }
 
   // v2_list_sponsors
@@ -297,6 +393,8 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       else inMemoryPhpState.companies.push(updatedCompany);
     }
 
+    saveStateToDisk();
+
     return res.json({
       success: true,
       id: String(id),
@@ -311,18 +409,58 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     if (inMemoryPhpState && Array.isArray(inMemoryPhpState.companies)) {
       inMemoryPhpState.companies = inMemoryPhpState.companies.filter((c: any) => String(c.id) !== id && String(c.company_id) !== id);
     }
+    saveStateToDisk();
     return res.json({ success: true, id, server_ts: now });
   }
 
-  // --- MASTER DATA: STORES & BRANCHES ---
-  if (action === 'v2_list_stores' || action === 'v2_list_branches') {
+  // --- MASTER DATA: BRANCHES ---
+  if (action === 'v2_list_branches') {
+    const cid = String(req.query.company_id || req.body?.company_id || '');
+    let list = inMemoryBranches;
+    if (cid && cid !== 'all') {
+      list = list.filter(b => String(b.company_id) === cid || String(b.companyId) === cid);
+    }
+    return res.json({
+      success: true,
+      list,
+      data: list,
+      count: list.length,
+      server_ts: now
+    });
+  }
+
+  if (action === 'v2_upsert_branch') {
+    const raw = req.body?.entity || req.body?.branch || req.body || {};
+    const id = raw.id || `br_${Date.now()}`;
+    const idx = inMemoryBranches.findIndex(b => String(b.id) === String(id));
+    const updated = { ...raw, id, updated_at: now };
+    if (idx >= 0) inMemoryBranches[idx] = updated;
+    else inMemoryBranches.push(updated);
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.branches)) {
+      const pIdx = inMemoryPhpState.branches.findIndex((b: any) => String(b.id) === String(id));
+      if (pIdx >= 0) inMemoryPhpState.branches[pIdx] = updated;
+      else inMemoryPhpState.branches.push(updated);
+    }
+    saveStateToDisk();
+    return res.json({ success: true, id: String(id), data: updated, server_ts: now });
+  }
+
+  if (action === 'v2_delete_branch') {
+    const id = String(req.body?.id || req.query.id || '');
+    inMemoryBranches = inMemoryBranches.filter(b => String(b.id) !== id);
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.branches)) {
+      inMemoryPhpState.branches = inMemoryPhpState.branches.filter((b: any) => String(b.id) !== id);
+    }
+    saveStateToDisk();
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- MASTER DATA: STORES ---
+  if (action === 'v2_list_stores') {
     const cid = String(req.query.company_id || req.body?.company_id || '');
     let list = inMemoryStores;
-    if (cid) {
+    if (cid && cid !== 'all') {
       list = list.filter(s => String(s.company_id) === cid || String(s.companyId) === cid);
-    }
-    if (action === 'v2_list_branches') {
-      list = list.filter(s => s.type === 'branch');
     }
     return res.json({
       success: true,
@@ -340,22 +478,138 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     const updated = { ...raw, id, updated_at: now };
     if (idx >= 0) inMemoryStores[idx] = updated;
     else inMemoryStores.push(updated);
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.stores)) {
+      const pIdx = inMemoryPhpState.stores.findIndex((s: any) => String(s.id) === String(id));
+      if (pIdx >= 0) inMemoryPhpState.stores[pIdx] = updated;
+      else inMemoryPhpState.stores.push(updated);
+    }
+    saveStateToDisk();
     return res.json({ success: true, id: String(id), data: updated, server_ts: now });
   }
 
   if (action === 'v2_delete_store') {
     const id = String(req.body?.id || req.query.id || '');
     inMemoryStores = inMemoryStores.filter(s => String(s.id) !== id);
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.stores)) {
+      inMemoryPhpState.stores = inMemoryPhpState.stores.filter((s: any) => String(s.id) !== id);
+    }
+    saveStateToDisk();
     return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- MASTER DATA: USER ACCOUNTS ---
+  if (action === 'change_password') {
+    const uid = String(req.body?.user_id || req.body?.id || req.query.user_id || '');
+    const newPass = req.body?.password || req.body?.new_password || req.body?.passwordHash || '';
+    if (!uid || !newPass) {
+      return res.json({ success: false, error: 'User ID and password required', server_ts: now });
+    }
+    const passHash = newPass.startsWith('sha256$') ? newPass : `sha256$${newPass}`;
+    const user = inMemoryUsers.find(u => String(u.id) === uid);
+    if (user) {
+      user.password = passHash;
+      user.firstLogin = false;
+      user.mustChangePassword = false;
+      user.updatedAt = new Date().toISOString();
+    }
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.users)) {
+      const pu = inMemoryPhpState.users.find((u: any) => String(u.id) === uid);
+      if (pu) {
+        pu.password = passHash;
+        pu.firstLogin = false;
+        pu.mustChangePassword = false;
+        pu.updatedAt = new Date().toISOString();
+      }
+    }
+    saveStateToDisk();
+    return res.json({ success: true, server_ts: now });
+  }
+
+  if (action === 'v2_list_user_accounts' || action === 'list_users') {
+    const cid = String(req.query.company_id || req.body?.company_id || '');
+    let list = inMemoryUsers.filter(u => !u.isDeleted && u.status !== 'DELETED');
+    if (cid && cid !== 'all') {
+      list = list.filter(u => !u.companyId || String(u.companyId) === cid || u.role === 'Super Admin' || u.isRoot);
+    }
+    return res.json({ success: true, list, data: list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_user_account' || action === 'upsert_user' || action === 'assign_user') {
+    const body = req.body || {};
+    let userData = body.entity || body.user || body.userData || body.data;
+    if (!userData && body.user_json) {
+      try { userData = typeof body.user_json === 'string' ? JSON.parse(body.user_json) : body.user_json; } catch {}
+    }
+    if (!userData) userData = body;
+    const uid = userData.id !== undefined && userData.id !== null && userData.id !== '' ? userData.id : `u_${Date.now()}`;
+    const cid = userData.companyId ?? userData.company_id ?? null;
+    const username = (userData.username || userData.email || '').trim();
+
+    const existingIdx = inMemoryUsers.findIndex(u =>
+      (u.id && String(u.id) === String(uid)) ||
+      (username && u.username && u.username.toLowerCase() === username.toLowerCase())
+    );
+
+    const userRecord = {
+      ...(existingIdx >= 0 ? inMemoryUsers[existingIdx] : {}),
+      ...userData,
+      id: existingIdx >= 0 ? inMemoryUsers[existingIdx].id : uid,
+      companyId: cid,
+      company_id: cid,
+      username: username || (existingIdx >= 0 ? inMemoryUsers[existingIdx].username : `user_${Date.now()}`),
+      updatedAt: new Date().toISOString()
+    };
+
+    if (existingIdx >= 0) {
+      inMemoryUsers[existingIdx] = userRecord;
+    } else {
+      inMemoryUsers.push(userRecord);
+    }
+
+    if (inMemoryPhpState) {
+      if (!Array.isArray(inMemoryPhpState.users)) inMemoryPhpState.users = [...inMemoryUsers];
+      const pIdx = inMemoryPhpState.users.findIndex((u: any) => String(u.id) === String(userRecord.id));
+      if (pIdx >= 0) inMemoryPhpState.users[pIdx] = userRecord;
+      else inMemoryPhpState.users.push(userRecord);
+    }
+
+    saveStateToDisk();
+    return res.json({ success: true, status: 'ok', user: userRecord, id: userRecord.id, server_ts: now });
+  }
+
+  if (action === 'v2_delete_user_account' || action === 'delete_user') {
+    const uid = String(req.body?.id || req.body?.userId || req.body?.user_id || req.query.id || '');
+    const username = String(req.body?.username || '').trim().toLowerCase();
+    if (uid || username) {
+      inMemoryUsers = inMemoryUsers.filter(u => {
+        if (uid && String(u.id) === uid) return false;
+        if (username && u.username && u.username.toLowerCase() === username) return false;
+        return true;
+      });
+      if (inMemoryPhpState && Array.isArray(inMemoryPhpState.users)) {
+        inMemoryPhpState.users = inMemoryPhpState.users.filter((u: any) => {
+          if (uid && String(u.id) === uid) return false;
+          if (username && u.username && u.username.toLowerCase() === username) return false;
+          return true;
+        });
+      }
+      saveStateToDisk();
+    }
+    return res.json({ success: true, status: 'ok', id: uid, server_ts: now });
   }
 
   // --- MASTER DATA: CATEGORIES ---
   if (action === 'v2_list_categories') {
     const cid = String(req.query.company_id || req.body?.company_id || req.body?.companyId || '');
+    const stId = req.query.store_id || req.body?.store_id;
     let list = inMemoryCategories;
     if (cid && cid !== 'all') {
       const prefix = `co_${cid}:`;
       list = list.filter(c => c.startsWith(prefix) || (cid === '1' && !c.includes(':')));
+    }
+    if (stId) {
+      const stPrefix = `st_${stId}:`;
+      list = list.filter(c => c.includes(stPrefix) || (!c.includes('st_') && (cid ? c.startsWith(`co_${cid}:`) : true)));
     }
     return res.json({
       success: true,
@@ -368,45 +622,243 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
 
   if (action === 'v2_upsert_category') {
     const cid = String(req.body?.company_id || req.query.company_id || req.body?.companyId || '1');
+    const stId = req.body?.store_id || req.body?.storeId || req.query.store_id;
     const name = String(req.body?.name || req.body?.category_name || '').trim();
     if (!name) {
       return res.json({ success: false, error: 'Category name is required', server_ts: now });
     }
-    const catEntry = `co_${cid}:${name}`;
+    const clean = name.replace(/^co_[^:]+:/, '').replace(/^st_[^:]+:/, '');
+    let catEntry = stId ? `co_${cid}:st_${stId}:${clean}` : `co_${cid}:${clean}`;
+    if (name.startsWith('co_')) {
+      catEntry = name;
+    } else if (name.startsWith('st_')) {
+      catEntry = `co_${cid}:${name}`;
+    }
+
     if (!inMemoryCategories.includes(catEntry)) {
       inMemoryCategories.push(catEntry);
     }
-    if (cid === '1' && !inMemoryCategories.includes(name)) {
-      inMemoryCategories.push(name);
+    if (cid === '1' && !stId && !inMemoryCategories.includes(clean)) {
+      inMemoryCategories.push(clean);
     }
     if (inMemoryPhpState) {
-      if (!Array.isArray(inMemoryPhpState.categories)) inMemoryPhpState.categories = [...inMemoryCategories];
-      if (!inMemoryPhpState.categories.includes(catEntry)) inMemoryPhpState.categories.push(catEntry);
+      const mergedCats = new Set([...(Array.isArray(inMemoryPhpState.categories) ? inMemoryPhpState.categories : []), ...inMemoryCategories]);
+      inMemoryPhpState.categories = Array.from(mergedCats);
     }
-    return res.json({ success: true, id: `nc_${cid}_${name}`, server_ts: now });
+    saveStateToDisk();
+    return res.json({ success: true, id: `nc_${cid}_${clean}`, key: catEntry, server_ts: now });
   }
 
   if (action === 'v2_delete_category') {
     const cid = String(req.body?.company_id || req.query.company_id || req.body?.companyId || '');
-    const name = String(req.body?.name || req.body?.category_name || '').trim();
-    if (name) {
-      const catEntry = cid ? `co_${cid}:${name}` : '';
+    const stId = req.body?.store_id || req.body?.storeId || req.query.store_id;
+    const rawName = String(req.body?.name || req.body?.category_name || '').trim();
+    const clean = rawName.replace(/^co_[^:]+:/, '').replace(/^st_[^:]+:/, '');
+
+    if (clean) {
       inMemoryCategories = inMemoryCategories.filter(c => {
-        if (catEntry && c === catEntry) return false;
-        if (!cid && c === name) return false;
-        if (cid === '1' && c === name) return false;
+        if (c === rawName) return false;
+        const cClean = c.replace(/^co_[^:]+:/, '').replace(/^st_[^:]+:/, '');
+        if (cClean.toLowerCase() === clean.toLowerCase()) {
+          if (stId && c.includes(`st_${stId}:`)) return false;
+          if (cid && c.startsWith(`co_${cid}:`)) return false;
+          if (!stId && !cid) return false;
+        }
         return true;
       });
       if (inMemoryPhpState && Array.isArray(inMemoryPhpState.categories)) {
         inMemoryPhpState.categories = inMemoryPhpState.categories.filter((c: any) => {
-          if (catEntry && c === catEntry) return false;
-          if (!cid && c === name) return false;
-          if (cid === '1' && c === name) return false;
+          if (c === rawName) return false;
+          const cClean = String(c).replace(/^co_[^:]+:/, '').replace(/^st_[^:]+:/, '');
+          if (cClean.toLowerCase() === clean.toLowerCase()) {
+            if (stId && String(c).includes(`st_${stId}:`)) return false;
+            if (cid && String(c).startsWith(`co_${cid}:`)) return false;
+            if (!stId && !cid) return false;
+          }
           return true;
         });
       }
+      saveStateToDisk();
     }
     return res.json({ success: true, server_ts: now });
+  }
+
+  if (action === 'v2_get_audit_trails') {
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || req.body?.limit || 100)));
+    const page = Math.max(1, Number(req.query.page || req.body?.page || 1));
+    const trails = Array.isArray(inMemoryPhpState?.auditTrails) ? inMemoryPhpState.auditTrails : [];
+    const total = trails.length;
+    const offset = (page - 1) * limit;
+    const list = trails.slice(offset, offset + limit);
+    return res.json({ success: true, list, count: list.length, total, page, limit, server_ts: now });
+  }
+
+  // --- PURCHASE ORDERS ---
+  if (action === 'v2_list_purchase_orders') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.query.companyId || req.body?.companyId || '');
+    let list = Array.isArray(inMemoryPhpState?.purchaseOrders) ? inMemoryPhpState.purchaseOrders : [];
+    if (cid) {
+      list = list.filter((p: any) => String(p.companyId || p.company_id || '') === cid);
+    }
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_purchase_order') {
+    const entity = req.body?.entity || req.body?.data || req.body?.purchaseOrder || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.purchaseOrders)) inMemoryPhpState.purchaseOrders = [];
+    const id = entity?.id;
+    const existingIdx = inMemoryPhpState.purchaseOrders.findIndex((p: any) => String(p.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.purchaseOrders[existingIdx] = { ...inMemoryPhpState.purchaseOrders[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.purchaseOrders.unshift({ ...entity, created_at: now, updated_at: now });
+    }
+    saveStateToDisk();
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  if (action === 'v2_delete_purchase_order') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.purchaseOrders)) {
+      inMemoryPhpState.purchaseOrders = inMemoryPhpState.purchaseOrders.map((p: any) => {
+        if (String(p.id) === id) return { ...p, isDeleted: true, deleted_at: now };
+        return p;
+      });
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- EXPENSES ---
+  if (action === 'v2_list_expenses') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.query.companyId || req.body?.companyId || '');
+    let list = Array.isArray(inMemoryPhpState?.expenses) ? inMemoryPhpState.expenses : [];
+    if (cid) {
+      list = list.filter((e: any) => String(e.companyId || e.company_id || '') === cid);
+    }
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_expense') {
+    const entity = req.body?.entity || req.body?.data || req.body?.expense || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.expenses)) inMemoryPhpState.expenses = [];
+    const id = entity?.id;
+    const existingIdx = inMemoryPhpState.expenses.findIndex((e: any) => String(e.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.expenses[existingIdx] = { ...inMemoryPhpState.expenses[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.expenses.unshift({ ...entity, created_at: now, updated_at: now });
+    }
+    saveStateToDisk();
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  if (action === 'v2_delete_expense') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.expenses)) {
+      inMemoryPhpState.expenses = inMemoryPhpState.expenses.map((e: any) => {
+        if (String(e.id) === id) return { ...e, isDeleted: true, deleted_at: now };
+        return e;
+      });
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- SUPPLIERS ---
+  if (action === 'v2_list_suppliers') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.query.companyId || req.body?.companyId || '');
+    let list = Array.isArray(inMemoryPhpState?.suppliers) ? inMemoryPhpState.suppliers : [];
+    if (cid) {
+      list = list.filter((s: any) => String(s.companyId || s.company_id || '') === cid);
+    }
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_supplier') {
+    const entity = req.body?.entity || req.body?.data || req.body?.supplier || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.suppliers)) inMemoryPhpState.suppliers = [];
+    const id = entity?.id;
+    const existingIdx = inMemoryPhpState.suppliers.findIndex((s: any) => String(s.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.suppliers[existingIdx] = { ...inMemoryPhpState.suppliers[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.suppliers.unshift({ ...entity, created_at: now, updated_at: now });
+    }
+    saveStateToDisk();
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  if (action === 'v2_delete_supplier') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.suppliers)) {
+      inMemoryPhpState.suppliers = inMemoryPhpState.suppliers.map((s: any) => {
+        if (String(s.id) === id) return { ...s, isDeleted: true, deleted_at: now };
+        return s;
+      });
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- CUSTOMERS ---
+  if (action === 'v2_list_customers') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.query.companyId || req.body?.companyId || '');
+    let list = Array.isArray(inMemoryPhpState?.customers) ? inMemoryPhpState.customers : [];
+    if (cid) {
+      list = list.filter((c: any) => String(c.companyId || c.company_id || '') === cid);
+    }
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_customer') {
+    const entity = req.body?.entity || req.body?.data || req.body?.customer || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.customers)) inMemoryPhpState.customers = [];
+    const id = entity?.id;
+    const existingIdx = inMemoryPhpState.customers.findIndex((c: any) => String(c.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.customers[existingIdx] = { ...inMemoryPhpState.customers[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.customers.unshift({ ...entity, created_at: now, updated_at: now });
+    }
+    saveStateToDisk();
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  if (action === 'v2_delete_customer') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.customers)) {
+      inMemoryPhpState.customers = inMemoryPhpState.customers.map((c: any) => {
+        if (String(c.id) === id) return { ...c, isDeleted: true, deleted_at: now };
+        return c;
+      });
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  if (action === 'v2_get_sales_orders_paged') {
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || req.body?.limit || 50)));
+    const page = Math.max(1, Number(req.query.page || req.body?.page || 1));
+    const orders = Array.isArray(inMemoryPhpState?.salesOrders) ? inMemoryPhpState.salesOrders : [];
+    const total = orders.length;
+    const offset = (page - 1) * limit;
+    const list = orders.slice(offset, offset + limit);
+    return res.json({ success: true, list, count: list.length, total, page, limit, server_ts: now });
+  }
+
+  if (action === 'v2_get_stock_items_paged') {
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || req.body?.limit || 50)));
+    const page = Math.max(1, Number(req.query.page || req.body?.page || 1));
+    const items = Array.isArray(inMemoryPhpState?.stockItems) ? inMemoryPhpState.stockItems : [];
+    const total = items.length;
+    const offset = (page - 1) * limit;
+    const list = items.slice(offset, offset + limit);
+    return res.json({ success: true, list, count: list.length, total, page, limit, server_ts: now });
   }
 
   const activeSponsors = inMemorySponsors
@@ -421,9 +873,14 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     if (!resData.companies || !Array.isArray(resData.companies) || resData.companies.length === 0) {
       resData.companies = inMemoryCompanies;
     }
-    if (!resData.categories || !Array.isArray(resData.categories) || resData.categories.length === 0) {
-      resData.categories = inMemoryCategories;
+    if (!resData.branches || !Array.isArray(resData.branches) || resData.branches.length === 0) {
+      resData.branches = inMemoryBranches;
     }
+    if (!resData.stores || !Array.isArray(resData.stores) || resData.stores.length === 0) {
+      resData.stores = inMemoryStores;
+    }
+    resData.categories = inMemoryCategories;
+    resData.users = inMemoryUsers;
     resData.sponsors = activeSponsors;
     resData.globalSponsors = activeGlobalSponsors;
     resData._assembled = 1;
@@ -434,32 +891,66 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       sponsors: activeSponsors,
       globalSponsors: activeGlobalSponsors,
       companies: inMemoryCompanies,
+      branches: inMemoryBranches,
+      stores: inMemoryStores,
       categories: inMemoryCategories,
+      users: inMemoryUsers,
       data: resData
     });
   }
 
-  if (action === "save_state" || (!action && req.method === "POST" && (req.body?.data || req.body?.companies || req.body?.settings))) {
-    if (req.body && req.body.data) {
-      inMemoryPhpState = req.body.data;
-    } else if (req.body) {
-      inMemoryPhpState = req.body;
+  if (action === "save_state" || (!action && req.method === "POST" && (req.body?.delta || req.body?.data || req.body?.companies || req.body?.settings))) {
+    const incomingData = req.body?.delta || req.body?.data || req.body || {};
+    inMemoryPhpState = {
+      ...(inMemoryPhpState || {}),
+      ...incomingData
+    };
+
+    if (incomingData?.companies && Array.isArray(incomingData.companies)) {
+      inMemoryCompanies = incomingData.companies;
     }
-    if (inMemoryPhpState?.companies && Array.isArray(inMemoryPhpState.companies)) {
-      // Sync into inMemoryCompanies while preserving IDs
-      inMemoryCompanies = inMemoryPhpState.companies;
+    if (incomingData?.branches && Array.isArray(incomingData.branches)) {
+      inMemoryBranches = incomingData.branches;
     }
-    if (inMemoryPhpState?.categories && Array.isArray(inMemoryPhpState.categories)) {
-      for (const c of inMemoryPhpState.categories) {
-        if (c && typeof c === 'string' && !inMemoryCategories.includes(c)) {
-          inMemoryCategories.push(c);
-        }
+    if (incomingData?.stores && Array.isArray(incomingData.stores)) {
+      inMemoryStores = incomingData.stores;
+    }
+    if (incomingData?.users && Array.isArray(incomingData.users)) {
+      inMemoryUsers = incomingData.users;
+    }
+    if (incomingData?.categories && Array.isArray(incomingData.categories)) {
+      const incomingCats = incomingData.categories.filter((c: any) => typeof c === 'string' && c.trim());
+      const catSet = new Set([...inMemoryCategories, ...incomingCats]);
+      inMemoryCategories = Array.from(catSet);
+      if (inMemoryPhpState) {
+        inMemoryPhpState.categories = [...inMemoryCategories];
       }
     }
+    if (incomingData?.purchaseOrders && Array.isArray(incomingData.purchaseOrders)) {
+      if (inMemoryPhpState) inMemoryPhpState.purchaseOrders = incomingData.purchaseOrders;
+    }
+    if (incomingData?.expenses && Array.isArray(incomingData.expenses)) {
+      if (inMemoryPhpState) inMemoryPhpState.expenses = incomingData.expenses;
+    }
+    if (incomingData?.salesOrders && Array.isArray(incomingData.salesOrders)) {
+      if (inMemoryPhpState) inMemoryPhpState.salesOrders = incomingData.salesOrders;
+    }
+    if (incomingData?.stockItems && Array.isArray(incomingData.stockItems)) {
+      if (inMemoryPhpState) inMemoryPhpState.stockItems = incomingData.stockItems;
+    }
+    if (incomingData?.customers && Array.isArray(incomingData.customers)) {
+      if (inMemoryPhpState) inMemoryPhpState.customers = incomingData.customers;
+    }
+    if (incomingData?.suppliers && Array.isArray(incomingData.suppliers)) {
+      if (inMemoryPhpState) inMemoryPhpState.suppliers = incomingData.suppliers;
+    }
+    saveStateToDisk();
     return res.json({
       success: true,
       status: "ok",
       _assembled: 1,
+      version: Date.now(),
+      server_ts: Date.now(),
       message: "Data successfully synchronized with backend",
       timestamp: new Date().toISOString()
     });
@@ -796,24 +1287,79 @@ Respond in ${targetLang} directly answering "${prompt}".`;
 
 // Vite or Static assets middleware
 async function setupServer() {
+  let vitePromise: Promise<any> | null = null;
   if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
+    vitePromise = import("vite").then(({ createServer: createViteServer }) =>
+      createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: false,
+        },
+        appType: "spa",
+      })
+    ).catch(err => {
+      console.error("[server.ts] Error initializing Vite dev server:", err);
+      return null;
     });
-    app.use(vite.middlewares);
+
+    app.use(async (req, res, next) => {
+      try {
+        const vite = await vitePromise;
+        if (vite) {
+          vite.middlewares(req, res, next);
+        } else {
+          next();
+        }
+      } catch (err) {
+        next(err);
+      }
+    });
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
+    app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  const startListening = (retryCount = 0) => {
+    const server = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`  ➜  Local:   http://localhost:${PORT}/`);
+      console.log(`  ➜  Network: http://0.0.0.0:${PORT}/`);
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+
+    server.on("error", (err: any) => {
+      if (err.code === "EADDRINUSE" && retryCount < 10) {
+        console.warn(`Port ${PORT} in use, retrying in 500ms (attempt ${retryCount + 1}/10)...`);
+        setTimeout(() => {
+          try { server.close(); } catch {}
+          startListening(retryCount + 1);
+        }, 500);
+      } else {
+        console.error("Server listen error:", err);
+      }
+    });
+
+    const shutdown = async () => {
+      try {
+        if (vitePromise) {
+          const vite = await vitePromise;
+          if (vite) await vite.close();
+        }
+        server.close(() => {
+          process.exit(0);
+        });
+      } catch {
+        process.exit(0);
+      }
+    };
+
+    process.once("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+  };
+
+  startListening();
 }
 
 setupServer();

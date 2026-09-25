@@ -106,7 +106,7 @@ import MegaBuyerOrderDetail from './components/marketplace/MegaEscrow';
 import { CompanyReturnsPanel, AdminDisputeCenter } from './components/marketplace/MegaReturns';
 import MegaBulkUpload from './components/marketplace/MegaBulkUpload';
 import MegaNotificationsBell from './components/marketplace/MegaNotifications';
-import SyncStatusIndicator from './components/SyncStatusIndicator';
+import SyncStatusIndicator, { OfflineTopBar } from './components/SyncStatusIndicator';
 
 // Utils
 import { translate, formatMoney, exportToExcel } from './utils/format';
@@ -154,7 +154,7 @@ import {
 // @ts-ignore - virtual module provided by vite-plugin-pwa
 import { registerSW } from 'virtual:pwa-register';
 import { toast, Toast } from './utils/toast';
-import { getStoreCategories, cleanCategoryName } from './utils/categoryHelper';
+import { getStoreCategories, cleanCategoryName, parseCategoryScope } from './utils/categoryHelper';
 import { slugify } from './utils/haversine';
 import { computeRatings, isDuplicateReview } from './utils/reviews';
 import { searchProducts, buildReply, normalizeTzPhone, maskPhone } from './utils/whatsappBot';
@@ -893,6 +893,20 @@ export default function App() {
   // and the dashboard aggregate across ALL companies in the system.
   const [globalCompanyView, setGlobalCompanyView] = useState<boolean>(false);
 
+  // Scalable panel pagination states (prevents unbounded DOM row rendering)
+  const [salesOrdersPage, setSalesOrdersPage] = useState<number>(1);
+  const [stockItemsPage, setStockItemsPage] = useState<number>(1);
+  const [purchaseOrdersPage, setPurchaseOrdersPage] = useState<number>(1);
+
+  // Filter controls for Purchase Orders & Sales Orders journals
+  const [poFilterStoreId, setPoFilterStoreId] = useState<string>('all');
+  const [poFilterStatus, setPoFilterStatus] = useState<string>('all');
+  const [poSearchQuery, setPoSearchQuery] = useState<string>('');
+
+  const [soFilterStoreId, setSoFilterStoreId] = useState<string>('all');
+  const [soFilterStatus, setSoFilterStatus] = useState<string>('all');
+  const [soSearchQuery, setSoSearchQuery] = useState<string>('');
+
   // Camera capture modal state & stream ref
   const [showCameraCaptureModal, setShowCameraCaptureModal] = useState<boolean>(false);
   const cameraVideoRef = React.useRef<HTMLVideoElement | null>(null);
@@ -1040,37 +1054,60 @@ export default function App() {
 
   const activeBranchIdsScope = React.useMemo(() => {
     if (!activeCompanyScopeId) return branches.map(b => b.id);
-    return branches.filter(b => b.companyId === activeCompanyScopeId && !b.isDeleted).map(b => b.id);
+    return branches.filter(b => sameId(b.companyId, activeCompanyScopeId) && !b.isDeleted).map(b => b.id);
   }, [branches, activeCompanyScopeId]);
 
   const activeStoreIdsScope = React.useMemo(() => {
     if (!activeCompanyScopeId) return stores.map(s => s.id);
-    return stores.filter(s => activeBranchIdsScope.includes(s.branchId) && !s.isDeleted).map(s => s.id);
+    return stores.filter(s => {
+      if (s.isDeleted) return false;
+      if (sameId((s as any).companyId, activeCompanyScopeId)) return true;
+      return activeBranchIdsScope.some(bid => sameId(bid, s.branchId));
+    }).map(s => s.id);
   }, [stores, activeBranchIdsScope, activeCompanyScopeId]);
 
   const activePurchaseOrders = React.useMemo(() => {
     let list = activeData.purchaseOrders.filter(po => !po.isDeleted);
     if (activeCompanyScopeId) {
-      list = list.filter(po => activeStoreIdsScope.includes(po.storeId) || (po as any).companyId === activeCompanyScopeId);
+      list = list.filter(po => {
+        if (sameId((po as any).companyId, activeCompanyScopeId)) return true;
+        if (activeStoreIdsScope.some(sid => sameId(sid, po.storeId))) return true;
+        const s = stores.find(st => sameId(st.id, po.storeId));
+        if (s && sameId((s as any).companyId, activeCompanyScopeId)) return true;
+        return false;
+      });
     }
     return list;
-  }, [activeData.purchaseOrders, activeCompanyScopeId, activeStoreIdsScope]);
+  }, [activeData.purchaseOrders, activeCompanyScopeId, activeStoreIdsScope, stores]);
 
   const activeSalesOrders = React.useMemo(() => {
     let list = activeData.salesOrders.filter(so => !so.isDeleted && so.status !== 'Voided');
     if (activeCompanyScopeId) {
-      list = list.filter(so => activeStoreIdsScope.includes(so.storeId) || (so as any).companyId === activeCompanyScopeId);
+      list = list.filter(so => {
+        if (sameId((so as any).companyId, activeCompanyScopeId)) return true;
+        if (activeStoreIdsScope.some(sid => sameId(sid, so.storeId))) return true;
+        const s = stores.find(st => sameId(st.id, so.storeId));
+        if (s && sameId((s as any).companyId, activeCompanyScopeId)) return true;
+        return false;
+      });
     }
     return list;
-  }, [activeData.salesOrders, activeCompanyScopeId, activeStoreIdsScope]);
+  }, [activeData.salesOrders, activeCompanyScopeId, activeStoreIdsScope, stores]);
 
   const activeExpenses = React.useMemo(() => {
-    let list = activeData.expenses;
+    let list = activeData.expenses.filter(ex => !(ex as any).isDeleted);
     if (activeCompanyScopeId) {
-      list = list.filter(ex => activeStoreIdsScope.includes(ex.storeId) || (ex as any).companyId === activeCompanyScopeId);
+      list = list.filter(ex => {
+        if (sameId((ex as any).companyId, activeCompanyScopeId)) return true;
+        if (ex.storeId == null) return true; // General HQ expense in company
+        if (activeStoreIdsScope.some(sid => sameId(sid, ex.storeId))) return true;
+        const s = stores.find(st => sameId(st.id, ex.storeId));
+        if (s && sameId((s as any).companyId, activeCompanyScopeId)) return true;
+        return false;
+      });
     }
     return list;
-  }, [activeData.expenses, activeCompanyScopeId, activeStoreIdsScope]);
+  }, [activeData.expenses, activeCompanyScopeId, activeStoreIdsScope, stores]);
 
   // --- SYNC COOLDOWN REFS ---
   const lastLocalWriteTimeRef = React.useRef<number>(0);
@@ -1501,6 +1538,19 @@ export default function App() {
         if (!Array.isArray(localArr) || !Array.isArray(serverArr)) return;
         // Skip if this collection is already fully protected by the dirty overlay.
         if (keys.includes(ck)) return;
+
+        // Categories are stored as scoped string arrays (e.g. 'co_1:Cereals', 'co_1:Fresh Fruits')
+        // Union local and server arrays so user-added categories are never discarded during background sync
+        if (ck === 'categories') {
+          const catSet = new Set<string>();
+          serverArr.forEach((c: any) => { if (typeof c === 'string' && c.trim()) catSet.add(c.trim()); });
+          localArr.forEach((c: any) => { if (typeof c === 'string' && c.trim()) catSet.add(c.trim()); });
+          if (catSet.size > 0) {
+            out[ck] = Array.from(catSet);
+          }
+          return;
+        }
+
         const serverById = new Map<string, any>();
         serverArr.forEach((sr: any) => { if (sr && sr.id != null) serverById.set(String(sr.id), sr); });
         const localById = new Map<string, any>();
@@ -2559,7 +2609,7 @@ export default function App() {
       (parsed._assembled === true || parsed._assembled === 1 || parsed._assembled === '1')
     );
     if (isRemoteApply && !payloadAssembled) {
-      for (const k of ['branches', 'stores', 'categories', 'users', 'companies', 'sponsors']) {
+      for (const k of ['branches', 'stores', 'categories', 'users', 'companies', 'sponsors', 'marketplaceProducts', 'salesOrders']) {
         const incomingArr = Array.isArray(parsed?.[k]) ? parsed[k] : undefined;
         const prevArr = Array.isArray((dbStateRef.current as any)?.[k]) ? (dbStateRef.current as any)[k] : undefined;
         if (incomingArr && incomingArr.length === 0 && prevArr && prevArr.length > 0
@@ -2959,13 +3009,9 @@ export default function App() {
             if (v2BootState.branches && v2BootState.branches.length > 0) {
               overlay.branches = v2BootState.branches;
             }
-            // The normalized stores table holds BOTH branch rows (branch_id === own id)
-            // and plain store rows; the frontend model keeps them in separate arrays, so
-            // partition the full v2 store list the same way the server's v2_list_branches
-            // view does before overlaying either.
-            const branchIds = new Set((v2BootState.branches || []).map((b: any) => sv(b.id)));
-            const plainStores = ((v2BootState.stores || []) as any[]).filter((s: any) => s && !branchIds.has(sv(s.id)));
-            if (plainStores.length > 0) overlay.stores = plainStores;
+            if (v2BootState.stores && v2BootState.stores.length > 0) {
+              overlay.stores = v2BootState.stores;
+            }
             const v2CatStrings = (v2BootState.categories || [])
               .map((c: any) => (c && typeof c === 'object' && c.key) ? String(c.key) : String(c ?? ''))
               .filter((s: string) => s && s.trim() !== '');
@@ -4108,6 +4154,9 @@ export default function App() {
       Object.keys(updatedFields || {}).forEach((k: string) => {
         if (!NON_SYNCED_KEYS.has(k) && !DIRECT_SYNC_KEYS.has(k)) (dirtyValuesRef.current as any)[k] = (updatedFields as any)[k];
       });
+      if (updatedFields && (updatedFields as any).categories) {
+        (dirtyValuesRef.current as any)['categories'] = (updatedFields as any).categories;
+      }
     } catch {}
     
     // CRITICAL MASTER-DATA FLUSH (2026-09-07): company/hierarchy/category changes are
@@ -4273,29 +4322,22 @@ export default function App() {
             for (const cat of nextCats) {
               const s = String(cat);
               if (prevSet.has(s)) continue;
-              const cm = /^co_([^:]+):(.*)$/s.exec(s);
-              if (cm) {
-                catOps.push(v2UpsertCategory(cm[1], cm[2]).catch((e) => console.warn('[Direct MySQL] v2_upsert_category delta failed', e)));
-              } else {
-                const targetCo = companyId || '1';
-                catOps.push(v2UpsertCategory(targetCo, s).catch((e) => console.warn('[Direct MySQL] v2_upsert_category delta failed', e)));
-              }
+              const parsed = parseCategoryScope(s);
+              const targetCo = (parsed.companyId && parsed.companyId !== 'all') ? parsed.companyId : (companyId && companyId !== 'all' ? companyId : '1');
+              catOps.push(v2UpsertCategory(targetCo, parsed.name, undefined, parsed.storeId).catch((e) => console.warn('[Direct MySQL] v2_upsert_category delta failed', e)));
             }
             for (const cat of prevCats) {
               const s = String(cat);
               if (nextSet.has(s)) continue;
-              const cm = /^co_([^:]+):(.*)$/s.exec(s);
-              if (cm) {
-                catOps.push(v2DeleteCategory(cm[1], cm[2]).catch((e) => console.warn('[Direct MySQL] v2_delete_category delta failed', e)));
-              } else {
-                const targetCo = companyId || '1';
-                catOps.push(v2DeleteCategory(targetCo, s).catch((e) => console.warn('[Direct MySQL] v2_delete_category delta failed', e)));
-              }
+              const parsed = parseCategoryScope(s);
+              const targetCo = (parsed.companyId && parsed.companyId !== 'all') ? parsed.companyId : (companyId && companyId !== 'all' ? companyId : '1');
+              catOps.push(v2DeleteCategory(targetCo, parsed.name, parsed.storeId).catch((e) => console.warn('[Direct MySQL] v2_delete_category delta failed', e)));
             }
             if (catOps.length > 0) {
               markDirectDeltaDirty(key, (Array.isArray(val) ? val : []).slice());
               void Promise.allSettled(catOps).then(() => clearDirectDeltaDirty(key)).catch(() => clearDirectDeltaDirty(key));
             }
+            schedulePhpFlush(true);
             continue;
           }
           const delta = directDeltaParts((current as any)[key], val);
@@ -4333,81 +4375,97 @@ export default function App() {
               // For array replacements, upsert each expense that has an id
               for (const e of val) { if (e?.id) upsertExpense(e, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'purchaseOrders':
             if (Array.isArray(val)) {
               for (const po of val) { if (po?.id) upsertPurchaseOrder(po, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'settings':
             if (val && typeof val === 'object') {
               upsertCompanySettings({ ...val, company_id: companyId } as any, companyId).catch(() => {});
             }
+            schedulePhpFlush(true);
             break;
           case 'taxes':
             if (Array.isArray(val)) {
               for (const t of val) { if (t?.id) upsertTaxRule(t, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'flashSales':
             if (Array.isArray(val)) {
               for (const fs of val) { if (fs?.id) upsertFlashSale(fs, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'stories':
             if (Array.isArray(val)) {
               for (const s of val) { if (s?.id) upsertStory(s, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'disputes':
             if (Array.isArray(val)) {
               for (const d of val) { if (d?.id) upsertDispute(d, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'disputeMessages':
             if (Array.isArray(val)) {
               for (const m of val) { if (m?.id) upsertDisputeMessage(m).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'productReturns':
             if (Array.isArray(val)) {
               for (const r of val) { if (r?.id) upsertProductReturn(r, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'chatConversations':
             if (Array.isArray(val)) {
               for (const c of val) { if (c?.id) upsertChatConversation(c, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'chatMessages':
             if (Array.isArray(val)) {
               for (const m of val) { if (m?.id) upsertChatMessage(m).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'escrowTransactions':
             if (Array.isArray(val)) {
               for (const e of val) { if (e?.id) upsertEscrowTransaction(e, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'visualSearches':
             if (Array.isArray(val)) {
               for (const v of val) { if (v?.id) upsertVisualSearch(v, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'installmentPlans':
             if (Array.isArray(val)) {
               for (const p of val) { if (p?.id) upsertInstallmentPlan(p, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'installmentOrders':
             if (Array.isArray(val)) {
               for (const o of val) { if (o?.id) upsertInstallmentOrder(o, companyId).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           case 'installmentPayments':
             if (Array.isArray(val)) {
               for (const p of val) { if (p?.id) upsertInstallmentPayment(p).catch(() => {}); }
             }
+            schedulePhpFlush(true);
             break;
           // These collections already have atomic endpoints via api.ts
           case 'stockItems':
@@ -4416,12 +4474,12 @@ export default function App() {
           case 'salesOrders':
             // Handled by existing mutateCollectionRecord / apiUpsert* functions
             // Schedule the existing PHP flush for these
-            schedulePhpFlush();
+            schedulePhpFlush(true);
             break;
           default:
             // For collections without dedicated atomic endpoints, use the existing
             // save_state blob flush as fallback (keeps backward compatibility)
-            schedulePhpFlush();
+            schedulePhpFlush(true);
             break;
         }
       }
@@ -6259,16 +6317,22 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
     // GLOBAL VIEW: a global super admin sees EVERY store across every company.
     if (!(isSuperScopeUser(currentUser) && globalCompanyView) && currentCompanyId) {
       const activeCompanyBranchIds = branches
-        .filter(b => b.companyId === currentCompanyId && !b.isDeleted)
+        .filter(b => sameId(b.companyId, currentCompanyId) && !b.isDeleted)
         .map(b => b.id);
-      result = result.filter(s => activeCompanyBranchIds.includes(s.branchId));
+      result = result.filter(s => {
+        if (sameId((s as any).companyId, currentCompanyId)) return true;
+        return activeCompanyBranchIds.some(bid => sameId(bid, s.branchId));
+      });
     }
     
     if (currentUser && !isSuperScopeUser(currentUser)) {
       const userCompanyBranchIds = branches
-        .filter(b => b.companyId === currentUser.companyId && !b.isDeleted)
+        .filter(b => sameId(b.companyId, currentUser.companyId) && !b.isDeleted)
         .map(b => b.id);
-      result = result.filter(s => userCompanyBranchIds.includes(s.branchId));
+      result = result.filter(s => {
+        if (sameId((s as any).companyId, currentUser.companyId)) return true;
+        return userCompanyBranchIds.some(bid => sameId(bid, s.branchId));
+      });
 
       // Role-hierarchy store scope:
       //  - top admins (Admin/Administrator/Company Administrator) → whole allocated COMPANY
@@ -6280,9 +6344,9 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
       const isTopAdmin = ['admin', 'administrator', 'company administrator'].includes(roleLower);
       const isBranchScoped = ['branch administrator', 'branch manager', 'branch admin', 'store administrator', 'store admin', 'store manager'].includes(roleLower);
       if (currentUser.storeId) {
-        if (!isTopAdmin) result = result.filter(s => s.id === currentUser.storeId);
+        if (!isTopAdmin) result = result.filter(s => sameId(s.id, currentUser.storeId));
       } else if (isBranchScoped && currentUser.branchId) {
-        result = result.filter(s => s.branchId === currentUser.branchId);
+        result = result.filter(s => sameId(s.branchId, currentUser.branchId));
       }
     }
     
@@ -6672,6 +6736,53 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
         toast.error(t('Your access credentials have been blocked or remotely revoked.'));
         setLoginError(t('Your access credentials have been blocked or remotely revoked. Please contact the Super Admin for assistance.'));
         return;
+      }
+
+      // Check if user account or company is pending Super Admin verification and payment confirmation
+      if (!isCoreSuperAdmin) {
+        const uStatus = String(targetUser.status || '').trim().toLowerCase();
+        if (uStatus === 'pending' || uStatus === 'pending verification' || uStatus === 'pending approval') {
+          const pendingSecLog: SecurityLog = {
+            id: 'SECLOG-' + Date.now(),
+            username: targetUser.username,
+            status: 'Failed',
+            ipAddress,
+            browserFingerprint: fingerprint,
+            userAgent,
+            timestamp: new Date().toISOString(),
+            failureReason: 'Access rejected: Account is awaiting Super Admin verification and payment approval.',
+            deviceRecognized: false,
+            companyId: targetUser.companyId
+          };
+          saveAllData({ securityLogs: [pendingSecLog, ...securityLogs] });
+          const pendingMsg = t('Usajili wako unasubiri uhakiki na idhini ya malipo kutoka kwa Super Admin. Huwezi kuingia kwenye mfumo hadi Super Admin athibitishe malipo yako.') || 'Your account and payment are awaiting Super Admin verification and approval. You cannot log in until payment is confirmed.';
+          toast.error(pendingMsg);
+          setLoginError(pendingMsg);
+          return;
+        }
+
+        const userCo = companies.find(c => sameId(c.id, targetUser.companyId));
+        if (userCo && (userCo.subscriptionApproved === false || userCo.status === 'Pending Payment' || userCo.status === 'Pending' || userCo.status === 'Rejected')) {
+          const pendingSecLog: SecurityLog = {
+            id: 'SECLOG-' + Date.now(),
+            username: targetUser.username,
+            status: 'Failed',
+            ipAddress,
+            browserFingerprint: fingerprint,
+            userAgent,
+            timestamp: new Date().toISOString(),
+            failureReason: 'Access rejected: Company is awaiting Super Admin payment confirmation.',
+            deviceRecognized: false,
+            companyId: targetUser.companyId
+          };
+          saveAllData({ securityLogs: [pendingSecLog, ...securityLogs] });
+          const coPendingMsg = userCo.status === 'Rejected'
+            ? (t('Usajili wa kampuni yako umekataliwa na Super Admin. Tafadhali wasiliana na utawala.') || 'Your company registration has been rejected by Super Admin.')
+            : (t('Malipo na usajili wa kampuni yako bado haujathibitishwa na Super Admin. Tafadhali subiri uthibitisho wa malipo kabla ya kuingia.') || 'Your company registration and payment are awaiting Super Admin confirmation and approval.');
+          toast.error(coPendingMsg);
+          setLoginError(coPendingMsg);
+          return;
+        }
       }
 
       // Company subscription expiry is NOT blocked at login — expired users sign in
@@ -7299,8 +7410,12 @@ try {
     const approvedProducts = marketplaceProducts.map(p =>
       p.companyId === companyId ? { ...p, status: 'approved' as const } : p
     );
+    const updatedUsers = users.map(u =>
+      sameId(u.companyId, companyId) ? { ...u, status: 'Active' as const } : u
+    );
     saveAllData({
       companies: updatedCompanies,
+      users: updatedUsers,
       marketplaceProducts: approvedProducts,
       settings: { ...settings, companySubscriptions: updatedSubs }
     });
@@ -7522,6 +7637,8 @@ try {
       themeColor: '#c41e3a',
       subscriptionApproved: false,
       status: 'Pending Payment',
+      isVerified: false,
+      isMarketplaceActive: false,
       subscriptionStart: nowIso,
       planId: data.planId,
       planName: data.planName,
@@ -7554,7 +7671,7 @@ try {
       branchId: null,
       storeId: null,
       firstLogin: true,
-      status: 'Active'
+      status: 'Pending Verification'
     };
     const newRequest: PaymentConfirmationRequest = {
       id: 'REQ-' + Date.now(),
@@ -10626,9 +10743,13 @@ try {
     const approvedProducts = marketplaceProducts.map(p =>
       p.companyId === req.companyId ? { ...p, status: 'approved' as const } : p
     );
+    const updatedUsers = users.map(u =>
+      sameId(u.companyId, req.companyId) ? { ...u, status: 'Active' as const } : u
+    );
 
     saveAllData({
       companies: updatedCompanies,
+      users: updatedUsers,
       marketplaceProducts: approvedProducts,
       settings: { ...settings, subscriptionMeta: { ...meta, paymentRequests: updatedRequests } }
     });
@@ -10803,7 +10924,10 @@ try {
         ? { ...c, status: 'Active' as const, subscriptionApproved: true, isVerified: true, isMarketplaceActive: true, adminNote: '' }
         : c
     );
-    saveAllData({ companies: updatedCompanies });
+    const updatedUsers = users.map(u =>
+      sameId(u.companyId, companyId) ? { ...u, status: 'Active' as const } : u
+    );
+    saveAllData({ companies: updatedCompanies, users: updatedUsers });
     toast.success(t(`Company "${company.name}" verified & activated.`));
     logAction('Company Verified', `ROOT_MANDATE verified company "${company.name}" and activated its subscription.`);
   };
@@ -11216,10 +11340,13 @@ try {
   }, []);
 
   // Helper variables for data fetching
-  const getStoreName = (id: number) => stores.find(s => s.id === id)?.name || `Store #${id}`;
-  const getCustomerName = (id: number) => customers.find(c => c.id === id)?.name || 'Direct Customer';
-  const getSupplierName = (id: number) => suppliers.find(s => s.id === id)?.name || 'Direct Supplier';
-  const getProductName = (id: number) => stockItems.find(p => p.id === id)?.name || 'Product Item';
+  const getStoreName = (id: number | string | null | undefined) => {
+    if (id == null) return t('General / HQ');
+    return stores.find(s => sameId(s.id, id))?.name || `Store #${id}`;
+  };
+  const getCustomerName = (id: number | string | null | undefined) => customers.find(c => sameId(c.id, id))?.name || 'Direct Customer';
+  const getSupplierName = (id: number | string | null | undefined) => suppliers.find(s => sameId(s.id, id))?.name || 'Direct Supplier';
+  const getProductName = (id: number | string | null | undefined) => stockItems.find(p => sameId(p.id, id))?.name || 'Product Item';
 
   const formatStockQty = (qty: number, item: StockItem) => {
     if (item.useSubUnitPricing && item.subUnitConversion && item.subUnitConversion > 1) {
@@ -11277,16 +11404,16 @@ try {
 
     const todayStr = new Date().toISOString().split('T')[0];
     const todaySalesAmt = activeSalesOrders
-      .filter(so => so.date === todayStr && activeStoreIds.includes(so.storeId))
+      .filter(so => so.date === todayStr && activeStoreIds.some(sId => sameId(sId, so.storeId)))
       .reduce((acc, so) => acc + so.total, 0);
 
     const todayPurchasesAmt = activePurchaseOrders
-      .filter(po => po.date === todayStr && po.status === 'Received' && activeStoreIds.includes(po.storeId))
+      .filter(po => po.date === todayStr && po.status === 'Received' && activeStoreIds.some(sId => sameId(sId, po.storeId)))
       .reduce((acc, po) => acc + po.total, 0);
 
     const receivables = customers.reduce((sum, c) => sum + (c.balance || 0), 0);
     const payables = activePurchaseOrders
-      .filter(po => po.status === 'Pending' && activeStoreIds.includes(po.storeId))
+      .filter(po => po.status === 'Pending' && activeStoreIds.some(sId => sameId(sId, po.storeId)))
       .reduce((sum, po) => sum + po.total, 0);
 
     const todayMs = new Date(todayStr).getTime();
@@ -11835,6 +11962,11 @@ try {
       return matchesSearch && matchesCategory;
     });
 
+    const STOCK_PAGE_SIZE = 50;
+    const totalStockPages = Math.max(1, Math.ceil(filteredStockItems.length / STOCK_PAGE_SIZE));
+    const currentStockPage = Math.min(stockItemsPage, totalStockPages);
+    const paginatedStockItems = filteredStockItems.slice((currentStockPage - 1) * STOCK_PAGE_SIZE, currentStockPage * STOCK_PAGE_SIZE);
+
     // Bulk selection helpers (selection survives search/filter; export uses selected when present)
     const exportStockItems = selectedStockIds.length > 0
       ? filteredStockItems.filter(p => selectedStockIds.includes(p.id))
@@ -12075,7 +12207,7 @@ try {
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium text-gray-700 hover:border-gray-400 focus:border-brand cursor-pointer"
             >
               <option value="">{t('All Categories')}</option>
-              {getStoreCategories(categories, currentStoreId).map(c => (
+              {getStoreCategories(categories, currentStoreId, currentCompanyId).map(c => (
                 <option key={c} value={c}>{cleanCategoryName(c)}</option>
               ))}
             </select>
@@ -12181,7 +12313,7 @@ try {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 font-semibold">
-                {filteredStockItems.map(p => {
+                {paginatedStockItems.map(p => {
                   const allowedStoreIds = visibleStores.map(s => s.id);
                   const globalStock = Object.entries(p.stock || {})
                     .filter(([sid]) => allowedStoreIds.includes(Number(sid)))
@@ -12500,6 +12632,34 @@ try {
               </tbody>
             </table>
           </div>
+          {filteredStockItems.length > 0 && (
+            <div className="p-3 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-3 bg-gray-50/50">
+              <span className="text-xs text-gray-500 font-medium">
+                {t('Showing')} <span className="font-bold text-gray-800">{(currentStockPage - 1) * STOCK_PAGE_SIZE + 1}</span> {t('to')} <span className="font-bold text-gray-800">{Math.min(currentStockPage * STOCK_PAGE_SIZE, filteredStockItems.length)}</span> {t('of')} <span className="font-bold text-gray-800">{filteredStockItems.length}</span> {t('products')}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={currentStockPage <= 1}
+                  onClick={() => setStockItemsPage(prev => Math.max(1, prev - 1))}
+                  className="px-2.5 py-1 text-xs font-semibold rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  {t('Previous')}
+                </button>
+                <span className="text-xs font-bold text-gray-700 px-2">
+                  {currentStockPage} / {totalStockPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentStockPage >= totalStockPages}
+                  onClick={() => setStockItemsPage(prev => Math.min(totalStockPages, prev + 1))}
+                  className="px-2.5 py-1 text-xs font-semibold rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  {t('Next')}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* --- INTER-STORE TRANSFERS MANIFEST --- */}
@@ -12683,10 +12843,29 @@ try {
 
   // 3. Purchase Order Component Log view
   const renderPurchaseOrders = () => {
-    const storeFilteredPOs = activePurchaseOrders.filter(po => currentStoreId ? po.storeId === currentStoreId : true);
+    const storeFilteredPOs = activePurchaseOrders.filter(po => {
+      const matchStore = poFilterStoreId !== 'all'
+        ? sameId(po.storeId, poFilterStoreId)
+        : (currentStoreId ? (sameId(po.storeId, currentStoreId) || po.storeId == null) : true);
+      const matchStatus = poFilterStatus !== 'all' ? po.status === poFilterStatus : true;
+      const suppName = safeLower(getSupplierName(po.supplierId));
+      const matchSearch = poSearchQuery.trim()
+        ? safeLower(po.poNumber).includes(poSearchQuery.toLowerCase()) ||
+          suppName.includes(poSearchQuery.toLowerCase()) ||
+          po.items.some(i => safeLower(getProductName(i.productId)).includes(poSearchQuery.toLowerCase()))
+        : true;
+      return matchStore && matchStatus && matchSearch;
+    });
     const totalPOVal = storeFilteredPOs.reduce((acc, po) => acc + (po.total || 0), 0);
     const pendingCount = storeFilteredPOs.filter(po => po.status === 'Pending').length;
     const receivedCount = storeFilteredPOs.filter(po => po.status === 'Received').length;
+
+    const PO_PAGE_SIZE = 50;
+    const totalPOPages = Math.max(1, Math.ceil(storeFilteredPOs.length / PO_PAGE_SIZE));
+    const currentPOPage = Math.min(purchaseOrdersPage, totalPOPages);
+    const paginatedPOs = storeFilteredPOs.slice((currentPOPage - 1) * PO_PAGE_SIZE, currentPOPage * PO_PAGE_SIZE);
+
+    const hasActiveFilters = poFilterStoreId !== 'all' || poFilterStatus !== 'all' || Boolean(poSearchQuery.trim());
 
     return (
       <div className="space-y-4">
@@ -12734,14 +12913,77 @@ try {
         </div>
 
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="p-4 border-b flex items-center justify-between">
-            <span className="font-bold text-gray-900 text-sm">{t('Purchase Order Journals')}</span>
-            <button
-              onClick={() => setShowPOModal(true)}
-              className="bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-sm"
-            >
-              <Plus className="w-4 h-4" /> {t('Create PO')}
-            </button>
+          <div className="p-4 border-b flex flex-col md:flex-row items-start md:items-center justify-between gap-3 bg-gray-50/40">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-gray-900 text-sm">{t('Purchase Order Journals')}</span>
+              <span className="text-[11px] font-semibold bg-gray-200/80 text-gray-700 px-2 py-0.5 rounded-full">
+                {storeFilteredPOs.length}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              <div className="relative flex-1 sm:w-56 min-w-[140px]">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder={t('Search PO #, supplier, item...')}
+                  value={poSearchQuery}
+                  onChange={(e) => {
+                    setPoSearchQuery(e.target.value);
+                    setPurchaseOrdersPage(1);
+                  }}
+                  className="w-full pl-8 pr-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white focus:ring-1 focus:ring-brand outline-none"
+                />
+              </div>
+
+              <select
+                value={poFilterStoreId}
+                onChange={(e) => {
+                  setPoFilterStoreId(e.target.value);
+                  setPurchaseOrdersPage(1);
+                }}
+                className="px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white font-medium text-gray-700 outline-none"
+              >
+                <option value="all">{t('All Stores')}</option>
+                {visibleStores.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+
+              <select
+                value={poFilterStatus}
+                onChange={(e) => {
+                  setPoFilterStatus(e.target.value);
+                  setPurchaseOrdersPage(1);
+                }}
+                className="px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white font-medium text-gray-700 outline-none"
+              >
+                <option value="all">{t('All Statuses')}</option>
+                <option value="Pending">{t('Pending')}</option>
+                <option value="Received">{t('Received')}</option>
+              </select>
+
+              {hasActiveFilters && (
+                <button
+                  onClick={() => {
+                    setPoFilterStoreId('all');
+                    setPoFilterStatus('all');
+                    setPoSearchQuery('');
+                    setPurchaseOrdersPage(1);
+                  }}
+                  className="px-2.5 py-1.5 text-xs text-gray-600 hover:text-gray-900 border border-gray-200 rounded-lg hover:bg-gray-100 transition"
+                >
+                  {t('Reset')}
+                </button>
+              )}
+
+              <button
+                onClick={() => setShowPOModal(true)}
+                className="bg-brand hover:bg-brand-hover text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-sm shrink-0 ml-auto md:ml-0"
+              >
+                <Plus className="w-3.5 h-3.5" /> {t('Create PO')}
+              </button>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs text-left">
@@ -12758,7 +13000,7 @@ try {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 font-semibold">
-                {storeFilteredPOs.map(po => (
+                {paginatedPOs.map(po => (
                   <tr key={po.id} className="hover:bg-gray-50/50">
                     <td className="p-3 font-bold text-brand font-mono">{po.poNumber}</td>
                     <td className="p-3 text-gray-900 font-bold">{getStoreName(po.storeId)}</td>
@@ -12838,20 +13080,66 @@ try {
                   <tr>
                     <td colSpan={8} className="p-12 text-center text-gray-400">
                       <ShoppingBag className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                      <p className="text-sm font-bold text-gray-600 mb-1">{t('No purchase orders recorded yet.')}</p>
-                      <p className="text-xs text-gray-400 mb-4">{t('Create purchase orders to restock products from your suppliers.')}</p>
-                      <button
-                        onClick={() => setShowPOModal(true)}
-                        className="bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition"
-                      >
-                        <Plus className="w-4 h-4" /> {t('Create First Purchase Order')}
-                      </button>
+                      <p className="text-sm font-bold text-gray-600 mb-1">
+                        {hasActiveFilters ? t('No purchase orders match your filters.') : t('No purchase orders recorded yet.')}
+                      </p>
+                      <p className="text-xs text-gray-400 mb-4">
+                        {hasActiveFilters ? t('Try switching stores, clearing search, or resetting filters.') : t('Create purchase orders to restock products from your suppliers.')}
+                      </p>
+                      {hasActiveFilters ? (
+                        <button
+                          onClick={() => {
+                            setPoFilterStoreId('all');
+                            setPoFilterStatus('all');
+                            setPoSearchQuery('');
+                            setPurchaseOrdersPage(1);
+                          }}
+                          className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition"
+                        >
+                          <RefreshCw className="w-4 h-4" /> {t('Show All Purchase Orders')}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setShowPOModal(true)}
+                          className="bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition"
+                        >
+                          <Plus className="w-4 h-4" /> {t('Create First Purchase Order')}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
+          {storeFilteredPOs.length > 0 && (
+            <div className="p-3 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-3 bg-gray-50/50">
+              <span className="text-xs text-gray-500 font-medium">
+                {t('Showing')} <span className="font-bold text-gray-800">{(currentPOPage - 1) * PO_PAGE_SIZE + 1}</span> {t('to')} <span className="font-bold text-gray-800">{Math.min(currentPOPage * PO_PAGE_SIZE, storeFilteredPOs.length)}</span> {t('of')} <span className="font-bold text-gray-800">{storeFilteredPOs.length}</span> {t('purchase orders')}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={currentPOPage <= 1}
+                  onClick={() => setPurchaseOrdersPage(prev => Math.max(1, prev - 1))}
+                  className="px-2.5 py-1 text-xs font-semibold rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  {t('Previous')}
+                </button>
+                <span className="text-xs font-bold text-gray-700 px-2">
+                  {currentPOPage} / {totalPOPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentPOPage >= totalPOPages}
+                  onClick={() => setPurchaseOrdersPage(prev => Math.min(totalPOPages, prev + 1))}
+                  className="px-2.5 py-1 text-xs font-semibold rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  {t('Next')}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -12859,10 +13147,29 @@ try {
 
   // 4. Sales Orders Log view
   const renderSalesOrders = () => {
-    const storeFilteredSOs = activeSalesOrders.filter(so => currentStoreId ? so.storeId === currentStoreId : true);
+    const storeFilteredSOs = activeSalesOrders.filter(so => {
+      const matchStore = soFilterStoreId !== 'all'
+        ? sameId(so.storeId, soFilterStoreId)
+        : (currentStoreId ? sameId(so.storeId, currentStoreId) : true);
+      const matchStatus = soFilterStatus !== 'all' ? so.status === soFilterStatus : true;
+      const custName = safeLower(getCustomerName(so.customerId));
+      const matchSearch = soSearchQuery.trim()
+        ? safeLower(so.soNumber).includes(soSearchQuery.toLowerCase()) ||
+          custName.includes(soSearchQuery.toLowerCase()) ||
+          so.items.some(i => safeLower(getProductName(i.productId)).includes(soSearchQuery.toLowerCase()))
+        : true;
+      return matchStore && matchStatus && matchSearch;
+    });
     const totalRev = storeFilteredSOs.reduce((acc, so) => acc + (so.total || 0), 0);
     const totalProfit = storeFilteredSOs.reduce((acc, so) => acc + (so.profit || 0), 0);
     const avgOrder = storeFilteredSOs.length > 0 ? totalRev / storeFilteredSOs.length : 0;
+
+    const SO_PAGE_SIZE = 50;
+    const totalSOPages = Math.max(1, Math.ceil(storeFilteredSOs.length / SO_PAGE_SIZE));
+    const currentSOPage = Math.min(salesOrdersPage, totalSOPages);
+    const paginatedSOs = storeFilteredSOs.slice((currentSOPage - 1) * SO_PAGE_SIZE, currentSOPage * SO_PAGE_SIZE);
+
+    const hasActiveFilters = soFilterStoreId !== 'all' || soFilterStatus !== 'all' || Boolean(soSearchQuery.trim());
 
     return (
       <div className="space-y-4">
@@ -12910,14 +13217,78 @@ try {
         </div>
 
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="p-4 border-b flex items-center justify-between">
-            <span className="font-bold text-gray-900 text-sm">{t('Completed Sales Ledgers')}</span>
-            <button
-              onClick={() => setShowSOModal(true)}
-              className="bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-sm"
-            >
-              <Monitor className="w-4 h-4" /> {t('POS Terminal')}
-            </button>
+          <div className="p-4 border-b flex flex-col md:flex-row items-start md:items-center justify-between gap-3 bg-gray-50/40">
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-gray-900 text-sm">{t('Completed Sales Ledgers')}</span>
+              <span className="text-[11px] font-semibold bg-gray-200/80 text-gray-700 px-2 py-0.5 rounded-full">
+                {storeFilteredSOs.length}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              <div className="relative flex-1 sm:w-56 min-w-[140px]">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder={t('Search order #, customer, item...')}
+                  value={soSearchQuery}
+                  onChange={(e) => {
+                    setSoSearchQuery(e.target.value);
+                    setSalesOrdersPage(1);
+                  }}
+                  className="w-full pl-8 pr-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white focus:ring-1 focus:ring-brand outline-none"
+                />
+              </div>
+
+              <select
+                value={soFilterStoreId}
+                onChange={(e) => {
+                  setSoFilterStoreId(e.target.value);
+                  setSalesOrdersPage(1);
+                }}
+                className="px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white font-medium text-gray-700 outline-none"
+              >
+                <option value="all">{t('All Stores')}</option>
+                {visibleStores.map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+
+              <select
+                value={soFilterStatus}
+                onChange={(e) => {
+                  setSoFilterStatus(e.target.value);
+                  setSalesOrdersPage(1);
+                }}
+                className="px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white font-medium text-gray-700 outline-none"
+              >
+                <option value="all">{t('All Statuses')}</option>
+                <option value="Completed">{t('Completed')}</option>
+                <option value="Pending">{t('Pending')}</option>
+                <option value="Draft">{t('Draft')}</option>
+              </select>
+
+              {hasActiveFilters && (
+                <button
+                  onClick={() => {
+                    setSoFilterStoreId('all');
+                    setSoFilterStatus('all');
+                    setSoSearchQuery('');
+                    setSalesOrdersPage(1);
+                  }}
+                  className="px-2.5 py-1.5 text-xs text-gray-600 hover:text-gray-900 border border-gray-200 rounded-lg hover:bg-gray-100 transition"
+                >
+                  {t('Reset')}
+                </button>
+              )}
+
+              <button
+                onClick={() => setShowSOModal(true)}
+                className="bg-brand hover:bg-brand-hover text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-sm shrink-0 ml-auto md:ml-0"
+              >
+                <Monitor className="w-3.5 h-3.5" /> {t('POS Terminal')}
+              </button>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-xs text-left">
@@ -12934,7 +13305,7 @@ try {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 font-semibold">
-                {storeFilteredSOs.map(so => (
+                {paginatedSOs.map(so => (
                   <tr key={so.id} className="hover:bg-gray-50/50">
                     <td className="p-3 font-bold text-brand font-mono">{so.soNumber}</td>
                     <td className="p-3 text-gray-900">{getCustomerName(so.customerId)}</td>
@@ -13016,20 +13387,66 @@ try {
                   <tr>
                     <td colSpan={8} className="p-12 text-center text-gray-400">
                       <Monitor className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                      <p className="text-sm font-bold text-gray-600 mb-1">{t('No sales orders recorded yet.')}</p>
-                      <p className="text-xs text-gray-400 mb-4">{t('Use the POS Terminal to launch sales checkout sessions.')}</p>
-                      <button
-                        onClick={() => setShowSOModal(true)}
-                        className="bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition"
-                      >
-                        <Monitor className="w-4 h-4" /> {t('Open POS Terminal')}
-                      </button>
+                      <p className="text-sm font-bold text-gray-600 mb-1">
+                        {hasActiveFilters ? t('No sales orders match your filters.') : t('No sales orders recorded yet.')}
+                      </p>
+                      <p className="text-xs text-gray-400 mb-4">
+                        {hasActiveFilters ? t('Try switching stores, clearing search, or resetting filters.') : t('Use the POS Terminal to launch sales checkout sessions.')}
+                      </p>
+                      {hasActiveFilters ? (
+                        <button
+                          onClick={() => {
+                            setSoFilterStoreId('all');
+                            setSoFilterStatus('all');
+                            setSoSearchQuery('');
+                            setSalesOrdersPage(1);
+                          }}
+                          className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition"
+                        >
+                          <RefreshCw className="w-4 h-4" /> {t('Show All Sales Orders')}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setShowSOModal(true)}
+                          className="bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition"
+                        >
+                          <Monitor className="w-4 h-4" /> {t('Open POS Terminal')}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
+          {storeFilteredSOs.length > 0 && (
+            <div className="p-3 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-3 bg-gray-50/50">
+              <span className="text-xs text-gray-500 font-medium">
+                {t('Showing')} <span className="font-bold text-gray-800">{(currentSOPage - 1) * SO_PAGE_SIZE + 1}</span> {t('to')} <span className="font-bold text-gray-800">{Math.min(currentSOPage * SO_PAGE_SIZE, storeFilteredSOs.length)}</span> {t('of')} <span className="font-bold text-gray-800">{storeFilteredSOs.length}</span> {t('sales orders')}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={currentSOPage <= 1}
+                  onClick={() => setSalesOrdersPage(prev => Math.max(1, prev - 1))}
+                  className="px-2.5 py-1 text-xs font-semibold rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  {t('Previous')}
+                </button>
+                <span className="text-xs font-bold text-gray-700 px-2">
+                  {currentSOPage} / {totalSOPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={currentSOPage >= totalSOPages}
+                  onClick={() => setSalesOrdersPage(prev => Math.min(totalSOPages, prev + 1))}
+                  className="px-2.5 py-1 text-xs font-semibold rounded border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                >
+                  {t('Next')}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -13047,7 +13464,9 @@ try {
           <PanelErrorBoundary panelName="Expenses">
             <Expenses
               expenses={activeExpenses}
-              stores={stores}
+              stores={visibleStores}
+              branches={branches}
+              currentCompanyId={currentCompanyId}
               currentStoreId={currentStoreId}
               currency={activeCurrency}
               exchangeRate={activeExchangeRate}
@@ -13653,8 +14072,11 @@ try {
       <div style={{ ...publicBrandStyle, ...goldenBrandStyle }}>
         <MarketplaceApp
           path={mpPath}
-          companies={companies}
-          products={marketplaceProducts}
+          companies={companies.filter(c => c.subscriptionApproved !== false && c.status !== 'Pending Payment' && c.status !== 'Pending' && c.isMarketplaceActive !== false)}
+          products={marketplaceProducts.filter(p => {
+            const co = companies.find(c => sameId(c.id, p.companyId));
+            return !co || (co.subscriptionApproved !== false && co.status !== 'Pending Payment' && co.status !== 'Pending' && co.isMarketplaceActive !== false);
+          })}
           stores={stores}
           orders={marketplaceOrders}
           customers={marketplaceCustomers}
@@ -13806,8 +14228,11 @@ try {
             }}
             onStartDemo={() => setDemoSetupOpen(true)}
             onSubmitContact={handleSubmitContact}
-            marketplaceCompanies={companies}
-            marketplaceProducts={marketplaceProducts}
+            marketplaceCompanies={companies.filter(c => c.subscriptionApproved !== false && c.status !== 'Pending Payment' && c.status !== 'Pending' && c.isMarketplaceActive !== false)}
+            marketplaceProducts={marketplaceProducts.filter(p => {
+              const co = companies.find(c => sameId(c.id, p.companyId));
+              return !co || (co.subscriptionApproved !== false && co.status !== 'Pending Payment' && co.status !== 'Pending' && co.isMarketplaceActive !== false);
+            })}
             onGoMarketplace={goMarketplace}
             homepageContent={settings.homepageContent}
             siteConfig={settings.siteConfig}
@@ -14063,7 +14488,7 @@ try {
   }).length;
 
   // Check if company subscription is expired, unapproved, pending approval or demo-expired
-  const gateCompany = currentUser?.companyId ? companies.find(c => c.id === currentUser.companyId) : undefined;
+  const gateCompany = currentUser?.companyId ? companies.find(c => sameId(c.id, currentUser.companyId)) : undefined;
   const todayStr = new Date().toISOString().split('T')[0];
   const isDemoExpired = !!gateCompany?.isDemo && !!gateCompany.demoExpiresAt && todayStr > gateCompany.demoExpiresAt.split('T')[0];
   const companyGateStatus = gateCompany?.status;
@@ -14498,6 +14923,7 @@ try {
 
       {/* Main Content Flow Panel */}
       <div className="flex-1 flex flex-col min-w-0">
+        <OfflineTopBar t={t} />
         <Header
           currentPage={currentPage}
           currentUser={currentUser}
@@ -14876,7 +15302,7 @@ try {
         stockItems={activeStockItems}
         salesOrders={activeSalesOrders}
         currentStoreId={currentStoreId}
-        stores={stores}
+        stores={visibleStores}
         saveAllData={saveAllData}
         logAction={logAction}
         settings={settings}
@@ -14893,9 +15319,11 @@ try {
         onClose={() => setShowPOModal(false)}
         suppliers={suppliers}
         stockItems={activeStockItems}
-        purchaseOrders={activePurchaseOrders}
+        purchaseOrders={purchaseOrders}
         currentStoreId={currentStoreId}
         stores={visibleStores}
+        branches={branches}
+        currentCompanyId={currentCompanyId}
         saveAllData={saveAllData}
         logAction={logAction}
         settings={settings}
@@ -15200,11 +15628,11 @@ try {
                   name="category"
                   defaultValue={(editingStockItem?.category && editingStockItem.category.trim())
                     ? editingStockItem.category
-                    : (getStoreCategories(categories, currentStoreId)[0] || 'Uncategorized')}
+                    : (getStoreCategories(categories, currentStoreId, currentCompanyId)[0] || 'Uncategorized')}
                   className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
                 >
                   <option value="Uncategorized">{t('Uncategorized')}</option>
-                  {getStoreCategories(categories, currentStoreId).map(c => (
+                  {getStoreCategories(categories, currentStoreId, currentCompanyId).map(c => (
                     <option key={c} value={c}>{cleanCategoryName(c)}</option>
                   ))}
                 </select>

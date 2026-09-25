@@ -3,6 +3,7 @@ import { User } from '../types';
 import { UserCircle, Mail, Key, LogOut, BookOpen, Globe, Info, HelpCircle } from 'lucide-react';
 import { toast } from '../utils/toast';
 import { verifyPassword } from '../utils/hash';
+import AirHockeyPro from './games/AirHockeyPro';
 
 interface ProfileProps {
   currentUser: User | null;
@@ -29,6 +30,8 @@ export default function Profile({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [guideLang, setGuideLang] = useState<'en' | 'sw'>('en');
+  const [showGameChooser, setShowGameChooser] = useState(false);
+  const [showHockey, setShowHockey] = useState(false);
 
   const [firstLoginDate] = useState<Date>(() => {
     const key = `tradecore_first_login_${currentUser?.id || 'default'}`;
@@ -79,15 +82,18 @@ export default function Profile({
         <div className="w-20 h-20 bg-white rounded-full p-1 -mt-10 mb-4 shadow-lg flex items-center justify-center relative group">
           <button
             type="button"
-            onClick={onOpenGame}
+            onClick={() => setShowGameChooser(true)}
             className="w-full h-full bg-gradient-to-tr from-indigo-600 via-brand to-purple-600 rounded-full flex flex-col items-center justify-center text-3xl font-black text-white shadow-md hover:scale-105 active:scale-95 transition cursor-pointer relative overflow-hidden group border-2 border-white"
-            title={t('Click this avatar letter to play the Mind Refresh Arcade Game!')}
+            title={t('Click this avatar letter to choose and play Mind Refresh games!')}
           >
             <span>{currentUser.name ? currentUser.name.charAt(0).toUpperCase() : 'U'}</span>
             <span className="text-[8px] font-extrabold text-amber-300 uppercase tracking-tighter opacity-90 group-hover:opacity-100 transition-opacity -mt-1">
               🎮 {t('Game')}
             </span>
           </button>
+          <span className="absolute -top-1 -right-1 bg-green-500 text-white text-xs px-1.5 py-0.5 rounded-full font-bold shadow pointer-events-none z-10 animate-pulse">
+            2
+          </span>
         </div>
         <h2 className="text-xl font-bold text-gray-900">{currentUser.name}</h2>
         <div className="text-sm font-semibold text-brand mb-6">{t(currentUser.role)}</div>
@@ -288,6 +294,94 @@ export default function Profile({
           </button>
         </div>
       </div>
+
+      {/* Game Chooser Modal */}
+      {showGameChooser && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-xs flex items-center justify-center z-[100] p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-white text-xl font-bold flex items-center gap-2">
+                <span>🎮</span>
+                <span>Chagua Game - Choose Game</span>
+              </h2>
+              <button 
+                onClick={() => setShowGameChooser(false)} 
+                className="text-gray-400 hover:text-white text-lg font-bold w-7 h-7 rounded-full bg-white/10 flex items-center justify-center transition"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {/* Game 1: DIY POCKET V5 */}
+              <div 
+                onClick={() => {
+                  setShowGameChooser(false);
+                  if (onOpenGame) onOpenGame();
+                }}
+                className="bg-slate-700 rounded-xl p-4 hover:bg-slate-600 cursor-pointer border-2 border-transparent hover:border-red-500 transition flex flex-col justify-between group shadow"
+              >
+                <div>
+                  <div className="bg-black h-24 rounded-lg mb-2.5 flex flex-col items-center justify-center text-cyan-400 text-xs font-mono border border-slate-600 group-hover:border-red-500 transition p-2 text-center">
+                    <span className="text-xs font-bold text-amber-400">⨂ DIY POCKET V5 ⨂</span>
+                    <span className="text-[9px] text-gray-400 mt-1">◀ LEFT • FIRE • RIGHT ▶</span>
+                  </div>
+                  <h3 className="text-white font-bold text-sm">DIY POCKET V5</h3>
+                  <p className="text-gray-400 text-[11px]">SCORE:215 LVL:1</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowGameChooser(false);
+                    if (onOpenGame) onOpenGame();
+                  }} 
+                  className="mt-3 w-full bg-red-600 hover:bg-red-500 text-white text-xs font-bold py-2 rounded-lg transition"
+                >
+                  PLAY DIY POCKET
+                </button>
+              </div>
+
+              {/* Game 2: Air Hockey Pro */}
+              <div 
+                onClick={() => {
+                  setShowGameChooser(false);
+                  setShowHockey(true);
+                }}
+                className="bg-slate-700 rounded-xl p-4 hover:bg-slate-600 cursor-pointer border-2 border-transparent hover:border-emerald-500 transition flex flex-col justify-between group shadow"
+              >
+                <div>
+                  <div className="bg-[#0a0a12] h-24 rounded-lg mb-2.5 flex items-center justify-center border border-red-500/30 group-hover:border-emerald-500 transition relative overflow-hidden">
+                    <div className="w-5 h-5 bg-red-500 rounded-full absolute left-3 shadow-[0_0_8px_#ff3333]"></div>
+                    <div className="w-3 h-3 bg-white rounded-full absolute shadow-[0_0_6px_#ffffff]"></div>
+                    <div className="w-5 h-5 bg-cyan-400 rounded-full absolute right-3 shadow-[0_0_8px_#00d9ff]"></div>
+                    <span className="text-emerald-400 text-[9px] font-black bg-emerald-950/80 border border-emerald-500/50 px-1 rounded absolute top-1.5 right-1.5">NEW</span>
+                  </div>
+                  <h3 className="text-white font-bold text-sm flex items-center">
+                    Air Hockey Pro <span className="bg-amber-400 text-slate-950 text-[9px] font-black px-1 rounded ml-1">NEW</span>
+                  </h3>
+                  <p className="text-gray-400 text-[11px]">vs AI & Multiplayer</p>
+                </div>
+                <button 
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowGameChooser(false);
+                    setShowHockey(true);
+                  }} 
+                  className="mt-3 w-full bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold py-2 rounded-lg transition"
+                >
+                  PLAY AIR HOCKEY
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Air Hockey Pro Standalone Game Modal */}
+      {showHockey && (
+        <AirHockeyPro onClose={() => setShowHockey(false)} />
+      )}
     </div>
   );
 }

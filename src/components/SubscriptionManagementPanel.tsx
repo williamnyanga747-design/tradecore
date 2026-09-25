@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   ShieldCheck, Clock, BadgeCheck, XCircle, Smartphone, X, Eye, Plus, Trash2, History,
   CalendarDays, RefreshCcw, Search, CreditCard, LayoutGrid, AlertTriangle, MessageSquare, CheckCircle2
@@ -37,7 +37,9 @@ export default function SubscriptionManagementPanel({
   onSaveMeta, onApprove, onReject, onRenew, onDeleteCompany,
   contactMessages, onMarkContactAnswered, onDeleteContactMessage
 }: SubscriptionManagementPanelProps) {
-  const [tab, setTab] = useState<'approvals' | 'periods' | 'plans' | 'paynumbers' | 'history' | 'sms'>('periods');
+  const initialHasPending = (meta.paymentRequests || []).some(r => r.status === 'Pending' || r.status === 'Resubmitted') ||
+    companies.some(c => (!c.subscriptionApproved || c.status === 'Pending Payment') && !c.isDemo);
+  const [tab, setTab] = useState<'approvals' | 'periods' | 'plans' | 'paynumbers' | 'history' | 'sms'>(initialHasPending ? 'approvals' : 'periods');
   const [search, setSearch] = useState('');
   const [lightbox, setLightbox] = useState<{ url: string; title: string } | null>(null);
   const [approveTarget, setApproveTarget] = useState<PaymentConfirmationRequest | null>(null);
@@ -68,7 +70,36 @@ export default function SubscriptionManagementPanel({
   const matchesSearch = (...fields: Array<string | undefined>) =>
     !q || fields.some(f => (f || '').toLowerCase().includes(q));
 
-  const allRequests = meta.paymentRequests || [];
+  const allRequests = useMemo(() => {
+    const list = [...(meta.paymentRequests || [])];
+    companies.forEach(c => {
+      const isUnapproved = (!c.subscriptionApproved || c.status === 'Pending Payment' || c.status === 'Pending' || c.status === 'Rejected') && !c.isDemo;
+      if (isUnapproved) {
+        const alreadyInRequests = list.some(r => String(r.companyId) === String(c.id));
+        if (!alreadyInRequests) {
+          list.push({
+            id: String(c.id || Date.now()),
+            companyId: Number(c.id) || 1,
+            companyName: c.name,
+            userName: (c as any).ownerName || (c as any).email || 'Admin',
+            userEmail: (c as any).email || '',
+            userPhone: (c as any).phone || '',
+            planId: (c as any).planId || 1,
+            planName: c.planName || 'Standard Plan',
+            amount: (c as any).amount || 0,
+            paymentMethod: (c as any).paymentMethod || 'Manual Payment',
+            paymentReference: c.paymentReference || 'REG-' + c.id,
+            receiptImageUrl: c.receiptImageUrl,
+            status: c.status === 'Rejected' ? 'Rejected' : 'Pending',
+            requestedAt: c.subscriptionStart || new Date().toISOString(),
+            adminNote: c.adminNote
+          });
+        }
+      }
+    });
+    return list;
+  }, [meta.paymentRequests, companies]);
+
   const pending = allRequests.filter(r => r.status === 'Pending' || r.status === 'Resubmitted');
   const history = allRequests.filter(r => r.status === 'Approved' || r.status === 'Rejected');
 
@@ -94,12 +125,14 @@ export default function SubscriptionManagementPanel({
   const displayStatus = (c: Company): string => {
     if (c.isDemo) return isDemoExpired(c) ? 'Expired' : 'Demo';
     if (c.subscriptionEnd && todayStr > c.subscriptionEnd) return 'Expired';
+    if (!c.subscriptionApproved || c.status === 'Pending Payment' || c.status === 'Pending') return 'Pending Payment';
+    if (c.status === 'Rejected') return 'Rejected';
     return c.status || 'Active';
   };
 
   // --- Stat cards ---
-  const activeCount = companies.filter(c => displayStatus(c) === 'Active').length;
-  const pendingAccounts = companies.filter(c => c.status === 'Pending Payment' || c.status === 'Rejected').length;
+  const activeCount = companies.filter(c => c.subscriptionApproved !== false && displayStatus(c) === 'Active').length;
+  const pendingAccounts = companies.filter(c => !c.subscriptionApproved || c.status === 'Pending Payment' || c.status === 'Pending' || c.status === 'Rejected').length;
   const blockedCount = companies.filter(c => displayStatus(c) === 'Expired').length;
 
   const statCards: Array<{

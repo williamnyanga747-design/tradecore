@@ -338,20 +338,20 @@ export default function Receipts({
     }
   };
 
-  const getStoreDetails = (id: number) => {
-    return stores.find(s => s.id === id) || { name: 'Store location', location: 'Branch Depot', phone: '' };
+  const getStoreDetails = (id: number | string) => {
+    return stores.find(s => sameId(s.id, id)) || { name: 'Store location', location: 'Branch Depot', phone: '' };
   };
 
-  const getCustomerName = (id: number) => {
-    return customers.find(c => c.id === id)?.name || 'Walk-in Customer';
+  const getCustomerName = (id: number | string) => {
+    return customers.find(c => sameId(c.id, id))?.name || 'Walk-in Customer';
   };
 
-  const getSupplierName = (id: number) => {
-    return suppliers.find(s => s.id === id)?.name || 'Direct Importer';
+  const getSupplierName = (id: number | string) => {
+    return suppliers.find(s => sameId(s.id, id))?.name || 'Direct Importer';
   };
 
-  const getProductName = (id: number) => {
-    return stockItems.find(p => p.id === id) || { name: 'Item description', code: 'N/A' };
+  const getProductName = (id: number | string) => {
+    return stockItems.find(p => sameId(p.id, id)) || { name: 'Item description', code: 'N/A' };
   };
 
   const getActiveCompany = () => {
@@ -375,8 +375,11 @@ export default function Receipts({
 
   // Filters
   const filteredSales = salesOrders.filter(so => {
+    // Exclude soft-deleted sales orders
+    if (so.isDeleted) return false;
+
     const activeStoreId = filterStoreId !== 'all' ? String(filterStoreId) : null;
-    const matchStore = activeStoreId ? sameId(so.storeId, activeStoreId) : true;
+    const matchStore = activeStoreId ? (sameId(so.storeId, activeStoreId) || so.storeId == null) : true;
     
     const matchStartDate = filterStartDate ? so.date >= filterStartDate : true;
     const matchEndDate = filterEndDate ? so.date <= filterEndDate : true;
@@ -384,7 +387,8 @@ export default function Receipts({
     const custName = safeLower(getCustomerName(so.customerId));
     const matchSearch = searchQuery
       ? safeLower(so.soNumber).includes(searchQuery.toLowerCase()) ||
-        custName.includes(searchQuery.toLowerCase())
+        custName.includes(searchQuery.toLowerCase()) ||
+        (so.items || []).some(i => safeLower(getProductName(i.productId)?.name || '').includes(searchQuery.toLowerCase()))
       : true;
     return matchStore && matchStartDate && matchEndDate && matchSearch;
   });
@@ -394,7 +398,7 @@ export default function Receipts({
     if (po.isDeleted) return false;
 
     const activeStoreId = filterStoreId !== 'all' ? String(filterStoreId) : null;
-    const matchStore = activeStoreId ? sameId(po.storeId, activeStoreId) : true;
+    const matchStore = activeStoreId ? (sameId(po.storeId, activeStoreId) || po.storeId == null) : true;
 
     const matchStartDate = filterStartDate ? po.date >= filterStartDate : true;
     const matchEndDate = filterEndDate ? po.date <= filterEndDate : true;
@@ -402,7 +406,8 @@ export default function Receipts({
     const suppName = safeLower(getSupplierName(po.supplierId));
     const matchSearch = searchQuery
       ? safeLower(po.poNumber).includes(searchQuery.toLowerCase()) ||
-        suppName.includes(searchQuery.toLowerCase())
+        suppName.includes(searchQuery.toLowerCase()) ||
+        (po.items || []).some(i => safeLower(getProductName(i.productId)?.name || '').includes(searchQuery.toLowerCase()))
       : true;
     return matchStore && matchStartDate && matchEndDate && matchSearch;
   });

@@ -12,7 +12,7 @@ import { AccountStatementModal } from './AccountStatementModal';
 import { SmartMessagingModal } from './SmartMessagingModal';
 import { performCascadeDelete } from '../utils/cascadeDelete';
 import { toast } from '../utils/toast';
-import { getStoreCategories, getCompanyCategories, formatCompanyCategory, cleanCategoryName } from '../utils/categoryHelper';
+import { getStoreCategories, getCompanyCategories, formatCompanyCategory, formatStoreCategory, cleanCategoryName, parseCategoryScope } from '../utils/categoryHelper';
 import { sv, sameId, getActiveCompanyScope } from '../utils/idUtils';
 import { v2DeleteCategory, v2UpsertCategory } from '../utils/normalizedPersistence';
 import LocationPicker from './marketplace/LocationPicker';
@@ -81,6 +81,20 @@ export default function MasterData({
   const [editingItem, setEditingItem] = useState<{ type: string; data: any } | null>(null);
   const [showOnlyNoTin, setShowOnlyNoTin] = useState(false);
   const [activeStoreDetailsId, setActiveStoreDetailsId] = useState<number | null>(null);
+  const [categoryFilterStore, setCategoryFilterStore] = useState<string>('');
+
+  const activeCompanyStores = React.useMemo(() => {
+    const coId = currentCompanyId || currentUser?.companyId;
+    if (!coId) return stores.filter(s => !s.isDeleted);
+    return stores.filter(s => {
+      if (s.isDeleted) return false;
+      if (s.companyId && sameId(s.companyId, coId)) return true;
+      if (s.branchId) {
+        return branches.some(b => sameId(b.id, s.branchId) && sameId(b.companyId, coId));
+      }
+      return false;
+    });
+  }, [stores, branches, currentCompanyId, currentUser]);
 
   const [statementModal, setStatementModal] = useState<{
     isOpen: boolean;
@@ -246,30 +260,33 @@ export default function MasterData({
   };
 
   const handleDeleteCategory = (catName: string) => {
-    const cleanName = cleanCategoryName(catName);
+    const parsed = parseCategoryScope(catName);
+    const cleanName = parsed.name || cleanCategoryName(catName);
     setConfirmModal({
       isOpen: true,
       title: t('Delete Category'),
       description: `${t('Are you sure you want to permanently delete category')} "${cleanName}"?`,
       onConfirm: async () => {
-        // BUILD 2026-09-08-20 (Direct MySQL CRUD — delete ordering): execute the SQL
-        // endpoint FIRST and only purge the local collection on success, so a failed
-        // server delete can never leave a desk that still shows the category while the
-        // DB (and every other device) has already dropped it.
-        const cid = currentCompanyId != null && String(currentCompanyId).trim() !== ''
-          ? String(currentCompanyId)
-          : (currentUser?.companyId != null && String(currentUser.companyId).trim() !== '' ? String(currentUser.companyId) : '1');
+        const rawCo = sv(currentCompanyId);
+        const cid = (rawCo && rawCo !== 'all')
+          ? rawCo
+          : (currentUser?.companyId ? sv(currentUser.companyId) : '1');
         if (cid) {
-          // Deletes the row from the normalized stock_categories MySQL table AND removes
-          // it from the shared blob — no ghost category can resurrect on the next
-          // v2ListCategories re-read.
-          const sqlOk = await v2DeleteCategory(cid, cleanName).catch((e) => { console.warn('[MasterData] v2DeleteCategory failed', e); return false; });
+          const sqlOk = await v2DeleteCategory(cid, cleanName, parsed.storeId).catch((e) => { console.warn('[MasterData] v2DeleteCategory failed', e); return false; });
           if (!sqlOk) {
             toast.error(t('Delete failed — category was not removed. Please try again.'));
             return;
           }
         }
-        const updatedCategories = categories.filter(c => c !== catName);
+        const updatedCategories = categories.filter(c => {
+          if (c === catName) return false;
+          const p = parseCategoryScope(c);
+          if (parsed.storeId) {
+            return !(p.storeId === parsed.storeId && p.name.toLowerCase() === cleanName.toLowerCase());
+          } else {
+            return !(p.companyId === (parsed.companyId || cid) && !p.storeId && p.name.toLowerCase() === cleanName.toLowerCase());
+          }
+        });
         saveAllData({ categories: updatedCategories });
         logAction('Delete Category', `Deleted Category: ${cleanName}`);
       }
@@ -548,9 +565,12 @@ export default function MasterData({
       // Normalize Multi-Store Location Mapping fields before persisting (saved via the JSON blob).
       const lat = parseFloat(data.latitude);
       const lng = parseFloat(data.longitude);
-      const isMarketplaceVisible = data.isMarketplaceVisible === true || data.isMarketplaceVisible === 'true';
+      const isMarketplaceVisible = data.isMarketplaceVisible !== false;
       const cleanData = {
         ...data,
+        location: data.location || data.addressText || '',
+        landmark: data.landmark || '',
+        addressText: data.addressText || data.landmark || data.location || '',
         branchId: parsedBranchId,
         // BUILD 2026-09-08-19 (Fix 1): carry the owning company on the record itself so
         // a later edit (even from global view) never re-homes the store to another scope.
@@ -624,32 +644,35 @@ export default function MasterData({
       }
     } else if (type === 'category') {
       if (!data.name?.trim()) return;
-      const cleanName = data.name.trim();
-      const coId = currentCompanyId != null && String(currentCompanyId).trim() !== ''
-        ? String(currentCompanyId)
-        : (currentUser?.companyId != null && String(currentUser.companyId).trim() !== '' ? String(currentUser.companyId) : '1');
+      const cleanName = cleanCategoryName(data.name.trim());
+      const rawCo = sv(currentCompanyId);
+      const coId = (rawCo && rawCo !== 'all')
+        ? rawCo
+        : (currentUser?.companyId ? sv(currentUser.companyId) : '1');
+      const targetStoreId = data.storeId !== undefined && data.storeId !== '' ? String(data.storeId) : (categoryFilterStore || '');
+
       // Drop any null/empty/legacy entries so a malformed categories array can never
       // crash the filter or leak `null` into the persisted blob.
       const safeCats = (categories || []).filter(c => c && typeof c === 'string' && c.trim());
-      const newCatName = formatCompanyCategory(cleanName, coId);
-      if (safeCats.some(c => c === newCatName || (cleanCategoryName(c).toLowerCase() === cleanName.toLowerCase() && (c.startsWith(`co_${coId}:`) || (coId === '1' && !c.includes(':')))))) {
+      const newCatName = targetStoreId
+        ? formatStoreCategory(cleanName, targetStoreId, coId)
+        : formatCompanyCategory(cleanName, coId);
+
+      if (safeCats.some(c => c === newCatName)) {
         toast.warning(t('Category already exists!'));
         return;
       }
       // Call direct v2UpsertCategory so MySQL database is updated immediately
       try {
-        await v2UpsertCategory(coId, cleanName);
+        await v2UpsertCategory(coId, cleanName, undefined, targetStoreId || undefined);
       } catch (err) {
         console.warn('[MasterData] v2UpsertCategory direct call error:', err);
       }
-      // Persist immediately + synchronize with the backend blob (categories are stored
-      // company-scoped as "co_<companyId>:<name>" so they survive reloads, company
-      // switches and re-fetches without being wiped).
+      // Persist immediately + synchronize with backend
       await saveAllData({
-        categories: [...safeCats, newCatName],
-        companies
+        categories: [...safeCats, newCatName]
       });
-      logAction('Create Category', `Created Category: ${cleanName}`);
+      logAction('Create Category', `Created Category: ${cleanName}${targetStoreId ? ` for Store #${targetStoreId}` : ''}`);
       toast.success(t('Category created successfully!'));
     } else if (type === 'tax') {
       const rate = parseFloat(data.rate) || 0;
@@ -1256,40 +1279,92 @@ export default function MasterData({
         </div>
       );
 
-    case 'categories':
+    case 'categories': {
+      const coId = currentCompanyId || currentUser?.companyId || '1';
+      const displayedCategories = categoryFilterStore
+        ? getStoreCategories(categories, categoryFilterStore, coId)
+        : getCompanyCategories(categories, coId);
+
       return (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm max-w-2xl mx-auto mt-6">
-          <div className="p-4 border-b flex items-center justify-between">
-            <h3 className="font-bold text-gray-900 text-sm">{t('Product Categories')}</h3>
-            {isAdmin && (
-              <button
-                onClick={() => setEditingItem({ type: 'category', data: { name: '' } })}
-                className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
-              >
-                <Plus className="w-3.5 h-3.5" /> {t('Add Category')}
-              </button>
-            )}
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm max-w-3xl mx-auto mt-6">
+          <div className="p-4 border-b flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                <Database className="w-4 h-4 text-brand" />
+                {t('Product Categories')}
+              </h3>
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                {t('Manage store-specific and company-wide inventory categories.')}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1.5">
+                <StoreIcon className="w-3.5 h-3.5 text-gray-400" />
+                <span className="text-xs font-bold text-gray-500">{t('Store')}:</span>
+                <select
+                  value={categoryFilterStore}
+                  onChange={(e) => setCategoryFilterStore(e.target.value)}
+                  className="text-xs font-bold text-gray-800 bg-transparent outline-none cursor-pointer"
+                >
+                  <option value="">{t('All Stores')}</option>
+                  {activeCompanyStores.map(st => (
+                    <option key={st.id} value={st.id}>{st.name}</option>
+                  ))}
+                </select>
+              </div>
+              {isAdmin && (
+                <button
+                  onClick={() => setEditingItem({ type: 'category', data: { name: '', storeId: categoryFilterStore || '' } })}
+                  className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
+                >
+                  <Plus className="w-3.5 h-3.5" /> {t('Add Category')}
+                </button>
+              )}
+            </div>
           </div>
           <ul className="divide-y divide-gray-100">
-            {getCompanyCategories(categories, currentCompanyId || currentUser?.companyId || '1').map((c, i) => (
-              <li key={i} className="px-6 py-4 flex justify-between items-center hover:bg-gray-50/50">
-                <span className="font-bold text-gray-800">{cleanCategoryName(c)}</span>
-                {isAdmin && (
-                  <button
-                    onClick={() => handleDeleteCategory(c)}
-                    className="p-1 px-2 text-[10px] font-bold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
-                    title={t('Delete')}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    {t('Delete')}
-                  </button>
-                )}
+            {displayedCategories.map((c, i) => {
+              const parsed = parseCategoryScope(c);
+              const assignedStore = parsed.storeId ? stores.find(s => sameId(s.id, parsed.storeId)) : null;
+
+              return (
+                <li key={i} className="px-6 py-4 flex justify-between items-center hover:bg-gray-50/50">
+                  <div className="flex items-center gap-3">
+                    <span className="font-bold text-gray-800">{cleanCategoryName(c)}</span>
+                    {assignedStore ? (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1">
+                        <StoreIcon className="w-3 h-3" />
+                        {assignedStore.name}
+                      </span>
+                    ) : (
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+                        {t('All Stores')}
+                      </span>
+                    )}
+                  </div>
+                  {isAdmin && (
+                    <button
+                      onClick={() => handleDeleteCategory(c)}
+                      className="p-1 px-2 text-[10px] font-bold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
+                      title={t('Delete')}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {t('Delete')}
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+            {displayedCategories.length === 0 && (
+              <li className="px-6 py-8 text-center text-xs font-semibold text-gray-400">
+                {categoryFilterStore ? t('No categories registered for this store yet. Click "Add Category" to create one.') : t('No categories registered.')}
               </li>
-            ))}
+            )}
           </ul>
           {renderEditModal()}
         </div>
       );
+    }
 
     case 'taxes':
       return (
@@ -2497,33 +2572,19 @@ export default function MasterData({
                     />
                   </div>
                   <div className="space-y-3 border-t border-gray-100 pt-3 mt-1">
-                    <div className="text-[10px] font-black uppercase tracking-wider text-brand">📍 {t('Store Location Mapping (Multi-Store)')}</div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Latitude')}</label>
-                        <input
-                          type="number"
-                          step="any"
-                          value={data.latitude ?? ''}
-                          onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, latitude: e.target.value } })}
-                          placeholder="-6.8175"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Longitude')}</label>
-                        <input
-                          type="number"
-                          step="any"
-                          value={data.longitude ?? ''}
-                          onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, longitude: e.target.value } })}
-                          placeholder="39.2732"
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand font-mono"
-                        />
-                      </div>
+                    <div className="text-[10px] font-black uppercase tracking-wider text-brand">📍 {t('Store Location Mapping')}</div>
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Specific Landmark / Area Details')}</label>
+                      <input
+                        type="text"
+                        value={data.landmark || data.addressText || ''}
+                        onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, landmark: e.target.value, addressText: e.target.value } })}
+                        placeholder="e.g. Near Clock Tower, Aggrey / Msimbazi Junction"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand font-medium"
+                      />
                     </div>
                     <div>
-                      <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Google Maps URL')}</label>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Google Maps URL / Link (Optional)')}</label>
                       <input
                         type="text"
                         value={data.googleMapsUrl || ''}
@@ -2542,15 +2603,36 @@ export default function MasterData({
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
                       />
                     </div>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={data.isMarketplaceVisible !== false}
-                        onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, isMarketplaceVisible: e.target.checked } })}
-                        className="w-4 h-4 accent-brand"
-                      />
-                      <span className="text-xs font-bold text-gray-600">{t('Show this store on the public product map')}</span>
-                    </label>
+                    <div className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-200">
+                      <div>
+                        <div className="text-xs font-bold text-gray-800">{t('Show this store on the public product map')}</div>
+                        <div className="text-[11px] text-gray-500">
+                          {data.isMarketplaceVisible !== false ? (
+                            <span className="text-emerald-600 font-bold">● {t('Active — Visible on public map')}</span>
+                          ) : (
+                            <span className="text-gray-400 font-bold">○ {t('Hidden from public map')}</span>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const current = data.isMarketplaceVisible !== false;
+                          setEditingItem({ ...editingItem, data: { ...data, isMarketplaceVisible: !current } });
+                        }}
+                        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                          data.isMarketplaceVisible !== false ? 'bg-emerald-600' : 'bg-gray-300'
+                        }`}
+                        role="switch"
+                        aria-checked={data.isMarketplaceVisible !== false}
+                      >
+                        <span
+                          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                            data.isMarketplaceVisible !== false ? 'translate-x-5' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
                   </div>
                 </>
               )}
@@ -2694,15 +2776,34 @@ export default function MasterData({
               )}
 
               {type === 'category' && (
-                <div>
-                  <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Category Name')} *</label>
-                  <input
-                    type="text"
-                    required
-                    value={data.name || ''}
-                    onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, name: e.target.value } })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
-                  />
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Category Name')} *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder={t('e.g. Beverages, Building Materials, Dairy...')}
+                      value={data.name || ''}
+                      onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, name: e.target.value } })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand font-semibold"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Assigned Store')}</label>
+                    <select
+                      value={data.storeId !== undefined ? data.storeId : (categoryFilterStore || '')}
+                      onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, storeId: e.target.value } })}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-semibold focus:border-brand cursor-pointer"
+                    >
+                      <option value="">{t('All Stores (Company Wide)')}</option>
+                      {activeCompanyStores.map(st => (
+                        <option key={st.id} value={st.id}>{st.name}</option>
+                      ))}
+                    </select>
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      {t('Assign to a specific store so this category is only available in that store.')}
+                    </p>
+                  </div>
                 </div>
               )}
 
