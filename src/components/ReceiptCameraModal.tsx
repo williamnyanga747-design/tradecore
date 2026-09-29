@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Camera, X, RefreshCcw, Upload, CheckCircle2 } from 'lucide-react';
+import { compressVideoFrame, compressImageFile } from '../utils/imageCompression';
 
 interface ReceiptCameraModalProps {
   open: boolean;
@@ -48,32 +49,35 @@ export default function ReceiptCameraModal({ open, onClose, onCapture, translate
     return () => stopStream();
   }, [open]);
 
-  const capture = () => {
+  const capture = async () => {
     const video = videoRef.current;
     if (!video || !video.videoWidth) return;
-    const canvas = document.createElement('canvas');
-    const maxW = 1280;
-    const scale = Math.min(1, maxW / video.videoWidth);
-    canvas.width = video.videoWidth * scale;
-    canvas.height = video.videoHeight * scale;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-    stopStream();
-    onCapture(dataUrl);
-    onClose();
+    try {
+      const res = await compressVideoFrame(video, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 });
+      stopStream();
+      onCapture(res.dataUrl);
+      onClose();
+    } catch {
+      stopStream();
+      onClose();
+    }
   };
 
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      onCapture(String(reader.result));
+    try {
+      const res = await compressImageFile(file, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 });
+      onCapture(res.dataUrl);
       onClose();
-    };
-    reader.readAsDataURL(file);
+    } catch {
+      const reader = new FileReader();
+      reader.onload = () => {
+        onCapture(String(reader.result));
+        onClose();
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
   if (!open) return null;

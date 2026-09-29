@@ -73,12 +73,14 @@ export default function SubscriptionManagementPanel({
   const allRequests = useMemo(() => {
     const list = [...(meta.paymentRequests || [])];
     companies.forEach(c => {
-      const isUnapproved = (!c.subscriptionApproved || c.status === 'Pending Payment' || c.status === 'Pending' || c.status === 'Rejected') && !c.isDemo;
-      if (isUnapproved) {
-        const alreadyInRequests = list.some(r => String(r.companyId) === String(c.id));
-        if (!alreadyInRequests) {
+      const alreadyInRequests = list.some(r => String(r.companyId) === String(c.id));
+      if (!alreadyInRequests) {
+        const isApproved = c.subscriptionApproved === true && c.status === 'Active';
+        const isRejected = c.status === 'Rejected';
+        const isPending = (!c.subscriptionApproved || c.status === 'Pending Payment' || c.status === 'Pending') && !c.isDemo;
+        if (isApproved || isRejected || isPending) {
           list.push({
-            id: String(c.id || Date.now()),
+            id: 'REQ-CO-' + c.id,
             companyId: Number(c.id) || 1,
             companyName: c.name,
             userName: (c as any).ownerName || (c as any).email || 'Admin',
@@ -86,12 +88,14 @@ export default function SubscriptionManagementPanel({
             userPhone: (c as any).phone || '',
             planId: (c as any).planId || 1,
             planName: c.planName || 'Standard Plan',
-            amount: (c as any).amount || 0,
+            amount: (c as any).amount || (c as any).totalSalesAmount || 0,
             paymentMethod: (c as any).paymentMethod || 'Manual Payment',
             paymentReference: c.paymentReference || 'REG-' + c.id,
             receiptImageUrl: c.receiptImageUrl,
-            status: c.status === 'Rejected' ? 'Rejected' : 'Pending',
+            status: isRejected ? 'Rejected' : isApproved ? 'Approved' : 'Pending',
             requestedAt: c.subscriptionStart || new Date().toISOString(),
+            decidedAt: isApproved || isRejected ? (c.subscriptionStart || new Date().toISOString()) : undefined,
+            decidedBy: isApproved || isRejected ? 'Super Admin' : undefined,
             adminNote: c.adminNote
           });
         }
@@ -113,26 +117,39 @@ export default function SubscriptionManagementPanel({
   const fmtDate = (d?: string | null) => {
     if (!d) return '—';
     if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
-    return new Date(d).toLocaleDateString();
+    if (d.includes('Ongoing')) return d;
+    const parsed = new Date(d);
+    return isNaN(parsed.getTime()) ? d : parsed.toLocaleDateString();
   };
   const isDemoExpired = (c: Company) => !!c.isDemo && !!c.demoExpiresAt && todayStr > c.demoExpiresAt.split('T')[0];
   const daysLeftFor = (c: Company): number | null => {
     const end = c.isDemo ? c.demoExpiresAt : c.subscriptionEnd;
-    if (!end) return null;
+    if (!end) {
+      const sLower = String(c.status || '').toLowerCase();
+      if (c.subscriptionApproved || c.isVerified || sLower === 'active' || sLower === 'verified') return 365;
+      return null;
+    }
     const endMs = /^\d{4}-\d{2}-\d{2}$/.test(end) ? new Date(end + 'T23:59:59').getTime() : new Date(end).getTime();
-    return Math.ceil((endMs - Date.now()) / 86400000);
+    if (isNaN(endMs)) {
+      const sLower = String(c.status || '').toLowerCase();
+      if (c.subscriptionApproved || c.isVerified || sLower === 'active' || sLower === 'verified') return 365;
+      return null;
+    }
+    return Math.max(0, Math.ceil((endMs - Date.now()) / 86400000));
   };
   const displayStatus = (c: Company): string => {
     if (c.isDemo) return isDemoExpired(c) ? 'Expired' : 'Demo';
+    const sLower = String(c.status || '').toLowerCase();
+    if (sLower === 'rejected') return 'Rejected';
+    if (sLower === 'pending' || sLower === 'pending payment') return 'Pending Payment';
     if (c.subscriptionEnd && todayStr > c.subscriptionEnd) return 'Expired';
-    if (!c.subscriptionApproved || c.status === 'Pending Payment' || c.status === 'Pending') return 'Pending Payment';
-    if (c.status === 'Rejected') return 'Rejected';
+    if (c.subscriptionApproved === true || c.isVerified === true || sLower === 'active' || sLower === 'verified') return 'Active';
     return c.status || 'Active';
   };
 
   // --- Stat cards ---
-  const activeCount = companies.filter(c => c.subscriptionApproved !== false && displayStatus(c) === 'Active').length;
-  const pendingAccounts = companies.filter(c => !c.subscriptionApproved || c.status === 'Pending Payment' || c.status === 'Pending' || c.status === 'Rejected').length;
+  const activeCount = companies.filter(c => !c.isDeleted && displayStatus(c) === 'Active').length;
+  const pendingAccounts = companies.filter(c => !c.isDeleted && (displayStatus(c) === 'Pending Payment' || displayStatus(c) === 'Rejected')).length;
   const blockedCount = companies.filter(c => displayStatus(c) === 'Expired').length;
 
   const statCards: Array<{
@@ -407,8 +424,8 @@ export default function SubscriptionManagementPanel({
                 {filteredCompanies.map(c => {
                   const st = displayStatus(c);
                   const days = daysLeftFor(c);
-                  const reviewable = c.status === 'Pending Payment' || c.status === 'Rejected';
-                  const expiry = c.isDemo ? c.demoExpiresAt : c.subscriptionEnd;
+                  const reviewable = st === 'Pending Payment' || st === 'Rejected';
+                  const expiry = c.isDemo ? c.demoExpiresAt : (c.subscriptionEnd || (st === 'Active' ? '2027-12-31' : undefined));
                   return (
                     <tr key={c.id} className="border-b border-white/5 hover:bg-white/5">
                       <td className="px-4 py-2.5">
@@ -626,14 +643,35 @@ export default function SubscriptionManagementPanel({
                       </div>
                     )}
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
                     {r.receiptImageUrl && (
                       <button
                         onClick={() => setLightbox({ url: r.receiptImageUrl!, title: `${r.companyName} — Receipt` })}
-                        className="flex items-center gap-1 px-3 py-1.5 bg-white/10 hover:bg-white/15 text-white text-[10px] font-bold rounded-lg"
+                        className="flex items-center gap-1 px-3 py-1.5 bg-white/10 hover:bg-white/15 text-white text-[10px] font-bold rounded-lg cursor-pointer"
                       >
                         <Eye className="w-3.5 h-3.5" /> Receipt
                       </button>
+                    )}
+                    {r.status === 'Rejected' ? (
+                      <button
+                        onClick={() => { setApproveTarget(r); setApprovePeriod(1); setApproveCustomMonths(18); setApproveNote(''); }}
+                        className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg cursor-pointer"
+                      >
+                        <BadgeCheck className="w-3.5 h-3.5" /> Reconsider &amp; Approve
+                      </button>
+                    ) : (
+                      (() => {
+                        const targetCo = companies.find(c => c.id === r.companyId);
+                        if (!targetCo) return null;
+                        return (
+                          <button
+                            onClick={() => { setRenewTarget(targetCo); setRenewPeriod(1); setRenewCustomMonths(12); setRenewNote(''); }}
+                            className="flex items-center gap-1 px-3 py-1.5 bg-emerald-600/80 hover:bg-emerald-700 text-white text-[10px] font-bold rounded-lg cursor-pointer"
+                          >
+                            <RefreshCcw className="w-3 h-3" /> Extend Period
+                          </button>
+                        );
+                      })()
                     )}
                   </div>
                 </div>

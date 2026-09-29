@@ -185,6 +185,7 @@ function tcEnsureNormalizedTables($pdo) {
     if ($done || !$pdo) return;
     try {
         $pdo->exec("CREATE TABLE IF NOT EXISTS companies (id VARCHAR(64) PRIMARY KEY, owner_user_id VARCHAR(64) DEFAULT NULL, name VARCHAR(255) NOT NULL, code VARCHAR(64) DEFAULT NULL, currency_code VARCHAR(8) NOT NULL DEFAULT 'TZS', country VARCHAR(64) NOT NULL DEFAULT 'Tanzania', phone VARCHAR(32) DEFAULT NULL, email VARCHAR(190) DEFAULT NULL, tin_number VARCHAR(32) DEFAULT NULL, address VARCHAR(255) DEFAULT NULL, latitude DECIMAL(10,7) DEFAULT NULL, longitude DECIMAL(10,7) DEFAULT NULL, is_verified TINYINT(1) NOT NULL DEFAULT 0, is_active TINYINT(1) NOT NULL DEFAULT 1, status VARCHAR(20) NOT NULL DEFAULT 'active', locale VARCHAR(5) NOT NULL DEFAULT 'en', settings_json TEXT DEFAULT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, INDEX idx_comp_active (is_active, deleted_at), INDEX idx_comp_code (code)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS branches (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, name VARCHAR(255) NOT NULL, code VARCHAR(64) DEFAULT NULL, phone VARCHAR(32) DEFAULT NULL, email VARCHAR(190) DEFAULT NULL, address VARCHAR(255) DEFAULT NULL, city VARCHAR(100) DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, INDEX idx_branch_company (company_id, deleted_at), INDEX idx_branch_active (is_active, deleted_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $pdo->exec("CREATE TABLE IF NOT EXISTS stores (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, branch_id VARCHAR(64) DEFAULT NULL, name VARCHAR(255) NOT NULL, code VARCHAR(64) DEFAULT NULL, phone VARCHAR(32) DEFAULT NULL, email VARCHAR(190) DEFAULT NULL, address VARCHAR(255) DEFAULT NULL, city VARCHAR(100) DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, settings_json TEXT DEFAULT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, INDEX idx_store_company (company_id, deleted_at), INDEX idx_store_active (is_active, deleted_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $pdo->exec("CREATE TABLE IF NOT EXISTS stock_categories (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, name VARCHAR(255) NOT NULL, parent_id VARCHAR(64) DEFAULT NULL, color VARCHAR(16) DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, UNIQUE KEY uniq_sc_cat_company (company_id, name), INDEX idx_sc_company (company_id, deleted_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
         $pdo->exec("CREATE TABLE IF NOT EXISTS products (id VARCHAR(64) PRIMARY KEY, company_id VARCHAR(64) NOT NULL, store_id VARCHAR(64) DEFAULT NULL, category_id VARCHAR(64) DEFAULT NULL, sku VARCHAR(128) DEFAULT NULL, name VARCHAR(255) NOT NULL, barcode VARCHAR(128) DEFAULT NULL, unit_price DECIMAL(18,2) NOT NULL DEFAULT 0, cost_price DECIMAL(18,2) NOT NULL DEFAULT 0, stock_qty DECIMAL(18,3) NOT NULL DEFAULT 0, low_stock_threshold DECIMAL(18,3) DEFAULT NULL, tax_rate DECIMAL(5,2) NOT NULL DEFAULT 0, unit VARCHAR(32) DEFAULT NULL, image_url VARCHAR(500) DEFAULT NULL, description TEXT DEFAULT NULL, tags_json TEXT DEFAULT NULL, extra_json TEXT DEFAULT NULL, is_active TINYINT(1) NOT NULL DEFAULT 1, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, deleted_at BIGINT DEFAULT NULL, INDEX idx_prod_company (company_id, deleted_at), INDEX idx_prod_store (store_id, deleted_at), INDEX idx_prod_cat (category_id, deleted_at), INDEX idx_prod_updated (company_id, updated_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
@@ -215,13 +216,34 @@ function tcEnsureNormalizedTables($pdo) {
         // ONLY after a successful password change), 30-minute expiry. This table is NOT part of
         // the state blob — full-state flushes / 409 rebases can never overwrite a token.
         $pdo->exec("CREATE TABLE IF NOT EXISTS password_reset_tokens (id VARCHAR(64) PRIMARY KEY, token_hash CHAR(64) NOT NULL, user_id VARCHAR(64) NOT NULL, company_id VARCHAR(64) DEFAULT NULL, email VARCHAR(190) NOT NULL, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL, consumed TINYINT(1) NOT NULL DEFAULT 0, UNIQUE KEY uniq_prt_hash (token_hash), INDEX idx_prt_hash_consumed (token_hash, consumed)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // Sponsors / Wadhamini table (Build 08-20 - Tanzaniatradecore.co.tz)
+        $pdo->exec("CREATE TABLE IF NOT EXISTS sponsors (
+          id VARCHAR(36) PRIMARY KEY,
+          sponsor_id VARCHAR(36) UNIQUE,
+          company_id VARCHAR(36) NULL COMMENT 'NULL=global homepage, co_xxx=specific company',
+          name VARCHAR(255) NOT NULL,
+          logo_url VARCHAR(500) NULL,
+          website_url VARCHAR(500) NULL,
+          description TEXT NULL,
+          tier ENUM('platinum','gold','silver','bronze') DEFAULT 'gold',
+          is_active TINYINT(1) DEFAULT 1,
+          sort_order INT DEFAULT 0,
+          status VARCHAR(20) DEFAULT 'ACTIVE',
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          deleted_at BIGINT NULL,
+          INDEX idx_company (company_id),
+          INDEX idx_active_sort (is_active, sort_order)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
         // BUILD 2026-09-08-17: legacy schemas (e.g. 001_multi_store_location.sql stores,
         // and the deployed companies table) defined created_at/updated_at as DATETIME/TIMESTAMP
         // while the ENTIRE stack writes BIGINT epoch-seconds ($now = time()). An epoch int like
         // 1789066134 into a DATETIME column dies with 'SQLSTATE[22007]: 1292 Incorrect datetime
         // value for column created_at'. Detect such columns, convert existing string rows to
         // epoch-seconds, then MODIFY to BIGINT so the epoch contract holds on every table.
-        tcEnsureEpochTimestamps($pdo, ['companies', 'stores', 'stock_categories', 'products', 'user_accounts', 'audit_trails']);
+        tcEnsureEpochTimestamps($pdo, ['companies', 'stores', 'stock_categories', 'products', 'user_accounts', 'audit_trails', 'sponsors']);
         $done = true;
     } catch (Throwable $e) {
         error_log('[TradeCore API] tcEnsureNormalizedTables failed: ' . $e->getMessage());
@@ -411,6 +433,35 @@ function tcUpsertCompanyRow($pdo, $c, $now, &$err = '') {
         $err = '';
         return true;
     } catch (Throwable $e) { $err = 'INSERT failed: ' . $e->getMessage(); error_log('[TradeCore API] upsert company failed: ' . $err); return false; }
+}
+
+function tcUpsertBranchRow($pdo, $b, $now) {
+    if (!$pdo || !is_array($b) || !isset($b['id'])) return false;
+    $id = (string)$b['id'];
+    if (!empty($b['isDeleted']) || !empty($b['deleted_at']) || !empty($b['deletedAt'])) {
+        try {
+            $pdo->prepare("UPDATE branches SET deleted_at=?, is_active=0, updated_at=? WHERE id=?")->execute([$now, $now, $id]);
+        } catch (Throwable $eDel) { return false; }
+        return true;
+    }
+    $companyId = (string)($b['company_id'] ?? $b['companyId'] ?? '');
+    $data = [
+        'company_id' => $companyId,
+        'name' => (string)($b['name'] ?? $b['branchName'] ?? $id),
+        'code' => isset($b['code']) ? (string)$b['code'] : null,
+        'phone' => isset($b['phone']) ? (string)$b['phone'] : null,
+        'email' => isset($b['email']) ? (string)$b['email'] : null,
+        'address' => isset($b['address']) ? (string)$b['address'] : null,
+        'city' => isset($b['city']) ? (string)$b['city'] : null,
+        'is_active' => tcBool($b['is_active'] ?? $b['active'] ?? 1),
+    ];
+    try {
+        $pdo->prepare("INSERT INTO branches (id, company_id, name, code, phone, email, address, city, is_active, created_at, updated_at, deleted_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)
+            ON DUPLICATE KEY UPDATE company_id=VALUES(company_id), name=VALUES(name), code=VALUES(code), phone=VALUES(phone), email=VALUES(email), address=VALUES(address), city=VALUES(city), is_active=VALUES(is_active), updated_at=VALUES(updated_at), deleted_at=NULL")
+            ->execute([$id, $data['company_id'], $data['name'], $data['code'], $data['phone'], $data['email'], $data['address'], $data['city'], $data['is_active'], tcEpochTs($b['created_at'] ?? null, $now), tcEpochTs($b['updated_at'] ?? null, $now)]);
+        return true;
+    } catch (Throwable $e) { error_log('[TradeCore API] tcUpsertBranchRow failed: ' . $e->getMessage()); return false; }
 }
 
 function tcUpsertStoreRow($pdo, $s, $now) {
@@ -603,6 +654,30 @@ function tcLoadStores($pdo, $companyId = '') {
     return $out;
 }
 
+function tcLoadBranches($pdo, $companyId = '') {
+    $out = [];
+    if (!$pdo) return $out;
+    tcEnsureNormalizedTables($pdo);
+    try {
+        if ($companyId !== '') {
+            $st = $pdo->prepare("SELECT * FROM branches WHERE company_id=? AND deleted_at IS NULL ORDER BY name ASC");
+            $st->execute([(string)$companyId]);
+        } else {
+            $st = $pdo->query("SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY company_id ASC, name ASC");
+        }
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            $out[] = [
+                'id' => $r['id'], 'companyId' => $r['company_id'], 'company_id' => $r['company_id'],
+                'name' => $r['name'], 'code' => $r['code'], 'phone' => $r['phone'],
+                'email' => $r['email'], 'address' => $r['address'], 'city' => $r['city'],
+                'is_active' => (int)$r['is_active'], 'active' => (int)$r['is_active'],
+                'updated_at' => $r['updated_at'],
+            ];
+        }
+    } catch (Throwable $e) { error_log('[TradeCore API] tcLoadBranches failed: ' . $e->getMessage()); }
+    return $out;
+}
+
 function tcLoadProductsN($pdo, $companyId = '', $storeId = '', $since = 0) {
     $out = [];
     if (!$pdo || $companyId === '') return $out;
@@ -746,16 +821,16 @@ function tcAssembleDynamicSnapshot($pdo, $companyId = '', $data = []) {
         if (count($c) > 0) $data['companies'] = $c;
     } catch (Throwable $e) { error_log('[TradeCore API] assemble companies failed: ' . $e->getMessage()); }
 
-    // stores + branches — partition the stores table exactly like the v2/snapshot rule:
-    // a row whose branch_id is set IS a branch; a row without branch_id is a plain store.
+    // branches — normalized branches table
+    try {
+        $br = tcLoadBranches($pdo, $scope);
+        if (count($br) > 0) $data['branches'] = $br;
+    } catch (Throwable $e) { error_log('[TradeCore API] assemble branches failed: ' . $e->getMessage()); }
+
+    // stores — normalized stores table
     try {
         $st = tcLoadStores($pdo, $scope);
-        if (count($st) > 0) {
-            $branches = array_values(array_filter($st, function($s) { return !empty($s['branchId']); }));
-            $poSs = array_values(array_filter($st, function($s) { return empty($s['branchId']); }));
-            if (count($poSs) > 0) $data['stores'] = $poSs;
-            if (count($branches) > 0) $data['branches'] = $branches;
-        }
+        if (count($st) > 0) $data['stores'] = $st;
     } catch (Throwable $e) { error_log('[TradeCore API] assemble stores failed: ' . $e->getMessage()); }
 
     // users — normalized user_accounts (+ branch/store scope overlay in tcLoadUsersN),
@@ -808,6 +883,22 @@ function tcAssembleDynamicSnapshot($pdo, $companyId = '', $data = []) {
         } catch (Throwable $e) { error_log('[TradeCore API] assemble ' . $tbl . ' failed: ' . $e->getMessage()); }
     }
 
+    // sponsors / wadhamini (Build 08-20 - Tanzaniatradecore.co.tz)
+    try {
+        if ($scope !== '') {
+            $stSp = $pdo->prepare("SELECT * FROM sponsors WHERE (company_id=:cid OR company_id IS NULL) AND deleted_at IS NULL AND is_active=1 ORDER BY sort_order ASC");
+            $stSp->execute([':cid' => (string)$scope]);
+            $data['sponsors'] = $stSp->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        } else {
+            $stSp = $pdo->query("SELECT * FROM sponsors WHERE deleted_at IS NULL AND is_active=1 ORDER BY sort_order ASC");
+            $data['sponsors'] = $stSp ? ($stSp->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        }
+        $stGSp = $pdo->query("SELECT * FROM sponsors WHERE company_id IS NULL AND deleted_at IS NULL AND is_active=1 ORDER BY sort_order ASC");
+        $data['globalSponsors'] = $stGSp ? ($stGSp->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+    } catch (Throwable $eSp) {
+        error_log('[TradeCore API] assemble sponsors failed: ' . $eSp->getMessage());
+    }
+
     $data['_assembled'] = 1;
     return $data;
 }
@@ -823,6 +914,146 @@ function tcBumpMainStateVersion($pdo) {
     try {
         $pdo->prepare("UPDATE tradecore_system_state SET version=COALESCE(version,0)+1, updated_at=NOW() WHERE doc_key='main_state'")->execute();
     } catch (Throwable $e) { error_log('[TradeCore API] tcBumpMainStateVersion failed: ' . $e->getMessage()); }
+}
+
+if (!function_exists('getPDO')) {
+    function getPDO() {
+        global $pdo;
+        if ($pdo instanceof PDO) return $pdo;
+        try {
+            $dbCreds = @include(__DIR__ . '/config/db.php');
+            if (!is_array($dbCreds)) $dbCreds = @include(dirname(__DIR__, 2) . '/config/db.php');
+            if (!is_array($dbCreds)) $dbCreds = ['host'=>(getenv('TC_DB_HOST')?:'localhost'),'name'=>(getenv('TC_DB_NAME')?:'tanzatrade_tradecore_erp'),'user'=>(getenv('TC_DB_USER')?:'tanzatrade_tanzatrade'),'pass'=>(getenv('TC_DB_PASS')?:'')];
+            $pdo = new PDO(
+                "mysql:host=" . $dbCreds['host'] . ";dbname=" . $dbCreds['name'] . ";charset=utf8mb4",
+                $dbCreds['user'],
+                $dbCreds['pass'],
+                [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_EMULATE_PREPARES => false]
+            );
+            return $pdo;
+        } catch (Throwable $e) {
+            error_log('[getPDO] ' . $e->getMessage());
+            return null;
+        }
+    }
+}
+
+// SPONSORS / WADHAMINI ATOMIC BACKEND HANDLERS (Build 08-20 - Tanzaniatradecore.co.tz)
+function v2_upsert_sponsor($data) {
+    $pdo = function_exists('getPDO') ? getPDO() : null;
+    if (!$pdo) {
+        global $pdo;
+    }
+    if (!$pdo) return ['success' => false, 'error' => 'Database connection failed'];
+    try {
+        $rawId = $data['id'] ?? $data['sponsor_id'] ?? null;
+        $id = $rawId ? (string)$rawId : bin2hex(random_bytes(18));
+        $name = trim((string)($data['name'] ?? ''));
+        if ($name === '') throw new Exception('name required');
+        $company_id = (isset($data['company_id']) && $data['company_id'] !== '' && $data['company_id'] !== null) ? (string)$data['company_id'] : null;
+        $logo = (string)($data['logo_url'] ?? '');
+        $website = (string)($data['website_url'] ?? '');
+        $description = (string)($data['description'] ?? '');
+        $tier = strtolower((string)($data['tier'] ?? 'gold'));
+        if (!in_array($tier, ['platinum', 'gold', 'silver', 'bronze'])) $tier = 'gold';
+        $sort = (int)($data['sort_order'] ?? 0);
+        $active = (isset($data['is_active']) && ($data['is_active'] === 0 || $data['is_active'] === '0' || $data['is_active'] === false)) ? 0 : 1;
+        $now = time();
+
+        $sql = "INSERT INTO sponsors (id, sponsor_id, company_id, name, logo_url, website_url, description, tier, is_active, sort_order, status, created_at, updated_at, deleted_at)
+                VALUES (:id, :id, :cid, :name, :logo, :web, :desc, :tier, :active, :sort, 'ACTIVE', :now, :now, NULL)
+                ON DUPLICATE KEY UPDATE
+                    name = VALUES(name),
+                    logo_url = VALUES(logo_url),
+                    website_url = VALUES(website_url),
+                    description = VALUES(description),
+                    tier = VALUES(tier),
+                    is_active = VALUES(is_active),
+                    sort_order = VALUES(sort_order),
+                    status = 'ACTIVE',
+                    updated_at = :now2,
+                    deleted_at = NULL";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':id' => $id,
+            ':cid' => $company_id,
+            ':name' => $name,
+            ':logo' => $logo,
+            ':web' => $website,
+            ':desc' => $description,
+            ':tier' => $tier,
+            ':active' => $active,
+            ':sort' => $sort,
+            ':now' => $now,
+            ':now2' => $now,
+        ]);
+
+        if (function_exists('tcBumpMainStateVersion')) tcBumpMainStateVersion($pdo);
+        if (function_exists('tcBlobMerge')) {
+            try {
+                $rowMerge = [
+                    'id' => $id, 'sponsor_id' => $id, 'company_id' => $company_id,
+                    'name' => $name, 'logo_url' => $logo, 'website_url' => $website,
+                    'description' => $description, 'tier' => $tier, 'is_active' => $active,
+                    'sort_order' => $sort, 'status' => 'ACTIVE', 'created_at' => $now,
+                    'updated_at' => $now
+                ];
+                tcBlobMerge($pdo, 'sponsors', $rowMerge);
+            } catch (Throwable $eB) {}
+        }
+        $stmtSel = $pdo->prepare("SELECT * FROM sponsors WHERE id=? LIMIT 1");
+        $stmtSel->execute([$id]);
+        $row = $stmtSel->fetch(PDO::FETCH_ASSOC);
+        return ['success' => true, 'data' => $row, 'id' => $id];
+    } catch (Throwable $e) {
+        error_log("[v2_upsert_sponsor] " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+function v2_delete_sponsor($data) {
+    $pdo = function_exists('getPDO') ? getPDO() : null;
+    if (!$pdo) {
+        global $pdo;
+    }
+    if (!$pdo) return ['success' => false, 'error' => 'Database connection failed'];
+    try {
+        $id = (string)($data['id'] ?? $data['sponsor_id'] ?? '');
+        if ($id === '') return ['success' => false, 'error' => 'id required'];
+        $now = time();
+        $stmt = $pdo->prepare("UPDATE sponsors SET deleted_at=:now, status='DELETED', is_active=0 WHERE id=:id");
+        $stmt->execute([':id' => $id, ':now' => $now]);
+        if (function_exists('tcBumpMainStateVersion')) tcBumpMainStateVersion($pdo);
+        if (function_exists('tcBlobMerge')) {
+            try { tcBlobMerge($pdo, 'sponsors', null, $id); } catch (Throwable $eB) {}
+        }
+        return ['success' => true, 'id' => $id];
+    } catch (Throwable $e) {
+        error_log("[v2_delete_sponsor] " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
+}
+
+function v2_list_sponsors($data = []) {
+    $pdo = function_exists('getPDO') ? getPDO() : null;
+    if (!$pdo) {
+        global $pdo;
+    }
+    if (!$pdo) return ['success' => false, 'error' => 'Database connection failed'];
+    try {
+        $cid = $data['company_id'] ?? null;
+        if ($cid !== null && $cid !== '') {
+            $stmt = $pdo->prepare("SELECT * FROM sponsors WHERE (company_id=:cid OR company_id IS NULL) AND deleted_at IS NULL ORDER BY sort_order ASC");
+            $stmt->execute([':cid' => (string)$cid]);
+        } else {
+            $stmt = $pdo->query("SELECT * FROM sponsors WHERE deleted_at IS NULL ORDER BY sort_order ASC");
+        }
+        $rows = $stmt ? ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: []) : [];
+        return ['success' => true, 'list' => $rows, 'data' => $rows, 'count' => count($rows)];
+    } catch (Throwable $e) {
+        error_log("[v2_list_sponsors] " . $e->getMessage());
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
 }
 
 // Append-only normalized audit row + legacy audit_logs back-compat.
@@ -856,7 +1087,7 @@ function tcMirrorNormalized($pdo, $data) {
             foreach ($data['companies'] as $c) { if (is_array($c) && isset($c['id'])) tcUpsertCompanyRow($pdo, $c, $now); }
         }
         if (isset($data['branches']) && is_array($data['branches'])) {
-            foreach ($data['branches'] as $b) { if (is_array($b)) { $b['company_id'] = $b['company_id'] ?? $b['companyId'] ?? ''; $b['branch_id'] = $b['branch_id'] ?? $b['id']; tcUpsertStoreRow($pdo, $b, $now); } }
+            foreach ($data['branches'] as $b) { if (is_array($b)) { $b['company_id'] = $b['company_id'] ?? $b['companyId'] ?? ''; tcUpsertBranchRow($pdo, $b, $now); } }
         }
         if (isset($data['stores']) && is_array($data['stores'])) {
             foreach ($data['stores'] as $s) { if (is_array($s)) tcUpsertStoreRow($pdo, $s, $now); }
@@ -1409,6 +1640,25 @@ try {
             }
         }
         $iso = $updatedAt ? date('c', is_numeric($updatedAt) ? (int)$updatedAt : strtotime((string)$updatedAt)) : null;
+        $lastModTs = $updatedAt ? (is_numeric($updatedAt) ? (int)$updatedAt : strtotime((string)$updatedAt)) : $now;
+        $etag = 'W/"tradecore-ts-' . $version . '-' . $lastModTs . '"';
+        $lastMod = gmdate('D, d M Y H:i:s \G\M\T', $lastModTs > 0 ? $lastModTs : $now);
+        header('ETag: ' . $etag);
+        header('Last-Modified: ' . $lastMod);
+        header('Cache-Control: private, no-cache, must-revalidate');
+
+        $ifNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH']) : '';
+        $ifModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? trim($_SERVER['HTTP_IF_MODIFIED_SINCE']) : '';
+
+        if ($ifNoneMatch !== '' && ($ifNoneMatch === $etag || strpos($ifNoneMatch, $etag) !== false)) {
+            http_response_code(304);
+            exit();
+        }
+        if ($ifModifiedSince !== '' && strtotime($ifModifiedSince) >= $lastModTs && $lastModTs > 0) {
+            http_response_code(304);
+            exit();
+        }
+
         $result = [
             "success" => true,
             "lastUpdated" => $updatedAt,
@@ -1474,6 +1724,37 @@ try {
 
         if ($companyId !== '' && $pdo) {
             try {
+                $blobVer = 0;
+                $serverTs = $now;
+                try {
+                    $meta = $pdo->query("SELECT updated_at FROM tradecore_meta WHERE id=1")->fetch();
+                    if ($meta) $serverTs = (int)$meta['updated_at'];
+                    $bv = $pdo->query("SELECT version, updated_at FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch();
+                    if ($bv) {
+                        $blobVer = (int)($bv['version'] ?? 0);
+                        if (!empty($bv['updated_at'])) $serverTs = max($serverTs, is_numeric($bv['updated_at']) ? (int)$bv['updated_at'] : strtotime($bv['updated_at']));
+                    }
+                } catch (Throwable $eVer) {}
+                $effectiveVer = $blobVer > 0 ? $blobVer : $serverTs;
+
+                $etag = 'W/"tradecore-' . md5($companyId) . '-' . $effectiveVer . '-' . $since . '"';
+                $lastModified = gmdate('D, d M Y H:i:s \G\M\T', $serverTs > 0 ? $serverTs : $now);
+                header('ETag: ' . $etag);
+                header('Last-Modified: ' . $lastModified);
+                header('Cache-Control: private, no-cache, must-revalidate');
+
+                $ifNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH']) : '';
+                $ifModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? trim($_SERVER['HTTP_IF_MODIFIED_SINCE']) : '';
+
+                if ($ifNoneMatch !== '' && ($ifNoneMatch === $etag || strpos($ifNoneMatch, $etag) !== false)) {
+                    http_response_code(304);
+                    exit();
+                }
+                if ($ifModifiedSince !== '' && strtotime($ifModifiedSince) >= $serverTs && $serverTs > 0) {
+                    http_response_code(304);
+                    exit();
+                }
+
                 $products = $users = $sales = $orders = [];
                 $deletedProducts = $deletedUsers = [];
 
@@ -1497,6 +1778,25 @@ try {
                     $so = $pdo->prepare("SELECT data FROM tradecore_marketplace_orders WHERE company_id=? AND updated_at > ?");
                     $so->execute([$companyId, $since]);
                     foreach ($so->fetchAll() as $r) { $d = json_decode($r['data'], true); if ($d) $orders[] = $d; }
+
+                    $hasChanges = count($products) > 0 || count($users) > 0 || count($sales) > 0 || count($orders) > 0 || count($deletedProducts) > 0 || count($deletedUsers) > 0;
+                    if (!$hasChanges) {
+                        if ($ifNoneMatch !== '' || $ifModifiedSince !== '') {
+                            http_response_code(304);
+                            exit();
+                        }
+                        echo json_encode([
+                            "changed" => false,
+                            "server_ts" => $effectiveVer,
+                            "version" => $effectiveVer,
+                            "_version" => $effectiveVer,
+                            "products" => [],
+                            "users" => [],
+                            "sales" => [],
+                            "marketplaceOrders" => [],
+                        ]);
+                        exit();
+                    }
                 } else {
                     // FULL: return all active items from NORMALIZED tables
                     // Use tcLoadUsersN and tcLoadProductsN for faster, normalized reads
@@ -1541,7 +1841,7 @@ try {
                 // stock) that the writer just persisted via the v2 endpoints.
                 if ($since === 0) {
                     $asData = tcAssembleDynamicSnapshot($pdo, $companyId, []);
-                    foreach (['companies', 'branches', 'stores', 'users', 'categories', 'stockItems', 'marketplaceProducts', 'salesOrders', 'marketplaceOrders'] as $okey) {
+                    foreach (['companies', 'branches', 'stores', 'users', 'categories', 'stockItems', 'marketplaceProducts', 'salesOrders', 'marketplaceOrders', 'sponsors', 'globalSponsors'] as $okey) {
                         if (isset($asData[$okey]) && is_array($asData[$okey]) && count($asData[$okey]) > 0) $result[$okey] = $asData[$okey];
                     }
                     if (isset($asData['marketplaceProducts']) && !isset($result['products'])) $result['products'] = $asData['marketplaceProducts'];
@@ -1614,6 +1914,24 @@ try {
                     // MySQL master data so a superadmin/global GET never returns empty rows
                     // that the DB actually holds.
                     $outData = tcAssembleDynamicSnapshot($pdo, '', $outData);
+                    $etag = 'W/"tradecore-global-' . $ver . '"';
+                    $blobTime = !empty($row['updated_at']) ? (is_numeric($row['updated_at']) ? (int)$row['updated_at'] : strtotime($row['updated_at'])) : $now;
+                    $lastMod = gmdate('D, d M Y H:i:s \G\M\T', $blobTime > 0 ? $blobTime : $now);
+                    header('ETag: ' . $etag);
+                    header('Last-Modified: ' . $lastMod);
+                    header('Cache-Control: private, no-cache, must-revalidate');
+
+                    $ifNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH']) : '';
+                    $ifModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? trim($_SERVER['HTTP_IF_MODIFIED_SINCE']) : '';
+                    if ($ifNoneMatch !== '' && ($ifNoneMatch === $etag || strpos($ifNoneMatch, $etag) !== false)) {
+                        http_response_code(304);
+                        exit();
+                    }
+                    if ($ifModifiedSince !== '' && $blobTime > 0 && strtotime($ifModifiedSince) >= $blobTime) {
+                        http_response_code(304);
+                        exit();
+                    }
+
                     echo json_encode(["changed" => true, "server_ts" => $ver, "version" => $ver, "_version" => $ver, "state" => $outData]);
                     exit();
                 }
@@ -2234,7 +2552,7 @@ try {
                 if ($pdo) {
                     try {
                         $mysqlOverlay = tcAssembleDynamicSnapshot($pdo, '', []);
-                        foreach (['branches', 'stores', 'categories'] as $overlayKey) {
+                        foreach (['branches', 'stores', 'categories', 'sponsors'] as $overlayKey) {
                             $preCount = is_array($toPersist[$overlayKey] ?? null) ? count($toPersist[$overlayKey]) : 0;
                             $overlayCount = is_array($mysqlOverlay[$overlayKey] ?? null) ? count($mysqlOverlay[$overlayKey]) : 0;
                             error_log('[DIAG-save_state] overlay ' . $overlayKey . ': pre=' . $preCount . ' mysql=' . $overlayCount);
@@ -3405,8 +3723,6 @@ try {
         if ($action === 'v2_upsert_user' || $action === 'v2_update_user') $action = 'v2_upsert_user_account';
         if ($action === 'v2_list_users') $action = 'v2_list_user_accounts';
         if ($action === 'v2_delete_user') $action = 'v2_delete_user_account';
-        if ($action === 'v2_upsert_branch') { error_log('[DIAG-PHP] v2_upsert_branch aliased to v2_upsert_store'); $action = 'v2_upsert_store'; }
-        if ($action === 'v2_delete_branch') $action = 'v2_delete_store';
         list($v2op, $v2role) = tcCurrentOperator($rawInput);
         $v2company = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
         // SUPERADMIN GLOBAL SCOPE: read endpoints assert the caller's real scope. A global
@@ -3665,15 +3981,11 @@ try {
                 try {
                     $pre = $pdo ? $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch() : null;
                     $pd = ($pre && $pre['json_data']) ? normalizeBlobData(json_decode($pre['json_data'], true)) : [];
-                    if (is_array($pd)) {
-                        foreach (['stores', 'branches'] as $sk) {
-                            if (isset($pd[$sk]) && is_array($pd[$sk])) {
-                                foreach ($pd[$sk] as $s) {
-                                    if (!is_array($s) || !empty($s['isDeleted']) || !empty($s['deletedAt'])) continue;
-                                    if ($v2company !== '' && (string)($s['company_id'] ?? $s['companyId'] ?? '') !== $v2company) continue;
-                                    $list[] = $s;
-                                }
-                            }
+                    if (is_array($pd) && isset($pd['stores']) && is_array($pd['stores'])) {
+                        foreach ($pd['stores'] as $s) {
+                            if (!is_array($s) || !empty($s['isDeleted']) || !empty($s['deletedAt'])) continue;
+                            if ($v2company !== '' && (string)($s['company_id'] ?? $s['companyId'] ?? '') !== $v2company) continue;
+                            $list[] = $s;
                         }
                     }
                 } catch (Throwable $e) { error_log('[TradeCore API] v2_list_stores blob fallback failed: ' . $e->getMessage()); }
@@ -3683,20 +3995,10 @@ try {
         }
 
         // ---- v2_list_branches ----------------------------------------------------
-        // DIRECT-MYSQL BRANCH LIST (2026-09-08-12): branches are store rows whose
-        // branch_id equals their own id (tcMirrorNormalized + v2_upsert_store write them
-        // that way). Super admins get every company's branches (GLOBAL scope); staff get
-        // only their own company's. Falls back to the legacy blob 'branches' array while
-        // the normalized table is still empty, exactly like the other v2_list_* reads.
         if ($action === 'v2_list_branches') {
-            $list = [];
-            try {
-                $bset = tcLoadStores($pdo, $v2company);
-                foreach ($bset as $s) {
-                    $bid = $s['branchId'] ?? null;
-                    if ($bid !== null && $bid !== '' && (string)$bid === (string)$s['id']) $list[] = $s;
-                }
-                if (count($list) === 0) {
+            $list = tcLoadBranches($pdo, $v2company);
+            if (count($list) === 0) {
+                try {
                     $pre = $pdo ? $pdo->query("SELECT json_data FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch() : null;
                     $pd = ($pre && $pre['json_data']) ? normalizeBlobData(json_decode($pre['json_data'], true)) : [];
                     if (is_array($pd) && isset($pd['branches']) && is_array($pd['branches'])) {
@@ -3706,9 +4008,47 @@ try {
                             $list[] = $b;
                         }
                     }
-                }
-            } catch (Throwable $eBr) { error_log('[TradeCore API] v2_list_branches failed: ' . $eBr->getMessage()); }
+                } catch (Throwable $eBr) { error_log('[TradeCore API] v2_list_branches failed: ' . $eBr->getMessage()); }
+            }
             echo json_encode(["success" => true, "list" => $list, "count" => count($list), "server_ts" => $now]);
+            exit();
+        }
+
+        // ---- v2_upsert_branch -----------------------------------------------------
+        if ($action === 'v2_upsert_branch') {
+            if (!$pdo) { echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
+            try { tcEnsureNormalizedTables($pdo); } catch (Throwable $eT) {}
+            $branch = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['branch'] ?? null) ? $v2in['branch'] : null);
+            if (!$branch || !isset($branch['id'])) { echo json_encode(["success" => false, "error" => "Missing branch.id", "server_ts" => $now]); exit(); }
+            $scid = (string)($branch['company_id'] ?? $branch['companyId'] ?? $v2company ?? '');
+            if ($scid === '') { echo json_encode(["success" => false, "error" => "Missing company_id for branch", "server_ts" => $now]); exit(); }
+            $branch['company_id'] = $branch['companyId'] = $scid;
+            $ok = tcUpsertBranchRow($pdo, $branch, $now);
+            if ($ok) {
+                $bname = (string)($branch['name'] ?? $branch['id']);
+                tcBlobMerge($pdo, 'branches', ['id' => $branch['id'], 'companyId' => $scid, 'name' => $bname, 'is_active' => 1]);
+                tcBumpMainStateVersion($pdo);
+            }
+            tcWriteAuditTrail($pdo, $scid, '', $v2op, 'Branch Upsert', 'Branch', (string)$branch['id'], (string)($branch['name'] ?? $branch['id']), ['company_id' => $scid]);
+            echo json_encode(["success" => $ok, "id" => (string)$branch['id'], "server_ts" => $now]);
+            exit();
+        }
+
+        // ---- v2_delete_branch -----------------------------------------------------
+        if ($action === 'v2_delete_branch') {
+            if (!$pdo) { echo json_encode(["success" => false, "error" => "No DB", "server_ts" => $now]); exit(); }
+            $id = (string)($v2in['id'] ?? '');
+            $scid = $v2company !== '' ? $v2company : (string)($v2in['company_id'] ?? '');
+            if ($id === '') { echo json_encode(["success" => false, "error" => "Missing branch id", "server_ts" => $now]); exit(); }
+            try {
+                if ($scid !== '') { $pdo->prepare("UPDATE branches SET deleted_at=?, updated_at=? WHERE id=? AND company_id=?")->execute([$now, $now, $id, $scid]); }
+                else { $pdo->prepare("UPDATE branches SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); }
+                $ok = true;
+            } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_branch failed: ' . $e->getMessage()); }
+            if ($ok) tcBumpMainStateVersion($pdo);
+            tcBlobMerge($pdo, 'branches', null, $id);
+            tcWriteAuditTrail($pdo, $scid, '', $v2op, 'Branch Delete', 'Branch', $id, $id, ['company_id' => $scid]);
+            echo json_encode(["success" => $ok, "server_ts" => $now]);
             exit();
         }
 
@@ -3727,17 +4067,7 @@ try {
             error_log('[DIAG-PHP] v2_upsert_store: tcUpsertStoreRow returned ' . ($ok ? 'TRUE' : 'FALSE'));
             if ($ok) {
                 $sname = (string)($store['name'] ?? $store['id']);
-                tcBlobMerge($pdo, 'stores', ['id' => $store['id'], 'companyId' => $scid, 'name' => $sname, 'is_active' => 1]);
-                if (!empty($store['branch_id']) || !empty($store['branchId'])) {
-                    tcBlobMerge($pdo, 'branches', ['id' => (string)($store['branch_id'] ?? $store['branchId']), 'companyId' => $scid, 'name' => $sname, 'is_active' => 1]);
-                }
-                /*
-                 * NOTE: For a store entity the client's canonical record already IS
-                 * the store; that same record is merged into the legacy branches
-                 * array only when a branchId was provided, so the classic
-                 * snapshot-driven UI keeps working during the transition.
-                 */
-                // 2026-09-08-21: notify every device (SSE + poll) that master data changed.
+                tcBlobMerge($pdo, 'stores', ['id' => $store['id'], 'companyId' => $scid, 'branchId' => $store['branch_id'] ?? $store['branchId'] ?? null, 'name' => $sname, 'is_active' => 1]);
                 tcBumpMainStateVersion($pdo);
             }
             tcWriteAuditTrail($pdo, $scid, '', $v2op, 'Store Upsert', 'Store', (string)$store['id'], (string)($store['name'] ?? $store['id']), ['company_id' => $scid]);
@@ -3751,10 +4081,6 @@ try {
             $id = (string)($v2in['id'] ?? '');
             $scid = $v2company !== '' ? $v2company : (string)($v2in['company_id'] ?? '');
             if ($id === '') { echo json_encode(["success" => false, "error" => "Missing store id", "server_ts" => $now]); exit(); }
-            // BUILD 2026-09-08-19 (Required Fix 3): scope the soft-delete by the recorded
-            // company when one is supplied — multi-company rows can never collide on the
-            // numeric id (previously `WHERE id=?` alone could soft-delete another tenant's
-            // store when two companies had a store with the same numeric id).
             try {
                 if ($scid !== '') { $pdo->prepare("UPDATE stores SET deleted_at=?, updated_at=? WHERE id=? AND company_id=?")->execute([$now, $now, $id, $scid]); }
                 else { $pdo->prepare("UPDATE stores SET deleted_at=?, updated_at=? WHERE id=?")->execute([$now, $now, $id]); }
@@ -3762,7 +4088,6 @@ try {
             } catch (Throwable $e) { $ok = false; error_log('[TradeCore API] v2_delete_store failed: ' . $e->getMessage()); }
             if ($ok) tcBumpMainStateVersion($pdo);
             tcBlobMerge($pdo, 'stores', null, $id);
-            tcBlobMerge($pdo, 'branches', null, $id);
             tcWriteAuditTrail($pdo, $scid, '', $v2op, 'Store Delete', 'Store', $id, $id, ['company_id' => $scid]);
             echo json_encode(["success" => $ok, "server_ts" => $now]);
             exit();
@@ -4022,21 +4347,178 @@ try {
         // ---- v2_get_audit_trails ---------------------------------------------------
         if ($action === 'v2_get_audit_trails') {
             $limit = max(1, min(500, (int)($v2in['limit'] ?? 100)));
+            $page = max(1, (int)($v2in['page'] ?? 1));
+            $offset = ($page - 1) * $limit;
             $rows = [];
+            $totalCount = 0;
             if ($pdo) {
                 try {
                     if ($v2company !== '') {
-                        $st = $pdo->prepare("SELECT id, store_id, user_id, user_name, action, entity_type, entity_id, entity_name, details, details_json, ip_address, created_at FROM audit_trails WHERE company_id=? ORDER BY created_at DESC LIMIT " . (int)$limit);
+                        $cSt = $pdo->prepare("SELECT COUNT(*) FROM audit_trails WHERE company_id=?");
+                        $cSt->execute([$v2company]);
+                        $totalCount = (int)$cSt->fetchColumn();
+
+                        $st = $pdo->prepare("SELECT id, store_id, user_id, user_name, action, entity_type, entity_id, entity_name, details, details_json, ip_address, created_at FROM audit_trails WHERE company_id=? ORDER BY created_at DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
                         $st->execute([$v2company]);
                     } else {
-                        $st = $pdo->query("SELECT id, store_id, user_id, user_name, action, entity_type, entity_id, entity_name, details, details_json, ip_address, created_at FROM audit_trails ORDER BY created_at DESC LIMIT " . (int)$limit);
+                        $cSt = $pdo->query("SELECT COUNT(*) FROM audit_trails");
+                        $totalCount = (int)$cSt->fetchColumn();
+
+                        $st = $pdo->query("SELECT id, store_id, user_id, user_name, action, entity_type, entity_id, entity_name, details, details_json, ip_address, created_at FROM audit_trails ORDER BY created_at DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
                     }
                     $rows = $st->fetchAll(PDO::FETCH_ASSOC);
                     foreach ($rows as &$r) { $r['timestamp'] = $r['created_at']; if ($r['details_json']) { $dp = json_decode($r['details_json'], true); if (is_array($dp)) $r['detailsObj'] = $dp; } }
                     unset($r);
                 } catch (Throwable $e) { error_log('[TradeCore API] v2_get_audit_trails failed: ' . $e->getMessage()); }
             }
-            echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "server_ts" => $now]);
+            echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "total" => $totalCount, "page" => $page, "limit" => $limit, "server_ts" => $now]);
+            exit();
+        }
+
+        // ---- v2_get_sales_orders_paged ---------------------------------------------
+        if ($action === 'v2_get_sales_orders_paged') {
+            $limit = max(1, min(500, (int)($v2in['limit'] ?? 50)));
+            $page = max(1, (int)($v2in['page'] ?? 1));
+            $offset = ($page - 1) * $limit;
+            $storeId = (string)($v2in['store_id'] ?? '');
+            $rows = [];
+            $totalCount = 0;
+            if ($pdo) {
+                try {
+                    $where = ["deleted_at IS NULL"];
+                    $params = [];
+                    if ($v2company !== '') {
+                        $where[] = "company_id = ?";
+                        $params[] = $v2company;
+                    }
+                    if ($storeId !== '') {
+                        $where[] = "store_id = ?";
+                        $params[] = $storeId;
+                    }
+                    $whereSql = implode(" AND ", $where);
+                    $cStmt = $pdo->prepare("SELECT COUNT(*) FROM sales_orders WHERE " . $whereSql);
+                    $cStmt->execute($params);
+                    $totalCount = (int)$cStmt->fetchColumn();
+
+                    $stmt = $pdo->prepare("SELECT * FROM sales_orders WHERE " . $whereSql . " ORDER BY id DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
+                    $stmt->execute($params);
+                    $rawRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    foreach ($rawRows as $r) {
+                        $orderData = $r;
+                        if (!empty($r['items_json'])) {
+                            $decoded = json_decode($r['items_json'], true);
+                            if (is_array($decoded)) $orderData['items'] = $decoded;
+                        }
+                        $rows[] = $orderData;
+                    }
+                } catch (Throwable $e) {
+                    error_log('[TradeCore API] v2_get_sales_orders_paged failed: ' . $e->getMessage());
+                }
+            }
+            echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "total" => $totalCount, "page" => $page, "limit" => $limit, "server_ts" => $now]);
+            exit();
+        }
+
+        // ---- v2_get_stock_items_paged ---------------------------------------------
+        if ($action === 'v2_get_stock_items_paged') {
+            $limit = max(1, min(500, (int)($v2in['limit'] ?? 50)));
+            $page = max(1, (int)($v2in['page'] ?? 1));
+            $offset = ($page - 1) * $limit;
+            $search = trim((string)($v2in['search'] ?? ''));
+            $rows = [];
+            $totalCount = 0;
+            if ($pdo) {
+                try {
+                    $where = ["deleted_at IS NULL"];
+                    $params = [];
+                    if ($v2company !== '') {
+                        $where[] = "company_id = ?";
+                        $params[] = $v2company;
+                    }
+                    if ($search !== '') {
+                        $where[] = "(name LIKE ? OR sku LIKE ? OR barcode LIKE ?)";
+                        $searchTerm = '%' . $search . '%';
+                        $params[] = $searchTerm;
+                        $params[] = $searchTerm;
+                        $params[] = $searchTerm;
+                    }
+                    $whereSql = implode(" AND ", $where);
+                    $cStmt = $pdo->prepare("SELECT COUNT(*) FROM products WHERE " . $whereSql);
+                    $cStmt->execute($params);
+                    $totalCount = (int)$cStmt->fetchColumn();
+
+                    $stmt = $pdo->prepare("SELECT * FROM products WHERE " . $whereSql . " ORDER BY id DESC LIMIT " . (int)$limit . " OFFSET " . (int)$offset);
+                    $stmt->execute($params);
+                    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                } catch (Throwable $e) {
+                    error_log('[TradeCore API] v2_get_stock_items_paged failed: ' . $e->getMessage());
+                }
+            }
+            echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "total" => $totalCount, "page" => $page, "limit" => $limit, "server_ts" => $now]);
+            exit();
+        }
+
+        // ---- v2_upsert_sponsor ---------------------------------------------------
+        if ($action === 'v2_upsert_sponsor') {
+            $payload = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['sponsor'] ?? null) ? $v2in['sponsor'] : $v2in);
+            $res = v2_upsert_sponsor($payload);
+            $res['server_ts'] = $now;
+            echo json_encode($res);
+            exit();
+        }
+
+        // ---- v2_delete_sponsor ---------------------------------------------------
+        if ($action === 'v2_delete_sponsor') {
+            $payload = is_array($v2in['entity'] ?? null) ? $v2in['entity'] : (is_array($v2in['sponsor'] ?? null) ? $v2in['sponsor'] : $v2in);
+            $res = v2_delete_sponsor($payload);
+            $res['server_ts'] = $now;
+            echo json_encode($res);
+            exit();
+        }
+
+        // ---- v2_list_sponsors ---------------------------------------------------
+        if ($action === 'v2_list_sponsors' || $action === 'v2_list_sponsor') {
+            $res = v2_list_sponsors($v2in);
+            $res['server_ts'] = $now;
+            echo json_encode($res);
+            exit();
+        }
+
+        // ---- v2_upload_sponsor_logo ----------------------------------------------
+        if ($action === 'v2_upload_sponsor_logo') {
+            $uploadsDir = __DIR__ . '/uploads/sponsors';
+            if (!is_dir($uploadsDir)) {
+                @mkdir($uploadsDir, 0777, true);
+            }
+            $fileUrl = '';
+            if (isset($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
+                $ext = pathinfo($_FILES['file']['name'], PATHINFO_EXTENSION) ?: 'png';
+                $safeName = 'sponsor_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
+                $target = $uploadsDir . '/' . $safeName;
+                if (move_uploaded_file($_FILES['file']['tmp_name'], $target)) {
+                    $fileUrl = '/cpanel/uploads/sponsors/' . $safeName;
+                }
+            } elseif (!empty($v2in['data_base64']) || !empty($v2in['file_data'])) {
+                $b64 = $v2in['data_base64'] ?? $v2in['file_data'];
+                if (preg_match('/^data:image\/(\w+);base64,/', $b64, $m)) {
+                    $ext = $m[1];
+                    $b64 = substr($b64, strpos($b64, ',') + 1);
+                } else {
+                    $ext = 'png';
+                }
+                $decoded = base64_decode($b64);
+                if ($decoded !== false) {
+                    $safeName = 'sponsor_' . time() . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
+                    $target = $uploadsDir . '/' . $safeName;
+                    file_put_contents($target, $decoded);
+                    $fileUrl = '/cpanel/uploads/sponsors/' . $safeName;
+                }
+            }
+            if ($fileUrl !== '') {
+                echo json_encode(["success" => true, "url" => $fileUrl, "logo_url" => $fileUrl, "server_ts" => $now]);
+            } else {
+                echo json_encode(["success" => false, "error" => "No file uploaded or failed to save", "server_ts" => $now]);
+            }
             exit();
         }
 

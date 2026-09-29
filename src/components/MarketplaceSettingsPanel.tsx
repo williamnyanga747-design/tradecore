@@ -1,5 +1,6 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Store as StoreIcon, CreditCard, Package, Plus, Pencil, Trash2, Save, ImagePlus, X, Check, Upload, Video, Play, AlertTriangle, MessageCircle, BarChart3, Sparkles, MapPin, Loader2, ShieldCheck } from 'lucide-react';
+import { compressImageFile, formatByteSize } from '../utils/imageCompression';
 import { Company, CompanyPaymentMethod, MarketplaceProduct, MarketplaceClick, Review, ProductView, FlashSale, Story, ChatConversation, ChatMessage, ProductReturn, Dispute, DisputeMessage, BulkUploadJob, ShippingZone, Store } from '../types';
 import { PublicTheme, getPublicTheme } from '../utils/publicTheme';
 import { TANZANIA_REGIONS } from './../utils/regions';
@@ -80,7 +81,7 @@ export default function MarketplaceSettingsPanel({
     latitude: company?.latitude ?? undefined,
     longitude: company?.longitude ?? undefined,
     addressText: company?.addressText || '',
-    isMarketplaceActive: company?.isMarketplaceActive ?? true,
+    isMarketplaceActive: company?.isMarketplaceActive !== false,
     isVerified: company?.isVerified ?? false,
     logoUrl: company?.logoUrl || '',
     coverImage: company?.coverImage || '',
@@ -89,6 +90,41 @@ export default function MarketplaceSettingsPanel({
     isVatRegistered: company?.isVatRegistered ?? false,
     businessLicense: company?.businessLicense || ''
   });
+
+  // Sync profile when company prop changes (switching active company or receiving updates)
+  useEffect(() => {
+    if (!company) return;
+    setProfile({
+      name: company.name || '',
+      description: company.description || '',
+      category: company.category || '',
+      region: company.region || '',
+      district: company.district || '',
+      ward: company.ward || '',
+      phone: company.phone || '',
+      whatsappNumber: company.whatsappNumber || '',
+      latitude: company.latitude ?? undefined,
+      longitude: company.longitude ?? undefined,
+      addressText: company.addressText || '',
+      isMarketplaceActive: company.isMarketplaceActive !== false,
+      isVerified: company.isVerified ?? false,
+      logoUrl: company.logoUrl || '',
+      coverImage: company.coverImage || '',
+      tinNumber: company.tinNumber || '',
+      vrnNumber: company.vrnNumber || '',
+      isVatRegistered: company.isVatRegistered ?? false,
+      businessLicense: company.businessLicense || ''
+    });
+  }, [company?.id, company?.isMarketplaceActive, company?.name, company?.isVerified]);
+
+  const toggleMarketplaceActive = () => {
+    const nextVal = !(profile.isMarketplaceActive !== false);
+    setProfile(p => ({ ...p, isMarketplaceActive: nextVal }));
+    if (company) {
+      onSaveProfile({ isMarketplaceActive: nextVal });
+      toast.success(nextVal ? t('Storefront is now LIVE in public directory.') : t('Storefront is now HIDDEN from public directory.'));
+    }
+  };
 
   // Payment method form state
   const [editingMethod, setEditingMethod] = useState<CompanyPaymentMethod | null>(null);
@@ -256,14 +292,24 @@ export default function MarketplaceSettingsPanel({
     const tooMany = fileList.length > room;
     for (const f of picked) {
       if (!f.type.startsWith('image/')) return toast.error(`${f.name} — ${t('not an image file.')}`);
-      if (f.size > 2 * 1024 * 1024) return toast.error(`${f.name} — ${t('image must be under 2MB.')}`);
+      if (f.size > 15 * 1024 * 1024) return toast.error(`${f.name} — ${t('image must be under 15MB.')}`);
     }
     try {
-      const urls = await Promise.all(picked.map(readAsDataUrl));
+      const compressedList = await Promise.all(
+        picked.map(f => compressImageFile(f, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 }))
+      );
+      const urls = compressedList.map(c => c.dataUrl);
+      const totalOrig = compressedList.reduce((acc, cur) => acc + cur.originalBytes, 0);
+      const totalComp = compressedList.reduce((acc, cur) => acc + cur.compressedBytes, 0);
+      const overallSavings = totalOrig > 0 ? Math.round((1 - totalComp / totalOrig) * 100) : 0;
+      
       setProductImages(prev => [...prev, ...urls].slice(0, MAX_IMAGES));
+      toast.success(
+        `${t('Images compressed')} (${formatByteSize(totalOrig)} → ${formatByteSize(totalComp)}, -${overallSavings}%)`
+      );
       if (tooMany) toast.error(t('Maximum 6 images per product.'));
     } catch (e) {
-      toast.error(t('Could not read one of the image files.'));
+      toast.error(t('Could not process one of the image files.'));
     }
   };
 
@@ -476,18 +522,22 @@ export default function MarketplaceSettingsPanel({
 
           {/* Toggles */}
           <div className="grid sm:grid-cols-2 gap-3">
-            <label className="flex items-center justify-between gap-3 border border-gray-100 rounded-xl px-4 py-3 cursor-pointer">
+            <div
+              onClick={toggleMarketplaceActive}
+              className="flex items-center justify-between gap-3 border border-gray-100 rounded-xl px-4 py-3 cursor-pointer hover:bg-gray-50/60 transition select-none"
+            >
               <div>
                 <div className="text-xs font-bold text-gray-800">{t('Storefront Live')}</div>
                 <div className="text-[10px] text-gray-400 font-medium">{t('Show this store in the public marketplace directory.')}</div>
               </div>
               <button
-                onClick={() => setProfile(p => ({ ...p, isMarketplaceActive: !(p.isMarketplaceActive ?? true) }))}
-                className={`w-11 h-6 rounded-full transition relative ${profile.isMarketplaceActive !== false ? 'bg-emerald-500' : 'bg-gray-300'}`}
+                type="button"
+                onClick={(e) => { e.stopPropagation(); toggleMarketplaceActive(); }}
+                className={`w-11 h-6 rounded-full transition relative cursor-pointer ${profile.isMarketplaceActive !== false ? 'bg-emerald-500' : 'bg-gray-300'}`}
               >
                 <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${profile.isMarketplaceActive !== false ? 'left-[22px]' : 'left-0.5'}`}></span>
               </button>
-            </label>
+            </div>
             <label className="flex items-center justify-between gap-3 border border-gray-100 rounded-xl px-4 py-3 cursor-default">
               <div>
                 <div className="text-xs font-bold text-gray-800">{t('Verified Seller')}</div>

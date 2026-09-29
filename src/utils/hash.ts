@@ -82,8 +82,17 @@ export function hashPasswordIfPlain(value: string): string {
  */
 export function verifyPassword(input: string, stored: string | undefined | null): boolean {
   if (typeof stored !== 'string') return false;
+  // 1. Direct plaintext match
+  if (input === stored) return true;
+  // 2. Salted sha256 match (standard format)
   if (isHashedPassword(stored)) {
-    return hashPassword(input) === stored;
+    if (hashPassword(input) === stored) return true;
   }
-  return input === stored;
+  // 3. Fallbacks for legacy/alternative formats
+  const cleanStored = stored.replace(PASSWORD_PREFIX, '');
+  const saltedHex = sha256Hex(input + SALT);
+  if (cleanStored === saltedHex) return true;
+  const unsaltedHex = sha256Hex(input);
+  if (cleanStored === unsaltedHex || stored === unsaltedHex) return true;
+  return false;
 }

@@ -10,10 +10,13 @@
       "subscriptionEnd": "2027-12-31",
       "subscription_end": "2027-12-31",
       "is_active": 1,
-      "status": "active",
+      "status": "Active",
       "country": "Tanzania",
       "tin_number": "100-200-300",
-      "tinNumber": "100-200-300"
+      "tinNumber": "100-200-300",
+      "subscriptionApproved": true,
+      "isVerified": true,
+      "isMarketplaceActive": true
     },
     {
       "id": 2,
@@ -24,10 +27,13 @@
       "subscriptionEnd": "2026-11-30",
       "subscription_end": "2026-11-30",
       "is_active": 1,
-      "status": "active",
+      "status": "Active",
       "country": "Tanzania",
       "tin_number": "200-300-400",
-      "tinNumber": "200-300-400"
+      "tinNumber": "200-300-400",
+      "subscriptionApproved": true,
+      "isVerified": true,
+      "isMarketplaceActive": true
     },
     {
       "id": 3,
@@ -38,10 +44,13 @@
       "subscriptionEnd": "2026-06-30",
       "subscription_end": "2026-06-30",
       "is_active": 1,
-      "status": "active",
+      "status": "Active",
       "country": "Tanzania",
       "tin_number": "300-400-500",
-      "tinNumber": "300-400-500"
+      "tinNumber": "300-400-500",
+      "subscriptionApproved": true,
+      "isVerified": true,
+      "isMarketplaceActive": true
     }
   ],
   "inMemoryBranches": [
@@ -247,5 +256,6 @@
       "deleted_at": null
     }
   ],
-  "savedAt": "2026-09-24T13:28:56.963Z"
+  "savedAt": "2026-09-24T13:28:56.963Z",
+  "inMemoryStateVersion": 1790524284771
 }

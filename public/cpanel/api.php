@@ -1640,6 +1640,25 @@ try {
             }
         }
         $iso = $updatedAt ? date('c', is_numeric($updatedAt) ? (int)$updatedAt : strtotime((string)$updatedAt)) : null;
+        $lastModTs = $updatedAt ? (is_numeric($updatedAt) ? (int)$updatedAt : strtotime((string)$updatedAt)) : $now;
+        $etag = 'W/"tradecore-ts-' . $version . '-' . $lastModTs . '"';
+        $lastMod = gmdate('D, d M Y H:i:s \G\M\T', $lastModTs > 0 ? $lastModTs : $now);
+        header('ETag: ' . $etag);
+        header('Last-Modified: ' . $lastMod);
+        header('Cache-Control: private, no-cache, must-revalidate');
+
+        $ifNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH']) : '';
+        $ifModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? trim($_SERVER['HTTP_IF_MODIFIED_SINCE']) : '';
+
+        if ($ifNoneMatch !== '' && ($ifNoneMatch === $etag || strpos($ifNoneMatch, $etag) !== false)) {
+            http_response_code(304);
+            exit();
+        }
+        if ($ifModifiedSince !== '' && strtotime($ifModifiedSince) >= $lastModTs && $lastModTs > 0) {
+            http_response_code(304);
+            exit();
+        }
+
         $result = [
             "success" => true,
             "lastUpdated" => $updatedAt,
@@ -1705,6 +1724,37 @@ try {
 
         if ($companyId !== '' && $pdo) {
             try {
+                $blobVer = 0;
+                $serverTs = $now;
+                try {
+                    $meta = $pdo->query("SELECT updated_at FROM tradecore_meta WHERE id=1")->fetch();
+                    if ($meta) $serverTs = (int)$meta['updated_at'];
+                    $bv = $pdo->query("SELECT version, updated_at FROM tradecore_system_state WHERE doc_key='main_state' LIMIT 1")->fetch();
+                    if ($bv) {
+                        $blobVer = (int)($bv['version'] ?? 0);
+                        if (!empty($bv['updated_at'])) $serverTs = max($serverTs, is_numeric($bv['updated_at']) ? (int)$bv['updated_at'] : strtotime($bv['updated_at']));
+                    }
+                } catch (Throwable $eVer) {}
+                $effectiveVer = $blobVer > 0 ? $blobVer : $serverTs;
+
+                $etag = 'W/"tradecore-' . md5($companyId) . '-' . $effectiveVer . '-' . $since . '"';
+                $lastModified = gmdate('D, d M Y H:i:s \G\M\T', $serverTs > 0 ? $serverTs : $now);
+                header('ETag: ' . $etag);
+                header('Last-Modified: ' . $lastModified);
+                header('Cache-Control: private, no-cache, must-revalidate');
+
+                $ifNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH']) : '';
+                $ifModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? trim($_SERVER['HTTP_IF_MODIFIED_SINCE']) : '';
+
+                if ($ifNoneMatch !== '' && ($ifNoneMatch === $etag || strpos($ifNoneMatch, $etag) !== false)) {
+                    http_response_code(304);
+                    exit();
+                }
+                if ($ifModifiedSince !== '' && strtotime($ifModifiedSince) >= $serverTs && $serverTs > 0) {
+                    http_response_code(304);
+                    exit();
+                }
+
                 $products = $users = $sales = $orders = [];
                 $deletedProducts = $deletedUsers = [];
 
@@ -1728,6 +1778,25 @@ try {
                     $so = $pdo->prepare("SELECT data FROM tradecore_marketplace_orders WHERE company_id=? AND updated_at > ?");
                     $so->execute([$companyId, $since]);
                     foreach ($so->fetchAll() as $r) { $d = json_decode($r['data'], true); if ($d) $orders[] = $d; }
+
+                    $hasChanges = count($products) > 0 || count($users) > 0 || count($sales) > 0 || count($orders) > 0 || count($deletedProducts) > 0 || count($deletedUsers) > 0;
+                    if (!$hasChanges) {
+                        if ($ifNoneMatch !== '' || $ifModifiedSince !== '') {
+                            http_response_code(304);
+                            exit();
+                        }
+                        echo json_encode([
+                            "changed" => false,
+                            "server_ts" => $effectiveVer,
+                            "version" => $effectiveVer,
+                            "_version" => $effectiveVer,
+                            "products" => [],
+                            "users" => [],
+                            "sales" => [],
+                            "marketplaceOrders" => [],
+                        ]);
+                        exit();
+                    }
                 } else {
                     // FULL: return all active items from NORMALIZED tables
                     // Use tcLoadUsersN and tcLoadProductsN for faster, normalized reads
@@ -1845,6 +1914,24 @@ try {
                     // MySQL master data so a superadmin/global GET never returns empty rows
                     // that the DB actually holds.
                     $outData = tcAssembleDynamicSnapshot($pdo, '', $outData);
+                    $etag = 'W/"tradecore-global-' . $ver . '"';
+                    $blobTime = !empty($row['updated_at']) ? (is_numeric($row['updated_at']) ? (int)$row['updated_at'] : strtotime($row['updated_at'])) : $now;
+                    $lastMod = gmdate('D, d M Y H:i:s \G\M\T', $blobTime > 0 ? $blobTime : $now);
+                    header('ETag: ' . $etag);
+                    header('Last-Modified: ' . $lastMod);
+                    header('Cache-Control: private, no-cache, must-revalidate');
+
+                    $ifNoneMatch = isset($_SERVER['HTTP_IF_NONE_MATCH']) ? trim($_SERVER['HTTP_IF_NONE_MATCH']) : '';
+                    $ifModifiedSince = isset($_SERVER['HTTP_IF_MODIFIED_SINCE']) ? trim($_SERVER['HTTP_IF_MODIFIED_SINCE']) : '';
+                    if ($ifNoneMatch !== '' && ($ifNoneMatch === $etag || strpos($ifNoneMatch, $etag) !== false)) {
+                        http_response_code(304);
+                        exit();
+                    }
+                    if ($ifModifiedSince !== '' && $blobTime > 0 && strtotime($ifModifiedSince) >= $blobTime) {
+                        http_response_code(304);
+                        exit();
+                    }
+
                     echo json_encode(["changed" => true, "server_ts" => $ver, "version" => $ver, "_version" => $ver, "state" => $outData]);
                     exit();
                 }

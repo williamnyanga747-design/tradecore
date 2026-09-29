@@ -234,6 +234,28 @@ export async function discoverApiUrl(): Promise<string | null> {
  * @param timeoutMs optional request timeout (default 10s) so a slow/hanging server
  *                  never blocks the UI — the caller falls back to local state on abort.
  */
+/**
+ * Cached ETag & Last-Modified tokens for conditional HTTP polling
+ */
+let _lastFetchDataEtag: string | null = null;
+let _lastFetchDataModified: string | null = null;
+let _lastCheckTimestampEtag: string | null = null;
+let _lastCheckTimestampModified: string | null = null;
+
+export function resetSyncEtagCache(): void {
+  _lastFetchDataEtag = null;
+  _lastFetchDataModified = null;
+  _lastCheckTimestampEtag = null;
+  _lastCheckTimestampModified = null;
+}
+
+/**
+ * Fetch unified system state from PHP backend with fallback discovery
+ *
+ * NOTE (BUILD 2026-09-08-25): default timeout reduced from 15s to 10s. The mount
+ * effect boots instantly from the per-company snapshot, so a slow PHP get_state
+ * never blocks the UI — the caller falls back to local state on abort.
+ */
 export async function fetchSystemDataFromPhp(timeoutMs: number = 10000): Promise<any | null> {
   let { apiUrl, apiKey } = getPhpConfig();
   // If the configured URL has never been validated, auto-discover
@@ -254,6 +276,13 @@ export async function fetchSystemDataFromPhp(timeoutMs: number = 10000): Promise
     if (apiKey) {
       headers['X-API-Key'] = apiKey;
     }
+    // Conditional HTTP poll headers (ETag / Last-Modified)
+    if (_lastFetchDataEtag) {
+      headers['If-None-Match'] = _lastFetchDataEtag;
+    }
+    if (_lastFetchDataModified) {
+      headers['If-Modified-Since'] = _lastFetchDataModified;
+    }
     // BUILD 2026-09-08-10: carry the operator identity on get_state too so the backend
     // super-global override (super admin always receives the FULL global blob, never a
     // per-company subset that omits companies/stores/branches) can resolve the caller.
@@ -262,8 +291,14 @@ export async function fetchSystemDataFromPhp(timeoutMs: number = 10000): Promise
     const response = await fetchWithTimeout(`${apiUrl}?action=get_state`, {
       method: 'GET',
       headers,
-      cache: 'no-store'
+      cache: 'no-cache'
     }, timeoutMs);
+
+    if (response.status === 304) {
+      // HTTP 304 Not Modified: payload has not changed on server.
+      // Retain local cached data; avoid downloading or parsing redundant state.
+      return null;
+    }
 
     if (!response.ok) {
       console.warn(`[PHP API] Server returned status ${response.status} for ${apiUrl}`);
@@ -271,6 +306,11 @@ export async function fetchSystemDataFromPhp(timeoutMs: number = 10000): Promise
       _discoveredApiUrl = null;
       return null;
     }
+
+    const newEtag = response.headers.get('ETag') || response.headers.get('etag');
+    if (newEtag) _lastFetchDataEtag = newEtag;
+    const newModified = response.headers.get('Last-Modified') || response.headers.get('last-modified');
+    if (newModified) _lastFetchDataModified = newModified;
 
     const text = await response.text();
     try {
@@ -323,7 +363,7 @@ export async function fetchSystemDataFromPhp(timeoutMs: number = 10000): Promise
   }
 }
 
-export async function fetchCheckTimestamp(timeoutMs: number = 8000): Promise<{ version: number; lastUpdated: string | null; updatedAt: string | null } | null> {
+export async function fetchCheckTimestamp(timeoutMs: number = 8000): Promise<{ version: number; lastUpdated: string | null; updatedAt: string | null; notModified?: boolean } | null> {
   let { apiUrl, apiKey } = getPhpConfig();
   if (!apiUrl || apiUrl === DEFAULT_API_URL) {
     if (_discoveredApiUrl) apiUrl = _discoveredApiUrl;
@@ -333,8 +373,25 @@ export async function fetchCheckTimestamp(timeoutMs: number = 8000): Promise<{ v
   try {
     const headers: Record<string, string> = { 'Accept': 'application/json' };
     if (apiKey) headers['X-API-Key'] = apiKey;
-    const response = await fetchWithTimeout(`${apiUrl}?action=check_timestamp`, { method: 'GET', headers, cache: 'no-store' }, timeoutMs);
+    if (_lastCheckTimestampEtag) {
+      headers['If-None-Match'] = _lastCheckTimestampEtag;
+    }
+    if (_lastCheckTimestampModified) {
+      headers['If-Modified-Since'] = _lastCheckTimestampModified;
+    }
+    Object.assign(headers, getOperatorHeaders());
+
+    const response = await fetchWithTimeout(`${apiUrl}?action=check_timestamp`, { method: 'GET', headers, cache: 'no-cache' }, timeoutMs);
+    if (response.status === 304) {
+      return { version: _lastServerVersion, lastUpdated: null, updatedAt: null, notModified: true };
+    }
     if (!response.ok) return null;
+
+    const newEtag = response.headers.get('ETag') || response.headers.get('etag');
+    if (newEtag) _lastCheckTimestampEtag = newEtag;
+    const newModified = response.headers.get('Last-Modified') || response.headers.get('last-modified');
+    if (newModified) _lastCheckTimestampModified = newModified;
+
     const result = JSON.parse(await response.text());
     if (!result || !result.success) return null;
     const version = Number(result.version ?? result.server_ts ?? 0) || 0;

@@ -17,9 +17,10 @@ export const isProductVisible = (p: MarketplaceProduct) =>
 // renewal payment is pending re-approval. Early renewals keep the store visible until the old
 // period actually ends. Legacy/demo sellers (no planType) are never auto-hidden.
 export const isCompanySubscriptionExpired = (c: Company): boolean => {
-  if (!c || c.isDemo === true || !c.planType) return false;
+  if (!c || c.isDemo === true) return false;
+  // If subscriptionEnd is not set, the company is active/ongoing (not expired)
+  if (!c.subscriptionEnd) return false;
   const end = c.subscriptionEnd;
-  if (!end) return true;
   const today = new Date().toISOString().split('T')[0];
   return end < today;
 };

@@ -18,7 +18,6 @@ const MARQUEE_DURATION_PRODUCTS = 48;
 const MARQUEE_DURATION_COMPANIES = 32;
 
 export default function MarketplaceHomeCarousels({ theme, t, companies, products, onOpenCompany, onOpenProduct }: CarouselProps) {
-  const activeProducts = useMemo(() => products.filter(p => p.isActive !== false && (p.status === undefined || p.status === 'approved')), [products]);
   const activeCompanies = useMemo(() => companies.filter(c => c.isMarketplaceActive !== false), [companies]);
 
   const companyById = useMemo(() => {
@@ -26,6 +25,8 @@ export default function MarketplaceHomeCarousels({ theme, t, companies, products
     activeCompanies.forEach(c => m.set(c.id, c));
     return m;
   }, [activeCompanies]);
+
+  const activeProducts = useMemo(() => products.filter(p => p.isActive !== false && (p.status === undefined || p.status === 'approved') && companyById.has(p.companyId)), [products, companyById]);
 
   const heroProducts = useMemo(() => activeProducts.slice(0, 20), [activeProducts]);
 

@@ -254,23 +254,31 @@ export default function Homepage({
                 <div className="flex flex-wrap gap-4 mt-4">
                   <div className="text-center">
                     <div className={`text-xl font-black ${th.statValue}`}>
-                      {marketplaceCompanies.filter(c => c.isMarketplaceActive !== false && c.subscriptionApproved === true && c.status !== 'Pending Payment' && c.status !== 'Pending' && !isCompanySubscriptionExpired(c)).length}
+                      {marketplaceCompanies.filter(c => {
+                        if (!c || c.isDeleted) return false;
+                        const st = String(c.status || '').toLowerCase();
+                        if (st === 'rejected' || st === 'pending' || st === 'pending payment') return false;
+                        if (c.isMarketplaceActive === false) return false;
+                        if (isCompanySubscriptionExpired(c)) return false;
+                        return true;
+                      }).length}
                     </div>
                     <div className={`text-[9px] ${th.textDim} font-black uppercase tracking-wider`}>Companies</div>
                   </div>
                   <div className="text-center">
                     <div className={`text-xl font-black ${th.statValue}`}>
-                      {marketplaceProducts.filter(p => {
-                        if (!isProductVisible(p)) return false;
-                        const co = marketplaceCompanies.find(c => sameId(c.id, p.companyId));
-                        return !co || (co.subscriptionApproved === true && co.status !== 'Pending Payment' && co.status !== 'Pending' && co.isMarketplaceActive !== false && !isCompanySubscriptionExpired(co));
-                      }).length}
+                      {marketplaceProducts.filter(p => isProductVisible(p)).length}
                     </div>
                     <div className={`text-[9px] ${th.textDim} font-black uppercase tracking-wider`}>Products</div>
                   </div>
                   <div className="text-center">
                     <div className={`text-xl font-black ${th.statValue}`}>
-                      {marketplaceCompanies.filter(c => (c.isVerified || c.subscriptionApproved === true) && c.status !== 'Pending Payment' && c.status !== 'Pending').length}
+                      {marketplaceCompanies.filter(c => {
+                        if (!c || c.isDeleted) return false;
+                        const st = String(c.status || '').toLowerCase();
+                        if (st === 'rejected' || st === 'pending' || st === 'pending payment') return false;
+                        return c.isVerified === true || c.subscriptionApproved === true || st === 'active';
+                      }).length}
                     </div>
                     <div className={`text-[9px] ${th.textDim} font-black uppercase tracking-wider`}>Verified</div>
                   </div>
@@ -286,7 +294,9 @@ export default function Homepage({
                 {marketplaceProducts.filter(p => {
                   if (!isProductVisible(p)) return false;
                   const co = marketplaceCompanies.find(c => sameId(c.id, p.companyId));
-                  return !co || (co.subscriptionApproved === true && co.status !== 'Pending Payment' && co.status !== 'Pending' && co.isMarketplaceActive !== false && !isCompanySubscriptionExpired(co));
+                  if (!co) return true;
+                  const st = String(co.status || '').toLowerCase();
+                  return st !== 'pending payment' && st !== 'pending' && st !== 'rejected' && co.isMarketplaceActive !== false && !isCompanySubscriptionExpired(co);
                 }).slice(0, 4).map(p => (
                   <div key={p.id} className={`${th.featureCard} ${th.cardBorder} rounded-xl overflow-hidden text-center`}>
                     <div className="h-16 overflow-hidden">

@@ -16,6 +16,7 @@ import { getStoreCategories, getCompanyCategories, formatCompanyCategory, format
 import { sv, sameId, getActiveCompanyScope } from '../utils/idUtils';
 import { v2DeleteCategory, v2UpsertCategory } from '../utils/normalizedPersistence';
 import LocationPicker from './marketplace/LocationPicker';
+import { compressImageFile } from '../utils/imageCompression';
 
 interface MasterDataProps {
   currentPage: string;
@@ -147,7 +148,7 @@ export default function MasterData({
   // No more "Filter per-company snapshot … skipping due to company_id mismatch" — the list
   // IS whatever the tradecore_companies / stores tables hold, refreshed on every tab open.
   useEffect(() => {
-    if (refreshMasterData && (currentPage === 'companies' || currentPage === 'branches' || currentPage === 'stores')) {
+    if (refreshMasterData && (currentPage === 'companies' || currentPage === 'branches' || currentPage === 'stores' || currentPage === 'categories')) {
       refreshMasterData(currentPage);
     }
   }, [currentPage, refreshMasterData]);
@@ -645,11 +646,13 @@ export default function MasterData({
     } else if (type === 'category') {
       if (!data.name?.trim()) return;
       const cleanName = cleanCategoryName(data.name.trim());
-      const rawCo = sv(currentCompanyId);
-      const coId = (rawCo && rawCo !== 'all')
-        ? rawCo
-        : (currentUser?.companyId ? sv(currentUser.companyId) : '1');
       const targetStoreId = data.storeId !== undefined && data.storeId !== '' ? String(data.storeId) : (categoryFilterStore || '');
+      const assignedStore = targetStoreId ? stores.find(s => sameId(s.id, targetStoreId)) : null;
+      const storeCoId = assignedStore?.companyId ? sv(assignedStore.companyId) : null;
+      const rawCo = sv(currentCompanyId);
+      const coId = storeCoId || ((rawCo && rawCo !== 'all')
+        ? rawCo
+        : (currentUser?.companyId ? sv(currentUser.companyId) : (companies.find(c => !c.isDeleted)?.id ? sv(companies.find(c => !c.isDeleted)!.id) : '1')));
 
       // Drop any null/empty/legacy entries so a malformed categories array can never
       // crash the filter or leak `null` into the persisted blob.
@@ -1280,7 +1283,8 @@ export default function MasterData({
       );
 
     case 'categories': {
-      const coId = currentCompanyId || currentUser?.companyId || '1';
+      const isGlobal = !currentCompanyId || currentCompanyId === 'all';
+      const coId = isGlobal ? null : currentCompanyId;
       const displayedCategories = categoryFilterStore
         ? getStoreCategories(categories, categoryFilterStore, coId)
         : getCompanyCategories(categories, coId);
@@ -1326,11 +1330,17 @@ export default function MasterData({
             {displayedCategories.map((c, i) => {
               const parsed = parseCategoryScope(c);
               const assignedStore = parsed.storeId ? stores.find(s => sameId(s.id, parsed.storeId)) : null;
+              const assignedCompany = parsed.companyId ? companies.find(comp => sameId(comp.id, parsed.companyId)) : null;
 
               return (
                 <li key={i} className="px-6 py-4 flex justify-between items-center hover:bg-gray-50/50">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-bold text-gray-800">{cleanCategoryName(c)}</span>
+                    {assignedCompany && isGlobal && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 border border-purple-200">
+                        {assignedCompany.name}
+                      </span>
+                    )}
                     {assignedStore ? (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1">
                         <StoreIcon className="w-3 h-3" />
@@ -2326,23 +2336,27 @@ export default function MasterData({
                             type="file"
                             accept="image/*"
                             className="hidden"
-                            onChange={(e) => {
+                            onChange={async (e) => {
                               const file = e.target.files?.[0];
                               if (file) {
-                                if (file.size > 1.5 * 1024 * 1024) {
-                                  toast.error(t('Image size exceeds 1.5MB limit. Please select a smaller image.'));
-                                  return;
+                                try {
+                                  const res = await compressImageFile(file, { maxWidth: 512, maxHeight: 512, quality: 0.8 });
+                                  setEditingItem({
+                                    ...editingItem,
+                                    data: { ...data, logoUrl: res.dataUrl }
+                                  });
+                                } catch {
+                                  const reader = new FileReader();
+                                  reader.onloadend = () => {
+                                    if (typeof reader.result === 'string') {
+                                      setEditingItem({
+                                        ...editingItem,
+                                        data: { ...data, logoUrl: reader.result }
+                                      });
+                                    }
+                                  };
+                                  reader.readAsDataURL(file);
                                 }
-                                const reader = new FileReader();
-                                reader.onloadend = () => {
-                                  if (typeof reader.result === 'string') {
-                                    setEditingItem({
-                                      ...editingItem,
-                                      data: { ...data, logoUrl: reader.result }
-                                    });
-                                  }
-                                };
-                                reader.readAsDataURL(file);
                               }
                             }}
                           />

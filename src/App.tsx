@@ -106,6 +106,7 @@ import MegaBuyerOrderDetail from './components/marketplace/MegaEscrow';
 import { CompanyReturnsPanel, AdminDisputeCenter } from './components/marketplace/MegaReturns';
 import MegaBulkUpload from './components/marketplace/MegaBulkUpload';
 import MegaNotificationsBell from './components/marketplace/MegaNotifications';
+import { isCompanySubscriptionExpired, isProductVisible } from './components/marketplace/MarketplaceShared';
 import SyncStatusIndicator, { OfflineTopBar } from './components/SyncStatusIndicator';
 
 // Utils
@@ -170,8 +171,9 @@ import {
   Pencil, Trash2, Printer, FileSpreadsheet, Copy, CheckCircle, CheckCircle2, ShoppingBag, RefreshCw, AlertTriangle, AlertCircle, X, XCircle, Check,
   ShieldAlert, DollarSign as DollarIcon, CreditCard, Monitor, Barcode, Store as StoreIcon,
   Calendar, TrendingUp, Info, ShieldCheck, Lock, Globe, Truck, ChevronDown, ChevronUp, Building2, Camera, Layers, Zap, RotateCcw,
-  Clock3, Hourglass, UserPlus, RefreshCcw as RefreshIcon
+  Clock3, Hourglass, UserPlus, RefreshCcw as RefreshIcon, Sparkles, Loader2, Image as ImageIcon
 } from 'lucide-react';
+import { compressImageFile, compressVideoFrame, compressImage, formatByteSize } from './utils/imageCompression';
 
 // Unique identifier for this browser tab — used to ignore our own BroadcastChannel messages
 // Per-browser-TAB session id, used to ignore BroadcastChannel self-echo.
@@ -990,7 +992,41 @@ export default function App() {
   // New billing model (ROOT_MANDATE editable) — guaranteed present via applyData backfill
   const activeCurrencies: Currency[] = settings.currencies && settings.currencies.length > 0 ? settings.currencies : defaultCurrencies;
   const activeTradePlans: TradeSubscriptionPlan[] = settings.subscriptionPlans && settings.subscriptionPlans.length > 0 ? settings.subscriptionPlans : defaultTradePlans;
-  const activeCompanySubscriptions: CompanySubscription[] = settings.companySubscriptions || [];
+  const activeCompanySubscriptions: CompanySubscription[] = React.useMemo(() => {
+    const rawSubs: CompanySubscription[] = settings.companySubscriptions || [];
+    const map = new Map<string, CompanySubscription>();
+    rawSubs.forEach(s => {
+      if (s && s.companyId != null) map.set(String(s.companyId), s);
+    });
+    // Ensure every company is represented with its subscription status and period
+    companies.forEach(c => {
+      if (!c || c.isDeleted) return;
+      const key = String(c.id);
+      if (!map.has(key)) {
+        const isExp = isCompanySubscriptionExpired(c);
+        const stLower = String(c.status || '').toLowerCase();
+        const isActive = !isExp && (c.subscriptionApproved || stLower === 'active' || stLower === 'verified');
+        map.set(key, {
+          id: typeof c.id === 'number' ? c.id : (1000 + map.size),
+          companyId: Number(c.id) || 1,
+          planId: c.planId || 1,
+          planName: c.planName || 'Standard Plan',
+          planSlug: (c as any).planSlug || 'standard',
+          planType: (c as any).planType || 'direct',
+          commissionPercentSnapshot: (c as any).commissionPercent || 0,
+          amountPaid: (c as any).amount || (c as any).totalSalesAmount || 0,
+          currencyCode: 'TZS',
+          amountTzs: (c as any).amount || (c as any).totalSalesAmount || 0,
+          status: isActive ? 'active' : (isExp ? 'expired' : 'pending'),
+          startsAt: c.subscriptionStart || new Date().toISOString(),
+          endsAt: c.subscriptionEnd || (isActive ? '2027-12-31' : new Date().toISOString().split('T')[0]),
+          createdAt: c.subscriptionStart || new Date().toISOString(),
+          paymentReference: c.paymentReference || 'REG-' + c.id
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [settings.companySubscriptions, companies]);
 
   // --- CASCADE DYNAMIC FILTERING ---
   const activeData = React.useMemo(() => filterActiveData({
@@ -1114,6 +1150,8 @@ export default function App() {
   const lastServerTimestampRef = React.useRef<string | null>(null);
   const incrementalSyncSinceRef = React.useRef<number>(0);
   const lastPolledCompanyIdRef = React.useRef<string | null>(null);
+  const lastPollEtagRef = React.useRef<string | null>(null);
+  const lastPollModifiedRef = React.useRef<string | null>(null);
   const lastSkipSigRef = React.useRef<string>('');
   // POLL DEBOUNCE: prevents the cross-device poll from re-applying the same server
   // version after a reload or within a short window. Breaks the "poll → apply → reload
@@ -1540,14 +1578,26 @@ export default function App() {
         if (keys.includes(ck)) return;
 
         // Categories are stored as scoped string arrays (e.g. 'co_1:Cereals', 'co_1:Fresh Fruits')
-        // Union local and server arrays so user-added categories are never discarded during background sync
         if (ck === 'categories') {
-          const catSet = new Set<string>();
-          serverArr.forEach((c: any) => { if (typeof c === 'string' && c.trim()) catSet.add(c.trim()); });
-          localArr.forEach((c: any) => { if (typeof c === 'string' && c.trim()) catSet.add(c.trim()); });
-          if (catSet.size > 0) {
-            out[ck] = Array.from(catSet);
+          const catGuard = directDeltaGuards.get('categories');
+          if (catGuard && catGuard.pending > 0 && Array.isArray(catGuard.snapshot)) {
+            out[ck] = catGuard.snapshot.slice();
+            return;
           }
+          const pendingCats = (dirtyValuesRef.current as any)?.categories;
+          if (Array.isArray(pendingCats)) {
+            out[ck] = pendingCats.slice();
+            return;
+          }
+          // Union local and server categories so newly created categories never disappear across devices/users (same protection as stores)
+          const catSet = new Set<string>();
+          if (Array.isArray(serverArr)) {
+            for (const c of serverArr) if (typeof c === 'string' && c.trim()) catSet.add(c.trim());
+          }
+          if (Array.isArray(localArr)) {
+            for (const c of localArr) if (typeof c === 'string' && c.trim()) catSet.add(c.trim());
+          }
+          out[ck] = Array.from(catSet);
           return;
         }
 
@@ -1825,6 +1875,9 @@ export default function App() {
   // Modals for Stock
   const [showStockModal, setShowStockModal] = useState(false);
   const [editingStockItem, setEditingStockItem] = useState<StockItem | null>(null);
+  const [productImagePreview, setProductImagePreview] = useState<string>('');
+  const [productImageCompressing, setProductImageCompressing] = useState<boolean>(false);
+  const [productImageCompressionStats, setProductImageCompressionStats] = useState<{ original: string; compressed: string; savings: number } | null>(null);
   const [formUseSubUnit, setFormUseSubUnit] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
   const [transferProductId, setTransferProductId] = useState<number | null>(null);
@@ -1870,6 +1923,9 @@ export default function App() {
 
   useEffect(() => {
     if (showStockModal) {
+      setProductImagePreview(editingStockItem?.imageUrl || '');
+      setProductImageCompressionStats(null);
+      setProductImageCompressing(false);
       const isUSD = activeCurrency === 'USD';
       const multiplier = isUSD ? 1 : activeExchangeRate;
       
@@ -2306,16 +2362,20 @@ export default function App() {
   };
 
   // Merge marketplace defaults onto a company so older persisted state still renders a live storefront.
-  // An approved/verified company is ALWAYS marketplace-active (verified = live store) even if older data
-  // accidentally persisted the old default of isMarketplaceActive: false.
+  // Respect explicit user preferences: if isMarketplaceActive is explicitly set to false, KEEP IT FALSE.
   const ensureMarketplaceCompanyDefaults = (c: any): any => {
     const seed = defaultCompanies.find(dc => dc.id === c.id);
     const merged = { ...(seed || {}), ...c };
+    const resolvedActive = typeof c.isMarketplaceActive === 'boolean'
+      ? c.isMarketplaceActive
+      : (typeof merged.isMarketplaceActive === 'boolean'
+        ? merged.isMarketplaceActive
+        : (merged.subscriptionApproved === true || merged.isVerified === true || !!seed?.isMarketplaceActive));
     return {
       ...merged,
       slug: merged.slug || slugify(merged.name || `company-${merged.id}`),
       isVerified: merged.subscriptionApproved === true ? true : (merged.isVerified ?? seed?.isVerified === true),
-      isMarketplaceActive: merged.subscriptionApproved === true || merged.isVerified === true || (merged.isMarketplaceActive ?? !!seed?.isMarketplaceActive),
+      isMarketplaceActive: resolvedActive,
       latitude: merged.latitude ?? seed?.latitude,
       longitude: merged.longitude ?? seed?.longitude,
       region: merged.region ?? seed?.region,
@@ -3366,19 +3426,47 @@ export default function App() {
           // Reset incremental since when company changes — force full sync for new company
           if (lastPolledCompanyIdRef.current !== null && lastPolledCompanyIdRef.current !== pollCompanyId) {
             incrementalSyncSinceRef.current = 0;
+            lastPollEtagRef.current = null;
+            lastPollModifiedRef.current = null;
           }
           lastPolledCompanyIdRef.current = pollCompanyId;
           const { apiUrl, apiKey } = getPhpConfig();
           if (!apiUrl) return;
           const headers: Record<string, string> = { 'Accept': 'application/json' };
           if (apiKey) headers['X-API-Key'] = apiKey;
+          if (lastPollEtagRef.current) headers['If-None-Match'] = lastPollEtagRef.current;
+          if (lastPollModifiedRef.current) headers['If-Modified-Since'] = lastPollModifiedRef.current;
+          Object.assign(headers, getOperatorHeaders());
+
           // First poll since=0 for full; subsequent polls use last known server_ts for incremental
           const since = incrementalSyncSinceRef.current || 0;
           const pollUrl = `${apiUrl}?action=get_state&company_id=${encodeURIComponent(pollCompanyId)}&since=${since}&t=${Date.now()}`;
-          const resp = await fetch(pollUrl, { method: 'GET', headers, cache: 'no-store' });
+          const resp = await fetch(pollUrl, { method: 'GET', headers, cache: 'no-cache' });
+          if (resp.status === 304) {
+            // Server confirmed state has not changed (ETag / Last-Modified match)
+            // Skip payload processing and full state parsing
+            return;
+          }
           if (!resp.ok) return;
+
+          const newEtag = resp.headers.get('ETag') || resp.headers.get('etag');
+          if (newEtag) lastPollEtagRef.current = newEtag;
+          const newModified = resp.headers.get('Last-Modified') || resp.headers.get('last-modified');
+          if (newModified) lastPollModifiedRef.current = newModified;
+
           const data = await resp.json();
           if (data?.debug && (window as any).DEBUG_SYNC) console.log('SYNC DEBUG', data.debug);
+
+          // If server reports no change or empty delta:
+          if (data && data.changed === false) {
+            if (data.server_ts && since > 0) {
+              incrementalSyncSinceRef.current = Number(data.server_ts);
+              lastServerTimestampRef.current = String(data.server_ts);
+              noteStateTimestamp(data.server_ts);
+            }
+            return;
+          }
+
           const incomingProducts: any[] = sanitizeArray<any>(data.products ?? data.state?.products ?? []);
           const incomingUsers: any[] = sanitizeArray<any>(data.users ?? data.state?.users ?? []);
           const hasPayload = Array.isArray(incomingProducts) || Array.isArray(incomingUsers);
@@ -3500,7 +3588,7 @@ export default function App() {
         }
         // Fallback: version-based full poll (public/ROOT, no company)
         const probe = await fetchCheckTimestamp();
-        if (!probe) return;
+        if (!probe || (probe as any).notModified) return;
         const serverVer = Number(probe.version ?? 0);
         const serverTs = probe.lastUpdated ?? probe.updatedAt ?? null;
         let changed = false;
@@ -4337,6 +4425,8 @@ export default function App() {
               markDirectDeltaDirty(key, (Array.isArray(val) ? val : []).slice());
               void Promise.allSettled(catOps).then(() => clearDirectDeltaDirty(key)).catch(() => clearDirectDeltaDirty(key));
             }
+            flushDirtyKeysRef.current.add('categories');
+            (dirtyValuesRef.current as any)['categories'] = (Array.isArray(val) ? val : []).slice();
             schedulePhpFlush(true);
             continue;
           }
@@ -6451,6 +6541,16 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
         applyCollectionState({ branches: list });
         void cacheSystemState(dbStateRef.current).catch(() => {});
       }).catch(() => {});
+    } else if (tab === 'categories') {
+      void v2ListCategories().then((list) => {
+        if (!Array.isArray(list) || list.length === 0) return;
+        const catKeys = list.map(c => c.key).filter(k => typeof k === 'string' && k.trim());
+        const currentCats = Array.isArray(dbStateRef.current?.categories) ? dbStateRef.current.categories : [];
+        const merged = Array.from(new Set([...currentCats, ...catKeys]));
+        dbStateRef.current = { ...dbStateRef.current, categories: merged };
+        applyCollectionState({ categories: merged });
+        void cacheSystemState(dbStateRef.current).catch(() => {});
+      }).catch(() => {});
     }
   }, []);
 
@@ -6598,7 +6698,11 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
     } catch (err) {
       console.warn('[Auth] Post-login boot warning:', err);
     }
-    try { window.location.href = '/dashboard'; } catch {}
+    setAuthView('app');
+    setCurrentPage('dashboard');
+    if (window.history && window.history.pushState) {
+      window.history.pushState({}, '', '/dashboard');
+    }
   };
 
   const handleLogin = async (e?: React.FormEvent) => {
@@ -6661,9 +6765,16 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
     const ipAddress = await getClientIp();
     const userAgent = navigator.userAgent || 'Web Browser';
     const cleanUsername = loginUsername.trim().toLowerCase();
+    const cleanTarget = cleanUsername.replace(/\s+/g, '');
 
-    // Check if target user exists
-    const targetUser = latestUsers.find(u => String(u.username || '').trim().toLowerCase() === cleanUsername);
+    // Check if target user exists (support username, email, or phone)
+    const targetUser = latestUsers.find(u => {
+      if (!u) return false;
+      const uName = String(u.username || '').trim().toLowerCase();
+      const uEmail = String(u.email || '').trim().toLowerCase();
+      const uPhone = String(u.phone || '').trim().replace(/\s+/g, '');
+      return uName === cleanUsername || (uEmail && uEmail === cleanUsername) || (uPhone && uPhone === cleanTarget);
+    });
 
     if (targetUser) {
       const isCoreSuperAdmin = targetUser.username === 'root_mandate' || targetUser.username === 'superadmin';
@@ -6738,11 +6849,15 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
         return;
       }
 
-      // Check if user account or company is pending Super Admin verification and payment confirmation
+      // Check if user account or company is rejected or pending Super Admin verification and payment confirmation
       if (!isCoreSuperAdmin) {
         const uStatus = String(targetUser.status || '').trim().toLowerCase();
-        if (uStatus === 'pending' || uStatus === 'pending verification' || uStatus === 'pending approval') {
-          const pendingSecLog: SecurityLog = {
+        const userCo = companies.find(c => sameId(c.id, targetUser.companyId));
+        const isCompanyRejected = userCo?.status === 'Rejected' || uStatus === 'rejected';
+
+        // 1. REJECTED: Show clear rejection notice with reason if available
+        if (isCompanyRejected) {
+          const rejectedSecLog: SecurityLog = {
             id: 'SECLOG-' + Date.now(),
             username: targetUser.username,
             status: 'Failed',
@@ -6750,19 +6865,24 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
             browserFingerprint: fingerprint,
             userAgent,
             timestamp: new Date().toISOString(),
-            failureReason: 'Access rejected: Account is awaiting Super Admin verification and payment approval.',
+            failureReason: 'Access rejected: Company registration was rejected by Super Admin.',
             deviceRecognized: false,
             companyId: targetUser.companyId
           };
-          saveAllData({ securityLogs: [pendingSecLog, ...securityLogs] });
-          const pendingMsg = t('Usajili wako unasubiri uhakiki na idhini ya malipo kutoka kwa Super Admin. Huwezi kuingia kwenye mfumo hadi Super Admin athibitishe malipo yako.') || 'Your account and payment are awaiting Super Admin verification and approval. You cannot log in until payment is confirmed.';
-          toast.error(pendingMsg);
-          setLoginError(pendingMsg);
+          saveAllData({ securityLogs: [rejectedSecLog, ...securityLogs] });
+          const reasonNote = userCo?.adminNote ? ` (${t('Sababu') || 'Reason'}: ${userCo.adminNote})` : '';
+          const rejectMsg = (t('Usajili wa kampuni yako umekataliwa na Super Admin. Tafadhali wasiliana na utawala kwa maelezo zaidi.') || 'Your company registration has been rejected by Super Admin. Please contact administration for assistance.') + reasonNote;
+          toast.error(rejectMsg);
+          setLoginError(rejectMsg);
           return;
         }
 
-        const userCo = companies.find(c => sameId(c.id, targetUser.companyId));
-        if (userCo && (userCo.subscriptionApproved === false || userCo.status === 'Pending Payment' || userCo.status === 'Pending' || userCo.status === 'Rejected')) {
+        // 2. PENDING APPROVAL: Show clear company approval pending notice
+        const isCoActive = userCo && (String(userCo.status || '').toLowerCase() === 'active' || userCo.subscriptionApproved === true);
+        const isCompanyPending = !isCoActive && ((userCo && (userCo.subscriptionApproved === false || userCo.status === 'Pending Payment' || userCo.status === 'Pending')) ||
+          uStatus === 'pending' || uStatus === 'pending verification' || uStatus === 'pending approval');
+
+        if (isCompanyPending) {
           const pendingSecLog: SecurityLog = {
             id: 'SECLOG-' + Date.now(),
             username: targetUser.username,
@@ -6771,16 +6891,16 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
             browserFingerprint: fingerprint,
             userAgent,
             timestamp: new Date().toISOString(),
-            failureReason: 'Access rejected: Company is awaiting Super Admin payment confirmation.',
+            failureReason: 'Access rejected: Company registration is awaiting Super Admin verification and payment approval.',
             deviceRecognized: false,
             companyId: targetUser.companyId
           };
           saveAllData({ securityLogs: [pendingSecLog, ...securityLogs] });
-          const coPendingMsg = userCo.status === 'Rejected'
-            ? (t('Usajili wa kampuni yako umekataliwa na Super Admin. Tafadhali wasiliana na utawala.') || 'Your company registration has been rejected by Super Admin.')
-            : (t('Malipo na usajili wa kampuni yako bado haujathibitishwa na Super Admin. Tafadhali subiri uthibitisho wa malipo kabla ya kuingia.') || 'Your company registration and payment are awaiting Super Admin confirmation and approval.');
-          toast.error(coPendingMsg);
-          setLoginError(coPendingMsg);
+          const pendingMsg = userCo
+            ? (t('Usajili wa kampuni yako bado haujathibitishwa na Msimamizi Mkuu (Super Admin). Tafadhali subiri uthibitisho wa usajili na malipo kabla ya kuingia.') || 'Your company registration is awaiting Super Admin verification and payment approval. You will be able to log in once approved.')
+            : (t('Akaunti yako bado haijathibitishwa na Msimamizi Mkuu (Super Admin). Tafadhali subiri idhini kabla ya kuingia.') || 'Your account is awaiting Super Admin verification and approval. You will be able to log in once approved.');
+          toast.error(pendingMsg);
+          setLoginError(pendingMsg);
           return;
         }
       }
@@ -7370,7 +7490,8 @@ try {
   const handleApproveCompanySubscription = (companyId: number) => {
     const company = companies.find(c => c.id === companyId);
     if (!company) return;
-    const subs = activeCompanySubscriptions.filter(s => s.companyId === companyId);
+    const baseSubs = (settings.companySubscriptions && settings.companySubscriptions.length > 0) ? settings.companySubscriptions : activeCompanySubscriptions;
+    const subs = baseSubs.filter(s => s.companyId === companyId);
     const target = subs.length > 0 ? [...subs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] : undefined;
     const plan = target ? activeTradePlans.find(p => p.id === target.planId) : undefined;
     const durationDays = plan?.durationDays || 30;
@@ -7379,11 +7500,32 @@ try {
     end.setDate(end.getDate() + durationDays);
     const endStr = end.toISOString().split('T')[0];
 
-    const updatedSubs = subs.map(s =>
-      s.id === target?.id
-        ? { ...s, status: 'active' as const, startsAt: s.startsAt || nowIso, endsAt: endStr, adminNote: '' }
-        : s
-    );
+    const updatedSubs = baseSubs.some(s => s.companyId === companyId)
+      ? baseSubs.map(s =>
+          s.companyId === companyId
+            ? { ...s, status: 'active' as const, startsAt: s.startsAt || nowIso, endsAt: endStr, adminNote: '' }
+            : s
+        )
+      : [
+          ...baseSubs,
+          {
+            id: Math.max(0, ...baseSubs.map(s => s.id)) + 1,
+            companyId: company.id,
+            planId: company.planId || 1,
+            planName: company.planName || 'Standard Plan',
+            planType: (company as any).planType || 'direct',
+            commissionPercentSnapshot: (company as any).commissionPercent || 0,
+            amountPaid: (company as any).amount || 0,
+            amountTzs: (company as any).amount || 0,
+            currencyCode: company.currencyCode || 'TZS',
+            status: 'active' as const,
+            startsAt: nowIso,
+            endsAt: endStr,
+            createdAt: nowIso,
+            paymentReference: company.paymentReference || 'SUB-' + company.id
+          }
+        ];
+
     const updatedCompanies = companies.map(c =>
       c.id === companyId
         ? {
@@ -7413,11 +7555,40 @@ try {
     const updatedUsers = users.map(u =>
       sameId(u.companyId, companyId) ? { ...u, status: 'Active' as const } : u
     );
+    const meta = subscriptionMeta;
+    const approveRecord: PaymentConfirmationRequest = {
+      id: 'REQ-APPROVED-' + companyId + '-' + Date.now(),
+      companyId: company.id,
+      companyName: company.name,
+      userName: (company as any).ownerName || (company as any).email || 'Admin',
+      userEmail: (company as any).email || '',
+      userPhone: (company as any).phone || '',
+      planId: target?.planId ?? company.planId ?? 1,
+      planName: target?.planName ?? company.planName ?? 'Standard Plan',
+      amount: target?.amountPaid ?? (company as any).amount ?? 0,
+      paymentMethod: target?.paymentMethod ?? company.paymentMethod ?? 'Manual Payment',
+      paymentReference: target?.paymentReference ?? company.paymentReference ?? 'SUB-' + company.id,
+      receiptImageUrl: target?.paymentProof ?? company.receiptImageUrl,
+      status: 'Approved' as const,
+      requestedAt: nowIso,
+      decidedAt: nowIso,
+      decidedBy: currentUser?.username || 'Super Admin',
+      adminNote: `Approved for ${durationDays} days until ${endStr}`
+    };
+    const existingReqIdx = (meta.paymentRequests || []).findIndex(r => r.companyId === companyId);
+    const updatedRequests = existingReqIdx >= 0
+      ? (meta.paymentRequests || []).map((r, i) => i === existingReqIdx ? approveRecord : r)
+      : [approveRecord, ...(meta.paymentRequests || [])];
+
     saveAllData({
       companies: updatedCompanies,
       users: updatedUsers,
       marketplaceProducts: approvedProducts,
-      settings: { ...settings, companySubscriptions: updatedSubs }
+      settings: {
+        ...settings,
+        subscriptionMeta: { ...meta, paymentRequests: updatedRequests },
+        companySubscriptions: updatedSubs
+      }
     });
     toast.success(t(`Subscription approved. "${company.name}" activated for ${durationDays} days until ${endStr}.`));
     logAction('Subscription Approved', `ROOT_MANDATE approved subscription for ${company.name} (${target?.planName || 'plan'}, ${durationDays} days) until ${endStr}.`);
@@ -7426,14 +7597,49 @@ try {
   const handleRejectCompanySubscription = (companyId: number, note?: string) => {
     const company = companies.find(c => c.id === companyId);
     if (!company) return;
-    const subs = activeCompanySubscriptions.filter(s => s.companyId === companyId);
-    const updatedSubs = subs.map(s => ({ ...s, adminNote: note || s.adminNote }));
+    const baseSubs = (settings.companySubscriptions && settings.companySubscriptions.length > 0) ? settings.companySubscriptions : activeCompanySubscriptions;
+    const updatedSubs = baseSubs.map(s => s.companyId === companyId ? { ...s, adminNote: note || s.adminNote, status: 'rejected' as const } : s);
     const updatedCompanies = companies.map(c =>
       c.id === companyId ? { ...c, status: 'Rejected' as const, subscriptionApproved: false, adminNote: note || '' } : c
     );
+    const updatedUsers = users.map(u =>
+      sameId(u.companyId, companyId) ? { ...u, status: 'Rejected' as const } : u
+    );
+
+    const nowIso = new Date().toISOString();
+    const meta = subscriptionMeta;
+    const rejectRecord: PaymentConfirmationRequest = {
+      id: 'REQ-REJECTED-' + companyId + '-' + Date.now(),
+      companyId: company.id,
+      companyName: company.name,
+      userName: (company as any).ownerName || (company as any).email || 'Admin',
+      userEmail: (company as any).email || '',
+      userPhone: (company as any).phone || '',
+      planId: company.planId || 1,
+      planName: company.planName || 'Standard Plan',
+      amount: (company as any).amount || 0,
+      paymentMethod: company.paymentMethod || 'Manual Payment',
+      paymentReference: company.paymentReference || 'REG-' + company.id,
+      receiptImageUrl: company.receiptImageUrl,
+      status: 'Rejected' as const,
+      requestedAt: company.subscriptionStart || nowIso,
+      decidedAt: nowIso,
+      decidedBy: currentUser?.username || 'Super Admin',
+      adminNote: note || 'Rejected by administration'
+    };
+    const existingReqIdx = (meta.paymentRequests || []).findIndex(r => r.companyId === companyId);
+    const updatedRequests = existingReqIdx >= 0
+      ? (meta.paymentRequests || []).map((r, i) => i === existingReqIdx ? rejectRecord : r)
+      : [rejectRecord, ...(meta.paymentRequests || [])];
+
     saveAllData({
       companies: updatedCompanies,
-      settings: { ...settings, companySubscriptions: updatedSubs }
+      users: updatedUsers,
+      settings: {
+        ...settings,
+        subscriptionMeta: { ...meta, paymentRequests: updatedRequests },
+        companySubscriptions: updatedSubs
+      }
     });
     toast.success(t(`Payment request for "${company.name}" rejected. They can resubmit after fixing the issue.`));
     logAction('Subscription Rejected', `ROOT_MANDATE rejected subscription payment for ${company.name}. Reason: ${note || 'Not specified'}.`);
@@ -7442,7 +7648,8 @@ try {
   const handleExtendCompanySubscription = (companyId: number, days = 30) => {
     const company = companies.find(c => c.id === companyId);
     if (!company) return;
-    const subs = activeCompanySubscriptions.filter(s => s.companyId === companyId);
+    const baseSubs = (settings.companySubscriptions && settings.companySubscriptions.length > 0) ? settings.companySubscriptions : activeCompanySubscriptions;
+    const subs = baseSubs.filter(s => s.companyId === companyId);
     const now = new Date();
     let base: Date;
     const endAnchor = company.subscriptionEnd || subs[0]?.endsAt;
@@ -7454,7 +7661,27 @@ try {
     }
     base.setDate(base.getDate() + days);
     const endStr = base.toISOString().split('T')[0];
-    const updatedSubs = subs.map(s => ({ ...s, status: 'active' as const, endsAt: endStr }));
+    const updatedSubs = baseSubs.some(s => s.companyId === companyId)
+      ? baseSubs.map(s => s.companyId === companyId ? { ...s, status: 'active' as const, endsAt: endStr } : s)
+      : [
+          ...baseSubs,
+          {
+            id: Math.max(0, ...baseSubs.map(s => s.id)) + 1,
+            companyId: company.id,
+            planId: company.planId || 1,
+            planName: company.planName || 'Standard Plan',
+            planType: (company as any).planType || 'direct',
+            commissionPercentSnapshot: (company as any).commissionPercent || 0,
+            amountPaid: (company as any).amount || 0,
+            amountTzs: (company as any).amount || 0,
+            currencyCode: company.currencyCode || 'TZS',
+            status: 'active' as const,
+            startsAt: new Date().toISOString(),
+            endsAt: endStr,
+            createdAt: new Date().toISOString(),
+            paymentReference: company.paymentReference || 'EXT-' + company.id
+          }
+        ];
     const updatedCompanies = companies.map(c =>
       c.id === companyId
         ? { ...c, status: 'Active' as const, subscriptionApproved: true, isVerified: true, isMarketplaceActive: true, isDemo: false, subscriptionEnd: endStr }
@@ -7472,19 +7699,20 @@ try {
     const company = companies.find(c => c.id === companyId);
     const plan = activeTradePlans.find(p => p.id === planId);
     if (!company || !plan) return;
-    const subs = activeCompanySubscriptions.filter(s => s.companyId === companyId);
+    const baseSubs = (settings.companySubscriptions && settings.companySubscriptions.length > 0) ? settings.companySubscriptions : activeCompanySubscriptions;
+    const subs = baseSubs.filter(s => s.companyId === companyId);
     const nowIso = new Date().toISOString();
     let updatedSubs: CompanySubscription[];
     if (subs.length > 0) {
       const target = [...subs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
-      updatedSubs = subs.map(s =>
+      updatedSubs = baseSubs.map(s =>
         s.id === target.id
           ? { ...s, planId: plan.id, planName: plan.name, planSlug: plan.slug, planType: plan.type, commissionPercentSnapshot: plan.commissionPercent, adminNote: `Plan changed to ${plan.name} by ROOT_MANDATE` }
           : s
       );
     } else {
       const newSub: CompanySubscription = {
-        id: Math.max(0, ...activeCompanySubscriptions.map(s => s.id)) + 1,
+        id: Math.max(0, ...baseSubs.map(s => s.id)) + 1,
         companyId,
         planId: plan.id,
         planName: plan.name,
@@ -7497,7 +7725,7 @@ try {
         status: 'pending',
         createdAt: nowIso
       };
-      updatedSubs = [...subs, newSub];
+      updatedSubs = [...baseSubs, newSub];
     }
     const updatedCompanies = companies.map(c =>
       c.id === companyId
@@ -7714,12 +7942,6 @@ try {
       createdAt: nowIso
     };
 
-    saveAllData({
-      companies: [...companies, newCompany],
-      users: [...users, newUser],
-      settings: { ...settings, subscriptionMeta: nextMeta, companySubscriptions: [...activeCompanySubscriptions, newSubscription] }
-    });
-
     // SEED DEFAULT DATA: Initialize company-scoped defaults so the new company
     // has categories, taxes, and branches when the user first logs in
     const coPrefix = `co_${newCompanyId}:`;
@@ -7746,6 +7968,15 @@ try {
     const defaultCoStores = [
       { id: `st_main_${newCompanyId}`, name: 'Main Store', branch_id: `br_main_${newCompanyId}`, company_id: newCompanyId, is_active: true, created_at: nowIso, updated_at: nowIso },
     ];
+
+    const allCategoriesWithNew = Array.from(new Set([...(categories || []), ...defaultCoCategories]));
+
+    saveAllData({
+      companies: [...companies, newCompany],
+      users: [...users, newUser],
+      categories: allCategoriesWithNew,
+      settings: { ...settings, subscriptionMeta: nextMeta, companySubscriptions: [...activeCompanySubscriptions, newSubscription] }
+    });
 
     // IMMEDIATE DB ASSIGNMENT (defaults): seed the new company's normalized tables
     for (const cat of defaultCoCategories) {
@@ -10470,8 +10701,10 @@ try {
     let n = 2;
     const others = companies.filter(c => c.id !== companyId);
     while (others.some(c => c.slug === slug)) { slug = `${baseSlug}-${n++}`; }
-    const updated = companies.map(c => (c.id === companyId ? { ...c, ...patch, slug } : c));
+    const updatedCompany = { ...prev, ...patch, slug, id: companyId } as Company;
+    const updated = companies.map(c => (c.id === companyId ? updatedCompany : c));
     saveAllData({ companies: updated });
+    void v2UpsertCompany(updatedCompany as any).catch(() => {});
     toast.success(t('Marketplace store settings saved.'));
   };
 
@@ -10707,21 +10940,66 @@ try {
   // --- SUPER ADMIN: APPROVE PAYMENT & ACTIVATE SUBSCRIPTION ---
   const handleApproveRequest = (requestId: string, months: number, note?: string) => {
     const meta = subscriptionMeta;
-    const req = (meta.paymentRequests || []).find(r => r.id === requestId);
-    if (!req) return;
+    let req = (meta.paymentRequests || []).find(r => r.id === requestId);
+    const targetCompany = req
+      ? companies.find(c => c.id === req!.companyId)
+      : companies.find(c => String(c.id) === requestId || `REQ-CO-${c.id}` === requestId || String(c.id) === requestId.replace(/^REQ-CO-/, ''));
+
+    if (!req && targetCompany) {
+      req = {
+        id: requestId,
+        companyId: targetCompany.id,
+        companyName: targetCompany.name,
+        userName: (targetCompany as any).ownerName || (targetCompany as any).email || 'Admin',
+        userEmail: (targetCompany as any).email || '',
+        userPhone: (targetCompany as any).phone || '',
+        planId: (targetCompany as any).planId || 1,
+        planName: targetCompany.planName || 'Standard Plan',
+        amount: (targetCompany as any).amount || (targetCompany as any).totalSalesAmount || 0,
+        paymentMethod: (targetCompany as any).paymentMethod || 'Manual Payment',
+        paymentReference: targetCompany.paymentReference || 'REG-' + targetCompany.id,
+        receiptImageUrl: targetCompany.receiptImageUrl,
+        status: 'Pending',
+        requestedAt: targetCompany.subscriptionStart || new Date().toISOString()
+      };
+    }
+    if (!req && !targetCompany) return;
+
     const safeMonths = Math.max(1, months || 1);
     const endDate = new Date();
     endDate.setMonth(endDate.getMonth() + safeMonths);
     const endStr = endDate.toISOString().split('T')[0];
     const nowIso = new Date().toISOString();
 
-    const updatedRequests = (meta.paymentRequests || []).map(r =>
-      r.id === requestId
-        ? { ...r, status: 'Approved' as const, adminNote: note || r.adminNote, decidedAt: nowIso, decidedBy: currentUser?.username || 'Super Admin' }
-        : r
-    );
+    const targetCoId = req?.companyId ?? targetCompany?.id ?? 0;
+    const existingReqIdx = (meta.paymentRequests || []).findIndex(r => r.id === requestId || (r.companyId === targetCoId && targetCoId > 0));
+    const approvedRecord: PaymentConfirmationRequest = {
+      ...(req || {
+        id: requestId,
+        companyId: targetCoId,
+        companyName: targetCompany?.name || 'Company',
+        userName: 'Admin',
+        userEmail: '',
+        userPhone: '',
+        planId: 1,
+        planName: 'Standard Plan',
+        amount: 0,
+        paymentMethod: 'Manual Payment',
+        paymentReference: targetCompany?.paymentReference || 'REG-' + targetCoId,
+        requestedAt: nowIso
+      }),
+      status: 'Approved' as const,
+      adminNote: note || req?.adminNote,
+      decidedAt: nowIso,
+      decidedBy: currentUser?.username || 'Super Admin'
+    };
+
+    const updatedRequests = existingReqIdx >= 0
+      ? (meta.paymentRequests || []).map((r, i) => i === existingReqIdx ? approvedRecord : r)
+      : [approvedRecord, ...(meta.paymentRequests || [])];
+
     const updatedCompanies = companies.map(c =>
-      c.id === req.companyId
+      c.id === targetCoId
         ? {
             ...c,
             status: 'Active' as const,
@@ -10731,55 +11009,134 @@ try {
             isMarketplaceActive: true,
             subscriptionStart: nowIso,
             subscriptionEnd: endStr,
-            planId: req.planId,
-            planName: req.planName,
-            paymentReference: req.paymentReference,
-            paymentMethod: req.paymentMethod,
-            receiptImageUrl: req.receiptImageUrl,
+            planId: req?.planId ?? c.planId,
+            planName: req?.planName ?? c.planName,
+            paymentReference: req?.paymentReference ?? c.paymentReference,
+            paymentMethod: req?.paymentMethod ?? c.paymentMethod,
+            receiptImageUrl: req?.receiptImageUrl ?? c.receiptImageUrl,
             adminNote: note || ''
           }
         : c
     );
     const approvedProducts = marketplaceProducts.map(p =>
-      p.companyId === req.companyId ? { ...p, status: 'approved' as const } : p
+      p.companyId === targetCoId ? { ...p, status: 'approved' as const } : p
     );
     const updatedUsers = users.map(u =>
-      sameId(u.companyId, req.companyId) ? { ...u, status: 'Active' as const } : u
+      sameId(u.companyId, targetCoId) ? { ...u, status: 'Active' as const } : u
     );
+
+    // Also update companySubscriptions
+    const baseSubs = (settings.companySubscriptions && settings.companySubscriptions.length > 0) ? settings.companySubscriptions : activeCompanySubscriptions;
+    const updatedSubs = baseSubs.some(s => s.companyId === targetCoId)
+      ? baseSubs.map(s => s.companyId === targetCoId ? { ...s, status: 'active' as const, endsAt: endStr } : s)
+      : [
+          ...baseSubs,
+          {
+            id: Math.max(0, ...baseSubs.map(s => s.id)) + 1,
+            companyId: targetCoId,
+            planId: req?.planId ?? targetCompany?.planId ?? 1,
+            planName: req?.planName ?? targetCompany?.planName ?? 'Standard Plan',
+            planType: (targetCompany as any)?.planType || 'direct',
+            commissionPercentSnapshot: (targetCompany as any)?.commissionPercent || 0,
+            amountPaid: req?.amount ?? (targetCompany as any)?.amount ?? 0,
+            amountTzs: req?.amount ?? (targetCompany as any)?.amount ?? 0,
+            currencyCode: 'TZS',
+            status: 'active' as const,
+            startsAt: nowIso,
+            endsAt: endStr,
+            createdAt: nowIso,
+            paymentReference: req?.paymentReference || 'REQ-' + targetCoId
+          }
+        ];
 
     saveAllData({
       companies: updatedCompanies,
       users: updatedUsers,
       marketplaceProducts: approvedProducts,
-      settings: { ...settings, subscriptionMeta: { ...meta, paymentRequests: updatedRequests } }
+      settings: {
+        ...settings,
+        subscriptionMeta: { ...meta, paymentRequests: updatedRequests },
+        companySubscriptions: updatedSubs
+      }
     });
-    toast.success(t(`Payment verified. "${req.companyName}" activated for ${safeMonths} month(s) until ${endStr}.`));
-    logAction('Subscription Approved', `Payment verified & subscription activated for ${req.companyName} (${req.planName}, ${safeMonths} month(s)) until ${endStr}. Reference ${req.paymentReference}.`);
+    const companyName = targetCompany?.name || req?.companyName || 'Company';
+    toast.success(t(`Payment verified. "${companyName}" activated for ${safeMonths} month(s) until ${endStr}.`));
+    logAction('Subscription Approved', `Payment verified & subscription activated for ${companyName} (${req?.planName || 'Standard Plan'}, ${safeMonths} month(s)) until ${endStr}.`);
   };
 
   // --- SUPER ADMIN: REJECT PAYMENT REQUEST ---
   const handleRejectRequest = (requestId: string, note: string) => {
     const meta = subscriptionMeta;
-    const req = (meta.paymentRequests || []).find(r => r.id === requestId);
-    if (!req) return;
+    let req = (meta.paymentRequests || []).find(r => r.id === requestId);
+    const targetCompany = req
+      ? companies.find(c => c.id === req!.companyId)
+      : companies.find(c => String(c.id) === requestId || `REQ-CO-${c.id}` === requestId || String(c.id) === requestId.replace(/^REQ-CO-/, ''));
+
+    if (!req && targetCompany) {
+      req = {
+        id: requestId,
+        companyId: targetCompany.id,
+        companyName: targetCompany.name,
+        userName: (targetCompany as any).ownerName || (targetCompany as any).email || 'Admin',
+        userEmail: (targetCompany as any).email || '',
+        userPhone: (targetCompany as any).phone || '',
+        planId: (targetCompany as any).planId || 1,
+        planName: targetCompany.planName || 'Standard Plan',
+        amount: (targetCompany as any).amount || (targetCompany as any).totalSalesAmount || 0,
+        paymentMethod: (targetCompany as any).paymentMethod || 'Manual Payment',
+        paymentReference: targetCompany.paymentReference || 'REG-' + targetCompany.id,
+        receiptImageUrl: targetCompany.receiptImageUrl,
+        status: 'Pending',
+        requestedAt: targetCompany.subscriptionStart || new Date().toISOString()
+      };
+    }
+    if (!req && !targetCompany) return;
+
+    const targetCoId = req?.companyId ?? targetCompany?.id ?? 0;
     const nowIso = new Date().toISOString();
-    const updatedRequests = (meta.paymentRequests || []).map(r =>
-      r.id === requestId
-        ? { ...r, status: 'Rejected' as const, adminNote: note, decidedAt: nowIso, decidedBy: currentUser?.username || 'Super Admin' }
-        : r
-    );
+    const existingReqIdx = (meta.paymentRequests || []).findIndex(r => r.id === requestId || (r.companyId === targetCoId && targetCoId > 0));
+    const rejectedRecord: PaymentConfirmationRequest = {
+      ...(req || {
+        id: requestId,
+        companyId: targetCoId,
+        companyName: targetCompany?.name || 'Company',
+        userName: 'Admin',
+        userEmail: '',
+        userPhone: '',
+        planId: 1,
+        planName: 'Standard Plan',
+        amount: 0,
+        paymentMethod: 'Manual Payment',
+        paymentReference: targetCompany?.paymentReference || 'REG-' + targetCoId,
+        requestedAt: nowIso
+      }),
+      status: 'Rejected' as const,
+      adminNote: note,
+      decidedAt: nowIso,
+      decidedBy: currentUser?.username || 'Super Admin'
+    };
+
+    const updatedRequests = existingReqIdx >= 0
+      ? (meta.paymentRequests || []).map((r, i) => i === existingReqIdx ? rejectedRecord : r)
+      : [rejectedRecord, ...(meta.paymentRequests || [])];
+
     const updatedCompanies = companies.map(c =>
-      c.id === req.companyId
+      c.id === targetCoId
         ? { ...c, status: 'Rejected' as const, subscriptionApproved: false, adminNote: note }
         : c
+    );
+    const updatedUsers = users.map(u =>
+      sameId(u.companyId, targetCoId) ? { ...u, status: 'Rejected' as const } : u
     );
 
     saveAllData({
       companies: updatedCompanies,
+      users: updatedUsers,
       settings: { ...settings, subscriptionMeta: { ...meta, paymentRequests: updatedRequests } }
     });
-    toast.success(t(`Payment request for "${req.companyName}" rejected. They can resubmit after fixing the issue.`));
-    logAction('Subscription Rejected', `Payment request rejected for ${req.companyName} (reference ${req.paymentReference}). Reason: ${note || 'Not specified'}.`);
+    const companyName = targetCompany?.name || req?.companyName || 'Company';
+    toast.success(t(`Payment request for "${companyName}" rejected. They can resubmit after fixing the issue.`));
+    logAction('Subscription Rejected', `Payment request rejected for ${companyName}. Reason: ${note || 'Not specified'}.`);
   };
 
   // --- SUPER ADMIN: RENEW / EXTEND A COMPANY SUBSCRIPTION PERIOD ---
@@ -10811,7 +11168,63 @@ try {
           }
         : c
     );
-    saveAllData({ companies: updatedCompanies });
+    const meta = subscriptionMeta;
+    const renewReq: PaymentConfirmationRequest = {
+      id: 'REQ-RENEW-' + companyId + '-' + Date.now(),
+      companyId: company.id,
+      companyName: company.name,
+      userName: (company as any).ownerName || (company as any).email || 'Admin',
+      userEmail: (company as any).email || '',
+      userPhone: (company as any).phone || '',
+      planId: company.planId || 1,
+      planName: company.planName || 'Standard Plan',
+      amount: (company as any).amount || (company as any).totalSalesAmount || 0,
+      paymentMethod: company.paymentMethod || 'Manual Payment',
+      paymentReference: company.paymentReference || 'RENEW-' + company.id,
+      receiptImageUrl: company.receiptImageUrl,
+      status: 'Approved' as const,
+      requestedAt: nowIso,
+      decidedAt: nowIso,
+      decidedBy: currentUser?.username || 'Super Admin',
+      adminNote: note ? `Renewal (${safeMonths} mo): ${note}` : `Renewal for ${safeMonths} month(s)`
+    };
+    const updatedRequests = [renewReq, ...(meta.paymentRequests || [])];
+
+    const updatedUsers = users.map(u =>
+      sameId(u.companyId, companyId) && u.status !== 'Blocked' ? { ...u, status: 'Active' as const } : u
+    );
+    const baseSubs = (settings.companySubscriptions && settings.companySubscriptions.length > 0) ? settings.companySubscriptions : activeCompanySubscriptions;
+    const updatedSubs = baseSubs.some(s => s.companyId === companyId)
+      ? baseSubs.map(s => s.companyId === companyId ? { ...s, status: 'active' as const, endsAt: endStr } : s)
+      : [
+          ...baseSubs,
+          {
+            id: Math.max(0, ...baseSubs.map(s => s.id)) + 1,
+            companyId: company.id,
+            planId: company.planId || 1,
+            planName: company.planName || 'Standard Plan',
+            planType: (company as any).planType || 'direct',
+            commissionPercentSnapshot: (company as any).commissionPercent || 0,
+            amountPaid: (company as any).amount || (company as any).totalSalesAmount || 0,
+            amountTzs: (company as any).amount || (company as any).totalSalesAmount || 0,
+            currencyCode: 'TZS',
+            status: 'active' as const,
+            startsAt: company.subscriptionStart || nowIso,
+            endsAt: endStr,
+            createdAt: nowIso,
+            paymentReference: company.paymentReference || 'RENEW-' + company.id
+          }
+        ];
+
+    saveAllData({
+      companies: updatedCompanies,
+      users: updatedUsers,
+      settings: {
+        ...settings,
+        subscriptionMeta: { ...meta, paymentRequests: updatedRequests },
+        companySubscriptions: updatedSubs
+      }
+    });
     toast.success(t(`Subscription for ${company.name} renewed for ${safeMonths} month(s) until ${endStr}.`));
     logAction('Subscription Renewed', `Subscription period renewed for ${company.name} for ${safeMonths} month(s) until ${endStr}.${note ? ' Note: ' + note : ''}`);
   };
@@ -11274,31 +11687,55 @@ try {
 
     const checkForNewRegistrations = async () => {
       try {
-        // Lightweight timestamp probe first — the heavy full-state fetch only runs when
-        // something actually changed, so background polling never thrashes a shared host.
+        if (offlineRef.current) return;
+        // Lightweight timestamp & version probe first — the heavy full-state fetch only runs when
+        // something actually changed, keeping overhead minimal.
         const { apiUrl, apiKey } = getPhpConfig();
         if (!apiUrl) return;
         const headers: Record<string, string> = { 'Accept': 'application/json' };
         if (apiKey) headers['X-API-Key'] = apiKey;
         const pollAbort = new AbortController();
-        const pollTimeout = window.setTimeout(() => pollAbort.abort(), 8000);
+        const pollTimeout = window.setTimeout(() => pollAbort.abort(), 3000);
         const resp = await fetch(`${apiUrl}?action=check_timestamp`, { method: 'GET', headers, cache: 'no-store', signal: pollAbort.signal });
         window.clearTimeout(pollTimeout);
         if (!resp.ok) return;
         const probe = await resp.json();
-        if (!(probe && probe.success && probe.lastUpdated)) return;
-        const probeMs = (() => {
-          const t = new Date(String(probe.lastUpdated)).getTime();
-          return Number.isFinite(t) ? t : 0;
-        })();
-        const knownMs = (() => {
-          const t = new Date(String(lastServerTimestampRef.current)).getTime();
-          return Number.isFinite(t) ? t : 0;
-        })();
-        if (probeMs === knownMs) return;
-        const data = await fetchSystemDataFromPhp();
+        if (!(probe && probe.success)) return;
+        const probeVersion = Number(probe.version || 0);
+        const knownVersion = Number(lastServerVersionRef.current || 0);
+        const probeMs = probe.lastUpdated ? new Date(String(probe.lastUpdated)).getTime() : 0;
+        const knownMs = lastServerTimestampRef.current ? new Date(String(lastServerTimestampRef.current)).getTime() : 0;
+
+        // If no change occurred on server, exit immediately
+        if (probeVersion <= knownVersion && probeMs <= knownMs && knownVersion > 0) return;
+
+        const data = await fetchSystemDataFromPhp(3000);
         if (!data) return;
-        lastServerTimestampRef.current = probe.lastUpdated;
+        lastServerTimestampRef.current = probe.lastUpdated || new Date().toISOString();
+        if (probeVersion > 0) {
+          lastServerVersionRef.current = probeVersion;
+          setLastServerVersion(probeVersion);
+        }
+
+        // Apply updated data immediately so the UI auto-updates without manual refresh
+        applyData(data, true);
+        localStorage.setItem('tradecore_data', JSON.stringify(data));
+
+        if (Array.isArray(data.users)) {
+          try {
+            const curUserStr = localStorage.getItem('tradecore_user');
+            if (curUserStr) {
+              const curU = JSON.parse(curUserStr);
+              const freshU = data.users.find((u: any) => u.id === curU.id);
+              if (freshU) {
+                const mergedU = { ...curU, ...freshU };
+                localStorage.setItem('tradecore_user', JSON.stringify(mergedU));
+                setCurrentUser(mergedU);
+              }
+            }
+          } catch {}
+        }
+
         const reqs = data?.settings?.subscriptionMeta?.paymentRequests;
         if (!Array.isArray(reqs)) return;
         const pending = reqs.filter((r: any) => r && (r.status === 'Pending' || r.status === 'Resubmitted'));
@@ -11330,8 +11767,9 @@ try {
       }
     };
 
-    const interval = window.setInterval(checkForNewRegistrations, 30000);
-    const initial = window.setTimeout(checkForNewRegistrations, 5000);
+    // Auto-update every 2 seconds after new data is inserted or updated
+    const interval = window.setInterval(checkForNewRegistrations, 2000);
+    const initial = window.setTimeout(checkForNewRegistrations, 1000);
     return () => {
       window.clearInterval(interval);
       window.clearTimeout(initial);
@@ -14068,15 +14506,29 @@ try {
 
   // ===== PUBLIC MARKETPLACE (outside the internal system — no login for customers) =====
   if (isPublicMarketplacePath(mpPath)) {
+    const isPublicCo = (c: Company) => {
+      if (!c || c.isDeleted) return false;
+      const st = String(c.status || '').toLowerCase();
+      if (st === 'rejected' || st === 'pending' || st === 'pending payment') return false;
+      if (c.isMarketplaceActive === false) return false;
+      if (isCompanySubscriptionExpired(c)) return false;
+      return true;
+    };
+    const approvedCompanies = companies.filter(isPublicCo);
+    const approvedProducts = marketplaceProducts.filter(p => {
+      if (!p || p.isActive === false || p.isDeleted) return false;
+      if (p.status !== undefined && p.status !== 'approved') return false;
+      if (!isProductVisible(p)) return false;
+      const co = approvedCompanies.find(c => sameId(c.id, p.companyId));
+      return !!co;
+    });
+
     return (
       <div style={{ ...publicBrandStyle, ...goldenBrandStyle }}>
         <MarketplaceApp
           path={mpPath}
-          companies={companies.filter(c => c.subscriptionApproved !== false && c.status !== 'Pending Payment' && c.status !== 'Pending' && c.isMarketplaceActive !== false)}
-          products={marketplaceProducts.filter(p => {
-            const co = companies.find(c => sameId(c.id, p.companyId));
-            return !co || (co.subscriptionApproved !== false && co.status !== 'Pending Payment' && co.status !== 'Pending' && co.isMarketplaceActive !== false);
-          })}
+          companies={approvedCompanies}
+          products={approvedProducts}
           stores={stores}
           orders={marketplaceOrders}
           customers={marketplaceCustomers}
@@ -14228,10 +14680,25 @@ try {
             }}
             onStartDemo={() => setDemoSetupOpen(true)}
             onSubmitContact={handleSubmitContact}
-            marketplaceCompanies={companies.filter(c => c.subscriptionApproved !== false && c.status !== 'Pending Payment' && c.status !== 'Pending' && c.isMarketplaceActive !== false)}
+            marketplaceCompanies={companies.filter(c => {
+              if (!c || c.isDeleted) return false;
+              const st = String(c.status || '').toLowerCase();
+              if (st === 'rejected' || st === 'pending' || st === 'pending payment') return false;
+              if (c.isMarketplaceActive === false) return false;
+              if (isCompanySubscriptionExpired(c)) return false;
+              return true;
+            })}
             marketplaceProducts={marketplaceProducts.filter(p => {
+              if (!p || p.isActive === false || p.isDeleted) return false;
+              if (p.status !== undefined && p.status !== 'approved') return false;
+              if (!isProductVisible(p)) return false;
               const co = companies.find(c => sameId(c.id, p.companyId));
-              return !co || (co.subscriptionApproved !== false && co.status !== 'Pending Payment' && co.status !== 'Pending' && co.isMarketplaceActive !== false);
+              if (!co || co.isDeleted) return false;
+              const coSt = String(co.status || '').toLowerCase();
+              if (coSt === 'rejected' || coSt === 'pending' || coSt === 'pending payment') return false;
+              if (co.isMarketplaceActive === false) return false;
+              if (isCompanySubscriptionExpired(co)) return false;
+              return true;
             })}
             onGoMarketplace={goMarketplace}
             homepageContent={settings.homepageContent}
@@ -15340,7 +15807,7 @@ try {
               <span className="font-bold text-gray-900 text-sm">
                 {editingStockItem ? 'Edit Product Parameters' : 'Add New Product'}
               </span>
-              <button onClick={() => setShowStockModal(false)} className="p-1 hover:bg-gray-200 rounded">
+              <button onClick={() => { setShowStockModal(false); setProductImagePreview(''); setProductImageCompressionStats(null); }} className="p-1 hover:bg-gray-200 rounded">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -15358,7 +15825,7 @@ try {
                 const wPrice = parseFloat(fd.get('wholesalePrice') as string) || 0;
                 const partnerPrice = parseFloat(fd.get('partnerPrice') as string) || 0;
                 const lowLimit = parseInt(fd.get('lowStockQty') as string) || 5;
-                const imageUrl = (fd.get('imageUrl') as string) || '';
+                const imageUrl = ((fd.get('imageUrl') as string) || productImagePreview || '').trim();
 
                 const expiryDate = fd.get('expiryDate') as string || '';
 
@@ -15515,6 +15982,8 @@ try {
                   toast.success(t('New product registered successfully!'));
                 }
                 setShowStockModal(false);
+                setProductImagePreview('');
+                setProductImageCompressionStats(null);
               }}
               className="p-5 space-y-4 overflow-y-auto"
             >
@@ -15528,19 +15997,38 @@ try {
                   className="w-full px-3 py-2 border rounded-lg text-sm bg-gray-50 outline-none"
                 />
               </div>
-              <div className="space-y-1">
-                <label className="text-xs font-semibold text-gray-700">{t('Product Image (URL, Upload, or Camera)')}</label>
-                <div className="flex flex-wrap sm:flex-nowrap gap-2">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-gray-700">{t('Product Image (URL, Upload, or Camera)')}</label>
+                  {productImageCompressionStats && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                      <Sparkles className="w-3 h-3 text-emerald-500" />
+                      {t('Storage Saved')}: {productImageCompressionStats.original} → {productImageCompressionStats.compressed} (-{productImageCompressionStats.savings}%)
+                    </span>
+                  )}
+                  {productImageCompressing && (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200 animate-pulse">
+                      <Loader2 className="w-3 h-3 text-blue-500 animate-spin" />
+                      {t('Compressing image...')}
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap sm:flex-nowrap gap-2 items-center">
                   <input
                     type="text"
                     name="imageUrl"
                     id="modal-image-url-input"
                     placeholder="https://images.unsplash.com/... or snapshot"
-                    defaultValue={editingStockItem?.imageUrl || ''}
-                    className="flex-1 min-w-[160px] px-3 py-2 border rounded-lg text-sm bg-gray-50 outline-none"
+                    value={productImagePreview}
+                    onChange={(e) => {
+                      setProductImagePreview(e.target.value);
+                      setProductImageCompressionStats(null);
+                    }}
+                    className="flex-1 min-w-[160px] px-3 py-2 border rounded-lg text-sm bg-gray-50 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
                   />
                   <button
                     type="button"
+                    disabled={productImageCompressing}
                     onClick={async () => {
                       try {
                         setShowCameraCaptureModal(true);
@@ -15558,59 +16046,116 @@ try {
                         setShowCameraCaptureModal(false);
                       }
                     }}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shadow-xs"
+                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shadow-xs"
                   >
                     <Camera className="w-3.5 h-3.5 text-white" />
                     {t('Camera')}
                   </button>
-                  <label className="bg-gray-100 hover:bg-gray-200 border cursor-pointer text-gray-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition whitespace-nowrap">
+                  <label className={`bg-gray-100 hover:bg-gray-200 border cursor-pointer text-gray-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition whitespace-nowrap ${productImageCompressing ? 'opacity-50 pointer-events-none' : ''}`}>
+                    {productImageCompressing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
                     {t('Upload')}
                     <input
                       type="file"
                       accept="image/*"
                       className="hidden"
-                      onChange={(e) => {
+                      disabled={productImageCompressing}
+                      onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          const reader = new FileReader();
-                          reader.onload = (event) => {
-                            if (event.target?.result) {
-                              const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
-                              if (input) {
-                                input.value = event.target.result as string;
-                              }
+                          setProductImageCompressing(true);
+                          try {
+                            const res = await compressImageFile(file, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 });
+                            setProductImagePreview(res.dataUrl);
+                            const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
+                            if (input) {
+                              input.value = res.dataUrl;
                             }
-                          };
-                          reader.readAsDataURL(file);
+                            setProductImageCompressionStats({
+                              original: formatByteSize(res.originalBytes),
+                              compressed: formatByteSize(res.compressedBytes),
+                              savings: res.savingsPercent,
+                            });
+                            toast.success(`${t('Photo compressed')} (${formatByteSize(res.originalBytes)} → ${formatByteSize(res.compressedBytes)}, -${res.savingsPercent}%)`);
+                          } catch (err) {
+                            toast.error(t('Failed to compress image file'));
+                          } finally {
+                            setProductImageCompressing(false);
+                            e.target.value = '';
+                          }
                         }
                       }}
                     />
                   </label>
-                  <label className="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 cursor-pointer px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition whitespace-nowrap sm:hidden">
+                  <label className={`bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 cursor-pointer px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition whitespace-nowrap sm:hidden ${productImageCompressing ? 'opacity-50 pointer-events-none' : ''}`}>
                     📸 {t('Snap')}
                     <input
                       type="file"
                       accept="image/*"
                       capture="environment"
                       className="hidden"
-                      onChange={(e) => {
+                      disabled={productImageCompressing}
+                      onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          const reader = new FileReader();
-                          reader.onload = (event) => {
-                            if (event.target?.result) {
-                              const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
-                              if (input) {
-                                input.value = event.target.result as string;
-                              }
+                          setProductImageCompressing(true);
+                          try {
+                            const res = await compressImageFile(file, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 });
+                            setProductImagePreview(res.dataUrl);
+                            const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
+                            if (input) {
+                              input.value = res.dataUrl;
                             }
-                          };
-                          reader.readAsDataURL(file);
+                            setProductImageCompressionStats({
+                              original: formatByteSize(res.originalBytes),
+                              compressed: formatByteSize(res.compressedBytes),
+                              savings: res.savingsPercent,
+                            });
+                            toast.success(`${t('Photo compressed')} (${formatByteSize(res.originalBytes)} → ${formatByteSize(res.compressedBytes)}, -${res.savingsPercent}%)`);
+                          } catch (err) {
+                            toast.error(t('Failed to compress image file'));
+                          } finally {
+                            setProductImageCompressing(false);
+                            e.target.value = '';
+                          }
                         }
                       }}
                     />
                   </label>
                 </div>
+
+                {productImagePreview && (
+                  <div className="flex items-center gap-3 p-2 bg-gray-50 border rounded-lg">
+                    <img
+                      src={productImagePreview}
+                      alt="Product preview"
+                      className="w-12 h-12 rounded object-cover border bg-white shrink-0"
+                      onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-gray-800 truncate">
+                        {productImagePreview.startsWith('data:') ? t('Attached Image (Compressed)') : t('Image URL Linked')}
+                      </p>
+                      <p className="text-[10px] text-gray-500 truncate">
+                        {productImagePreview.startsWith('data:') 
+                          ? `${formatByteSize(Math.round(productImagePreview.length * 0.75))} base64 payload`
+                          : productImagePreview}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProductImagePreview('');
+                        setProductImageCompressionStats(null);
+                        const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
+                        if (input) input.value = '';
+                      }}
+                      className="text-xs text-red-600 hover:text-red-700 hover:bg-red-50 p-1.5 rounded transition"
+                      title={t('Remove Image')}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-gray-700">SKU / Barcode</label>
@@ -16232,7 +16777,7 @@ try {
               <div className="flex justify-end gap-2 pt-4 border-t">
                 <button
                   type="button"
-                  onClick={() => setShowStockModal(false)}
+                  onClick={() => { setShowStockModal(false); setProductImagePreview(''); setProductImageCompressionStats(null); }}
                   className="px-4 py-2 border rounded-lg text-sm text-gray-700"
                 >
                   Cancel
@@ -16433,26 +16978,32 @@ try {
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     if (cameraVideoRef.current) {
                       const video = cameraVideoRef.current;
-                      const canvas = document.createElement('canvas');
-                      canvas.width = video.videoWidth || 1280;
-                      canvas.height = video.videoHeight || 720;
-                      const ctx = canvas.getContext('2d');
-                      if (ctx) {
-                        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                      try {
+                        setProductImageCompressing(true);
+                        const res = await compressVideoFrame(video, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 });
                         const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
                         if (input) {
-                          input.value = dataUrl;
+                          input.value = res.dataUrl;
                         }
-                        toast.success(t('Product photo captured!'));
+                        setProductImagePreview(res.dataUrl);
+                        setProductImageCompressionStats({
+                          original: formatByteSize(res.originalBytes),
+                          compressed: formatByteSize(res.compressedBytes),
+                          savings: res.savingsPercent,
+                        });
+                        toast.success(`${t('Product photo captured & compressed!')} (${formatByteSize(res.compressedBytes)}, -${res.savingsPercent}%)`);
                         if (cameraStream) {
                           cameraStream.getTracks().forEach(track => track.stop());
                           setCameraStream(null);
                         }
                         setShowCameraCaptureModal(false);
+                      } catch (err: any) {
+                        toast.error(t('Failed to capture and compress photo'));
+                      } finally {
+                        setProductImageCompressing(false);
                       }
                     }
                   }}
