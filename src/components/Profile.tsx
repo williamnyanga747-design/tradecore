@@ -380,7 +380,11 @@ export default function Profile({
 
       {/* Air Hockey Pro Standalone Game Modal */}
       {showHockey && (
-        <AirHockeyPro onClose={() => setShowHockey(false)} />
+        <AirHockeyPro
+          onClose={() => setShowHockey(false)}
+          users={users}
+          currentUser={currentUser}
+        />
       )}
     </div>
   );

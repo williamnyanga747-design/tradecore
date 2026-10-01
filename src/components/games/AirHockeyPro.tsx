@@ -1,4 +1,13 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
+import {
+  sendGameInvite,
+  fetchGameInvites,
+  respondGameInvite,
+  cancelGameInvite,
+  subscribeToSentInvite,
+  subscribeToIncomingInvites
+} from '../../utils/gameInvitationEngine';
+import { GameInvitation } from '../../types';
 
 type GameMode = 'menu' | 'timer' | 'invite' | 'vs' | 'playing' | 'winner';
 type PlayMode = 'ai' | 'local' | 'remote';
@@ -12,19 +21,19 @@ interface User {
   online: boolean;
 }
 
-const MOCK_USERS: User[] = [
-  { id: 'root', name: 'Root Mandate', role: 'Super Admin', avatar: 'R', online: true },
-  { id: 'dsm_hq', name: 'DSM HQ Staff', role: 'Manager', avatar: 'D', online: true },
-  { id: 'dsm_alpha', name: 'DSM Store Alpha', role: 'Cashier', avatar: 'A', online: true },
-  { id: 'alpha_mgr', name: 'Alpha Global Mgr', role: 'Manager', avatar: 'M', online: false },
-];
+interface AirHockeyProProps {
+  onClose?: () => void;
+  users?: any[];
+  currentUser?: any | null;
+}
 
-export default function AirHockeyPro({ onClose }: { onClose?: () => void }) {
+export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyProProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const animationRef = useRef<number>(0);
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const sentInviteUnsubRef = useRef<(() => void) | null>(null);
   
   // Game State
   const [gameMode, setGameMode] = useState<GameMode>('menu');
@@ -42,6 +51,57 @@ export default function AirHockeyPro({ onClose }: { onClose?: () => void }) {
   const [showSpeedUp, setShowSpeedUp] = useState(false);
   const [networkPing, setNetworkPing] = useState<number>(18);
   const [isHost, setIsHost] = useState(true);
+
+  // Real-time Game Invitation States
+  const [incomingInvites, setIncomingInvites] = useState<GameInvitation[]>([]);
+  const [activeInvite, setActiveInvite] = useState<GameInvitation | null>(null);
+  const [inviteStatus, setInviteStatus] = useState<'idle' | 'sending' | 'pending' | 'accepted' | 'declined' | 'cancelled' | 'error'>('idle');
+  const [statusMessage, setStatusMessage] = useState<string>('');
+
+  // Available opponents: strictly real active users, excluding demo users and the current player
+  const availableOpponents: User[] = React.useMemo(() => {
+    if (!users || !Array.isArray(users) || users.length === 0) {
+      return [];
+    }
+
+    const currentId = currentUser?.id != null ? String(currentUser.id) : '';
+    const currentUsername = String(currentUser?.username || '').trim().toLowerCase();
+
+    return users
+      .filter((u: any) => {
+        if (!u) return false;
+        const uid = String(u.id ?? '');
+        const uname = String(u.username || '').trim().toLowerCase();
+        const displayName = String(u.name || u.username || '').trim();
+
+        // Exclude current user (cannot invite oneself)
+        if (uid && currentId && uid === currentId) return false;
+        if (uname && currentUsername && uname === currentUsername) return false;
+
+        // Exclude demo users / demo accounts
+        if (u.isDemo === true || (u as any).demo === true) return false;
+        if (uname.includes('demo') || displayName.toLowerCase().includes('demo')) return false;
+        if (uid.toLowerCase().includes('demo')) return false;
+
+        // Must be active and not blocked, deleted or pending
+        const st = String(u.status || '').trim().toLowerCase();
+        if (st !== 'active') return false;
+        if (u.isDeleted || u.remoteTerminated) return false;
+
+        return true;
+      })
+      .map((u: any) => {
+        const displayName = u.name || u.username || 'Operator';
+        const initial = displayName.charAt(0).toUpperCase() || 'U';
+        return {
+          id: String(u.id),
+          name: displayName,
+          role: u.role || 'Operator',
+          avatar: initial,
+          online: true
+        };
+      });
+  }, [users, currentUser]);
 
   // Refs for physics & smooth input (avoids unnecessary re-renders)
   const gameStateRef = useRef({
@@ -187,6 +247,25 @@ export default function AirHockeyPro({ onClose }: { onClose?: () => void }) {
       // BroadcastChannel unavailable
     }
   }, [roomId, isHost, sounds]);
+
+  // Subscribe to incoming match invitations for this user (Cross-device / cross-tab real-time)
+  useEffect(() => {
+    const unsub = subscribeToIncomingInvites(
+      currentUser?.id,
+      currentUser?.username,
+      (pending) => {
+        const hockeyInvites = pending.filter(i => (i.gameType === 'air_hockey' || !i.gameType) && i.status === 'pending');
+        setIncomingInvites(hockeyInvites);
+      }
+    );
+    return () => {
+      unsub();
+      if (sentInviteUnsubRef.current) {
+        sentInviteUnsubRef.current();
+        sentInviteUnsubRef.current = null;
+      }
+    };
+  }, [currentUser]);
 
   // Ping jitter simulation
   useEffect(() => {
@@ -700,18 +779,117 @@ export default function AirHockeyPro({ onClose }: { onClose?: () => void }) {
     }
   };
 
-  const inviteUser = (user: User) => {
+  const inviteUser = async (user: User) => {
     initAudio();
+    sounds.hit();
     setInvitedUser(user);
     const room = `ROOM-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
     setRoomId(room);
     setIsHost(true);
-    
-    // Simulate opponent accepting after 1.5s
-    setTimeout(() => {
-      setVsCountdown(3);
-      setGameMode('vs');
-    }, 1500);
+    setPlayMode('remote');
+    setInviteStatus('sending');
+    setStatusMessage(`Sending live invitation to ${user.name}...`);
+
+    try {
+      const res = await sendGameInvite({
+        senderId: currentUser?.id != null ? currentUser.id : 'operator',
+        senderName: currentUser?.name || currentUser?.username || 'Challenger',
+        senderUsername: currentUser?.username,
+        recipientId: user.id,
+        recipientName: user.name,
+        recipientUsername: (user as any).username,
+        gameType: 'air_hockey',
+        gameTitle: 'Air Hockey Pro',
+        roomId: room,
+        timerMinutes: timerOption
+      });
+
+      if (res.success && res.invitation) {
+        setActiveInvite(res.invitation);
+        setInviteStatus('pending');
+        setStatusMessage(`Waiting for ${user.name} to accept...`);
+
+        if (sentInviteUnsubRef.current) {
+          sentInviteUnsubRef.current();
+        }
+
+        // Live subscription: inviter UI updates INSTANTLY when competitor triggers 'accept'
+        sentInviteUnsubRef.current = subscribeToSentInvite(res.invitation.id, (updatedInvite) => {
+          if (updatedInvite.status === 'accepted') {
+            setInviteStatus('accepted');
+            setStatusMessage(`${user.name} accepted! Match starting...`);
+            sounds.goal();
+            setTimeout(() => {
+              setVsCountdown(3);
+              setGameMode('vs');
+            }, 800);
+          } else if (updatedInvite.status === 'declined') {
+            setInviteStatus('declined');
+            setStatusMessage(`${user.name} declined the match.`);
+          } else if (updatedInvite.status === 'cancelled') {
+            setInviteStatus('cancelled');
+            setStatusMessage('Invitation was cancelled.');
+          }
+        });
+      } else {
+        setInviteStatus('error');
+        setStatusMessage(res.error || 'Failed to send game challenge.');
+      }
+    } catch (err: any) {
+      setInviteStatus('error');
+      setStatusMessage(err?.message || 'Network error sending invitation.');
+    }
+  };
+
+  const handleAcceptIncomingInvite = async (invite: GameInvitation) => {
+    try {
+      initAudio();
+      sounds.hit();
+      const res = await respondGameInvite(invite.id, 'accept');
+      if (res.success) {
+        setPlayMode('remote');
+        setIsHost(false);
+        setRoomId(invite.roomId);
+        const mins = (invite.timerMinutes as TimerOption) || 3;
+        setTimerOption(mins);
+        setTimeLeft(mins * 60);
+        setInvitedUser({
+          id: String(invite.senderId),
+          name: invite.senderName,
+          role: 'Competitor',
+          avatar: (invite.senderName || 'C').charAt(0).toUpperCase(),
+          online: true
+        });
+        setIncomingInvites(prev => prev.filter(i => i.id !== invite.id));
+        setVsCountdown(3);
+        setGameMode('vs');
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeclineIncomingInvite = async (inviteId: string) => {
+    try {
+      await respondGameInvite(inviteId, 'decline');
+      setIncomingInvites(prev => prev.filter(i => i.id !== inviteId));
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleCancelOutgoingInvite = async () => {
+    if (activeInvite) {
+      await cancelGameInvite(activeInvite.id);
+    }
+    if (sentInviteUnsubRef.current) {
+      sentInviteUnsubRef.current();
+      sentInviteUnsubRef.current = null;
+    }
+    setInvitedUser(null);
+    setActiveInvite(null);
+    setInviteStatus('idle');
+    setStatusMessage('');
   };
 
   const formatTime = (seconds: number) => {
@@ -777,7 +955,43 @@ export default function AirHockeyPro({ onClose }: { onClose?: () => void }) {
           </div>
         </div>
 
-        {/* SCREEN 1: Game Mode Select */}
+        {/* Real-time Incoming Match Invitations Banner */}
+        {incomingInvites.length > 0 && gameMode !== 'playing' && gameMode !== 'vs' && (
+          <div className="mx-4 mt-3 mb-1 p-3.5 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 border-2 border-cyan-400 rounded-xl shadow-[0_0_25px_rgba(6,182,212,0.35)] animate-pulse">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-cyan-400 text-slate-950 font-black flex items-center justify-center text-lg shadow">
+                  🏒
+                </div>
+                <div>
+                  <div className="text-white font-extrabold text-sm flex items-center gap-2">
+                    <span>{incomingInvites[0].senderName}</span>
+                    <span className="text-[10px] bg-cyan-400/20 text-cyan-300 border border-cyan-400/50 px-2 py-0.5 rounded-full uppercase font-mono font-bold tracking-wider">
+                      Live Challenge
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-300 mt-0.5">
+                    Has invited you to a live match of Air Hockey Pro ({incomingInvites[0].timerMinutes || 3} min)!
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                <button
+                  onClick={() => handleAcceptIncomingInvite(incomingInvites[0])}
+                  className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-cyan-400 hover:brightness-110 text-slate-950 font-black text-xs rounded-xl shadow-lg transition active:scale-95 cursor-pointer flex items-center gap-1.5"
+                >
+                  <span>🚀</span> ACCEPT CHALLENGE
+                </button>
+                <button
+                  onClick={() => handleDeclineIncomingInvite(incomingInvites[0].id)}
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-gray-300 hover:text-white font-bold text-xs rounded-xl border border-slate-700 transition cursor-pointer"
+                >
+                  ✕ Decline
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {gameMode === 'menu' && (
           <div className="p-6 md:p-10 text-center">
             <h3 className="text-white text-2xl font-black mb-2">Chagua Game Mode</h3>
@@ -890,55 +1104,130 @@ export default function AirHockeyPro({ onClose }: { onClose?: () => void }) {
             </div>
 
             {!invitedUser ? (
-              <div className="space-y-3">
-                {MOCK_USERS.map(user => (
-                  <div 
-                    key={user.id} 
-                    className="flex items-center justify-between bg-slate-900/80 border border-slate-800 hover:border-slate-700 p-3.5 rounded-xl transition"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-slate-700 to-slate-600 flex items-center justify-center text-white font-black text-base shadow">
-                          {user.avatar}
-                        </div>
-                        <span 
-                          className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-[#0a0a12] ${
-                            user.online ? 'bg-emerald-500 animate-pulse' : 'bg-gray-500'
-                          }`}
-                        />
-                      </div>
-                      <div>
-                        <div className="text-white font-bold text-sm leading-tight">{user.name}</div>
-                        <div className="text-[11px] text-gray-400 font-mono">
-                          {user.role} {user.online ? '• Online' : '• Offline'}
-                        </div>
-                      </div>
-                    </div>
-
+              availableOpponents.length === 0 ? (
+                <div className="text-center py-8 px-4 bg-slate-900/60 rounded-xl border border-slate-800">
+                  <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-gray-400 mx-auto mb-2 text-lg">
+                    👥
+                  </div>
+                  <h4 className="text-white text-sm font-bold mb-1">Hakuna Wachezaji Wengine Halisi Waliopo Sasa</h4>
+                  <p className="text-gray-400 text-xs max-w-sm mx-auto mb-4">
+                    Watumiaji halisi wanaofanya kazi (Active Accounts) pekee ndio wanaoweza kualikwa. Hakuna akaunti za majaribio au roboti zinazoruhusiwa.
+                  </p>
+                  <div className="flex flex-wrap justify-center gap-2">
                     <button
-                      disabled={!user.online}
-                      onClick={() => inviteUser(user)}
-                      className={`px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer shadow ${
-                        user.online
-                          ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 active:scale-95'
-                          : 'bg-slate-800 text-gray-500 cursor-not-allowed'
-                      }`}
+                      onClick={() => { setPlayMode('ai'); setGameMode('vs'); }}
+                      className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs rounded-lg transition"
                     >
-                      {user.online ? 'INVITE' : 'Offline'}
+                      Cheza Dhidi ya AI
+                    </button>
+                    <button
+                      onClick={() => { setPlayMode('local'); setGameMode('vs'); }}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-lg transition border border-slate-700"
+                    >
+                      Wachezaji 2 (Kifaa Kimoja)
                     </button>
                   </div>
-                ))}
-              </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {availableOpponents.map(user => (
+                    <div 
+                      key={user.id} 
+                      className="flex items-center justify-between bg-slate-900/80 border border-slate-800 hover:border-slate-700 p-3.5 rounded-xl transition"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <div className="w-11 h-11 rounded-full bg-gradient-to-tr from-slate-700 to-slate-600 flex items-center justify-center text-white font-black text-base shadow">
+                            {user.avatar}
+                          </div>
+                          <span 
+                            className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-[#0a0a12] ${
+                              user.online ? 'bg-emerald-500 animate-pulse' : 'bg-gray-500'
+                            }`}
+                          />
+                        </div>
+                        <div>
+                          <div className="text-white font-bold text-sm leading-tight">{user.name}</div>
+                          <div className="text-[11px] text-gray-400 font-mono">
+                            {user.role} {user.online ? '• Online' : '• Offline'}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        disabled={!user.online}
+                        onClick={() => inviteUser(user)}
+                        className={`px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer shadow ${
+                          user.online
+                            ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 active:scale-95'
+                            : 'bg-slate-800 text-gray-500 cursor-not-allowed'
+                        }`}
+                      >
+                        {user.online ? 'INVITE' : 'Offline'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )
             ) : (
-              <div className="text-center py-10 bg-slate-900/60 rounded-2xl border border-slate-800">
-                <div className="text-4xl mb-3 animate-bounce">📨</div>
-                <div className="text-white font-bold text-lg mb-1">
-                  Invitation sent to {invitedUser.name}
+              <div className="text-center py-8 px-6 bg-slate-900/80 rounded-2xl border border-slate-800 shadow-xl">
+                <div className="text-4xl mb-3">
+                  {inviteStatus === 'accepted' ? '🎉' : inviteStatus === 'declined' ? '❌' : inviteStatus === 'error' ? '⚠️' : '📨'}
                 </div>
-                <div className="text-emerald-400 text-xs font-mono mb-4">
-                  Waiting for response... Room ID: <span className="font-bold text-white">{roomId}</span>
+                <div className="text-white font-extrabold text-lg mb-1">
+                  {inviteStatus === 'accepted'
+                    ? `${invitedUser.name} Accepted the Challenge!`
+                    : inviteStatus === 'declined'
+                    ? `${invitedUser.name} Declined the Challenge`
+                    : inviteStatus === 'error'
+                    ? 'Failed to Send Challenge'
+                    : `Invitation sent to ${invitedUser.name}`}
                 </div>
-                <div className="w-8 h-8 border-3 border-emerald-400 border-t-transparent rounded-full animate-spin mx-auto"></div>
+
+                <div className="text-cyan-400 text-xs font-mono mb-4">
+                  {inviteStatus === 'sending' && (
+                    <span className="text-amber-300">Transmitting challenge to competitor...</span>
+                  )}
+                  {inviteStatus === 'pending' && (
+                    <>
+                      Waiting for competitor to accept in real-time... Room ID: <span className="font-bold text-white tracking-wider">{roomId}</span>
+                    </>
+                  )}
+                  {inviteStatus === 'accepted' && (
+                    <span className="text-emerald-400 font-bold">Both players connected! Launching match arena...</span>
+                  )}
+                  {inviteStatus === 'declined' && (
+                    <span className="text-red-400">The competitor is unavailable or declined the match.</span>
+                  )}
+                  {inviteStatus === 'error' && (
+                    <span className="text-rose-400">{statusMessage || 'Unable to deliver invitation.'}</span>
+                  )}
+                </div>
+
+                {inviteStatus === 'pending' && (
+                  <div className="space-y-4">
+                    <div className="w-9 h-9 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                    <div>
+                      <button
+                        onClick={handleCancelOutgoingInvite}
+                        className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 rounded-xl text-xs font-bold transition cursor-pointer"
+                      >
+                        Cancel Invitation
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {(inviteStatus === 'declined' || inviteStatus === 'error' || inviteStatus === 'cancelled') && (
+                  <div className="pt-2">
+                    <button
+                      onClick={handleCancelOutgoingInvite}
+                      className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl border border-slate-700 transition cursor-pointer"
+                    >
+                      ← Choose Another Competitor
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

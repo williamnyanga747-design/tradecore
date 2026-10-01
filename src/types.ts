@@ -343,9 +343,15 @@ export interface User {
   role: 'Super Admin' | 'Admin' | 'Branch Administrator' | 'Store Admin' | 'Retailer' | 'Wholesaler';
   name: string;
   email: string;
+  phone?: string;
   companyId: number | null;
   branchId: number | null;
   storeId: number | null;
+  assignedBranchIds?: number[];
+  branchIds?: number[];
+  assignedStoreIds?: number[];
+  storeIds?: number[];
+  mustChangePassword?: boolean;
   firstLogin: boolean;
   status: 'Active' | 'Blocked' | 'Pending Verification' | 'Pending Approval' | 'Pending';
   allowedPages?: string[];
@@ -353,6 +359,7 @@ export interface User {
   remoteTerminatedAt?: string;
   locale?: string; // en | sw | fr | es (default 'en')
   isRoot?: boolean; // ROOT_MANDATE God Mode — full platform control
+  isDemo?: boolean;
 }
 
 export interface InventoryBatch {
@@ -1025,6 +1032,29 @@ export interface GroupDealParticipant {
   orderId?: number | null;
   joinedAt: string;
   paidAt?: string;
+}
+
+// --- GAME INVITATIONS & REALTIME MULTIPLAYER SYNC ---
+export type GameInvitationStatus = 'pending' | 'accepted' | 'declined' | 'cancelled' | 'expired';
+
+export interface GameInvitation {
+  id: string;
+  gameType: 'air_hockey' | 'arcade' | 'diy_pocket';
+  gameTitle: string;
+  senderId: string | number;
+  senderName: string;
+  senderUsername: string;
+  recipientId: string | number;
+  recipientName: string;
+  recipientUsername: string;
+  roomId: string;
+  timerMinutes: number;
+  status: GameInvitationStatus;
+  createdAt: number;
+  updatedAt: number;
+  acceptedAt?: number;
+  declinedAt?: number;
+  cancelledAt?: number;
 }
 
 // --- 3. WHATSAPP AI BOT ---

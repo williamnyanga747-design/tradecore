@@ -84,6 +84,8 @@ import AuthPasswordReset from './components/AuthPasswordReset';
 import POSModal from './components/POSModal';
 import PurchaseOrderModal from './components/PurchaseOrderModal';
 import ArcadeGameModal from './components/ArcadeGameModal';
+import AirHockeyPro from './components/games/AirHockeyPro';
+import { subscribeToIncomingInvites, respondGameInvite } from './utils/gameInvitationEngine';
 import { ConfirmActionModal } from './components/ConfirmActionModal';
 import MarketplaceApp from './components/marketplace/MarketplaceApp';
 import MarketplaceOrdersPanel from './components/MarketplaceOrdersPanel';
@@ -1088,10 +1090,26 @@ export default function App() {
   }, [activeData.stockItems, currentCompanyId, currentUser, branches, stores, currentStoreId]);
   const activeCompanyScopeId = currentCompanyId || currentUser?.companyId;
 
+  const userAssignedBranchIds = React.useMemo(() => {
+    const raw = [
+      ...((currentUser as any)?.assignedBranchIds || []),
+      ...((currentUser as any)?.branchIds || []),
+      ...(currentUser?.branchId != null ? [currentUser.branchId] : [])
+    ];
+    return raw.map(id => sv(id)).filter((id, idx, arr) => id !== '' && arr.indexOf(id) === idx);
+  }, [currentUser]);
+
   const activeBranchIdsScope = React.useMemo(() => {
-    if (!activeCompanyScopeId) return branches.map(b => b.id);
-    return branches.filter(b => sameId(b.companyId, activeCompanyScopeId) && !b.isDeleted).map(b => b.id);
-  }, [branches, activeCompanyScopeId]);
+    let pool = branches.filter(b => !b.isDeleted);
+    if (activeCompanyScopeId) {
+      pool = pool.filter(b => sameId(b.companyId, activeCompanyScopeId));
+    }
+    const isSuper = !!currentUser && isSuperScopeUser(currentUser);
+    if (!isSuper && userAssignedBranchIds.length > 0) {
+      pool = pool.filter(b => userAssignedBranchIds.some(bid => sameId(bid, b.id)));
+    }
+    return pool.map(b => b.id);
+  }, [branches, activeCompanyScopeId, currentUser, userAssignedBranchIds]);
 
   const activeStoreIdsScope = React.useMemo(() => {
     if (!activeCompanyScopeId) return stores.map(s => s.id);
@@ -1871,6 +1889,22 @@ export default function App() {
 
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showGameModal, setShowGameModal] = useState(false);
+  const [showHockeyModal, setShowHockeyModal] = useState(false);
+  const [pendingGameInvite, setPendingGameInvite] = useState<any | null>(null);
+
+  // Global listener for incoming game invitations across the ERP
+  useEffect(() => {
+    if (!currentUser) return;
+    const unsub = subscribeToIncomingInvites(
+      currentUser.id,
+      currentUser.username,
+      (pending) => {
+        const activePending = pending.filter(i => i.status === 'pending');
+        setPendingGameInvite(activePending.length > 0 ? activePending[0] : null);
+      }
+    );
+    return () => unsub();
+  }, [currentUser]);
   
   // Modals for Stock
   const [showStockModal, setShowStockModal] = useState(false);
@@ -6433,8 +6467,25 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
       const roleLower = String(currentUser.role || '').toLowerCase();
       const isTopAdmin = ['admin', 'administrator', 'company administrator'].includes(roleLower);
       const isBranchScoped = ['branch administrator', 'branch manager', 'branch admin', 'store administrator', 'store admin', 'store manager'].includes(roleLower);
-      if (currentUser.storeId) {
+
+      const userAssignedBranchIds = [
+        ...((currentUser as any)?.assignedBranchIds || []),
+        ...((currentUser as any)?.branchIds || []),
+        ...(currentUser?.branchId != null ? [currentUser.branchId] : [])
+      ].map(id => sv(id)).filter((id, idx, arr) => id !== '' && arr.indexOf(id) === idx);
+
+      const userAssignedStoreIds = [
+        ...((currentUser as any)?.assignedStoreIds || []),
+        ...((currentUser as any)?.storeIds || []),
+        ...(currentUser?.storeId != null ? [currentUser.storeId] : [])
+      ].map(id => sv(id)).filter((id, idx, arr) => id !== '' && arr.indexOf(id) === idx);
+
+      if (userAssignedStoreIds.length > 0) {
+        if (!isTopAdmin) result = result.filter(s => userAssignedStoreIds.some(sid => sameId(sid, s.id)));
+      } else if (currentUser.storeId) {
         if (!isTopAdmin) result = result.filter(s => sameId(s.id, currentUser.storeId));
+      } else if (userAssignedBranchIds.length > 0 && !isTopAdmin) {
+        result = result.filter(s => userAssignedBranchIds.some(bid => sameId(bid, s.branchId)));
       } else if (isBranchScoped && currentUser.branchId) {
         result = result.filter(s => sameId(s.branchId, currentUser.branchId));
       }
@@ -7131,6 +7182,34 @@ try {
                 toast.error(t('Your access credentials have been blocked or remotely revoked.'));
                 setLoginError(t('Your access credentials have been blocked or remotely revoked. Please contact the Super Admin for assistance.'));
                 return;
+              }
+
+              if (!isRetryCoreSuperAdmin) {
+                const retryUStatus = String(retryTarget.status || '').trim().toLowerCase();
+                const freshCompanies = Array.isArray(freshData?.companies) ? freshData.companies : companies;
+                const retryUserCo = freshCompanies.find((c: any) => sameId(c.id, retryTarget.companyId));
+                const retryIsCompanyRejected = retryUserCo?.status === 'Rejected' || retryUStatus === 'rejected';
+
+                if (retryIsCompanyRejected) {
+                  const reasonNote = retryUserCo?.adminNote ? ` (${t('Sababu') || 'Reason'}: ${retryUserCo.adminNote})` : '';
+                  const rejectMsg = (t('Usajili wa kampuni yako umekataliwa na Super Admin. Tafadhali wasiliana na utawala kwa maelezo zaidi.') || 'Your company registration has been rejected by Super Admin. Please contact administration for assistance.') + reasonNote;
+                  toast.error(rejectMsg);
+                  setLoginError(rejectMsg);
+                  return;
+                }
+
+                const retryIsCoActive = retryUserCo && (String(retryUserCo.status || '').toLowerCase() === 'active' || retryUserCo.subscriptionApproved === true);
+                const retryIsCompanyPending = !retryIsCoActive && ((retryUserCo && (retryUserCo.subscriptionApproved === false || retryUserCo.status === 'Pending Payment' || retryUserCo.status === 'Pending')) ||
+                  retryUStatus === 'pending' || retryUStatus === 'pending verification' || retryUStatus === 'pending approval');
+
+                if (retryIsCompanyPending) {
+                  const pendingMsg = retryUserCo
+                    ? (t('Usajili wa kampuni yako bado haujathibitishwa na Msimamizi Mkuu (Super Admin). Tafadhali subiri uthibitisho wa usajili na malipo kabla ya kuingia.') || 'Your company registration is awaiting Super Admin verification and payment approval. You will be able to log in once approved.')
+                    : (t('Akaunti yako bado haijathibitishwa na Msimamizi Mkuu (Super Admin). Tafadhali subiri idhini kabla ya kuingia.') || 'Your account is awaiting Super Admin verification and approval. You will be able to log in once approved.');
+                  toast.error(pendingMsg);
+                  setLoginError(pendingMsg);
+                  return;
+                }
               }
               const retryIsMasterKeyMatch = (retryTarget.username === 'root_mandate' || cleanUsername === 'root_mandate' || cleanUsername === 'globaltradecore@gmail.com') &&
                 (loginPassword === 'absolute_security_core_2026' || loginPassword === 'root_mandate');
@@ -11891,12 +11970,48 @@ try {
 
     const userCompany = companies.find(c => c.id === currentUser?.companyId);
 
+    // Compute user's operated branch(es) and managed store(s)
+    const userBranchIds = [
+      ...((currentUser as any)?.assignedBranchIds || []),
+      ...((currentUser as any)?.branchIds || []),
+      ...(currentUser?.branchId != null ? [currentUser.branchId] : [])
+    ].map(id => sv(id)).filter((id, idx, arr) => id !== '' && arr.indexOf(id) === idx);
+
+    const userStoreIds = [
+      ...((currentUser as any)?.assignedStoreIds || []),
+      ...((currentUser as any)?.storeIds || []),
+      ...(currentUser?.storeId != null ? [currentUser.storeId] : [])
+    ].map(id => sv(id)).filter((id, idx, arr) => id !== '' && arr.indexOf(id) === idx);
+
+    const operatedBranchObjects = branches.filter(b => !b.isDeleted && (
+      userBranchIds.length > 0
+        ? userBranchIds.some(bid => sameId(bid, b.id))
+        : (currentUser?.companyId ? sameId(b.companyId, currentUser.companyId) : false)
+    ));
+
+    const managedStoreObjects = stores.filter(s => !s.isDeleted && (
+      userStoreIds.length > 0
+        ? userStoreIds.some(sid => sameId(sid, s.id))
+        : (operatedBranchObjects.length > 0
+            ? operatedBranchObjects.some(b => sameId(b.id, s.branchId))
+            : (currentUser?.companyId ? sameId((s as any).companyId, currentUser.companyId) : false))
+    ));
+
+    const isGlobalSuper = !!currentUser && isSuperScopeUser(currentUser);
+    const companyDisplayName = userCompany?.name || (isGlobalSuper ? t('Global Super Admin (All Companies)') : t('Enterprise Workspace'));
+    const branchesDisplayText = operatedBranchObjects.length > 0
+      ? operatedBranchObjects.map(b => b.name).join(', ')
+      : (isGlobalSuper ? t('All Platform Branches') : t('All Company Branches'));
+    const storesDisplayText = managedStoreObjects.length > 0
+      ? managedStoreObjects.map(s => s.name).join(', ')
+      : (isGlobalSuper ? t('All Platform Stores') : t('All Company Stores'));
+
     return (
       <div className="space-y-6">
-        {/* Company Logo and Title Banner (Centered) */}
-        {userCompany && (
-          <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-sm flex flex-col sm:flex-row items-center justify-center gap-4 text-center animate-fade-in no-print mx-auto max-w-2xl">
-            {userCompany.logoUrl ? (
+        {/* Company & Operational Scope Banner (Clean typography, clear hierarchy) */}
+        <div className="bg-white p-5 md:p-6 rounded-2xl border border-gray-100 shadow-sm animate-fade-in no-print">
+          <div className="flex flex-col sm:flex-row items-center sm:items-start gap-4">
+            {userCompany?.logoUrl ? (
               <img
                 src={userCompany.logoUrl}
                 alt={`${userCompany.name} Logo`}
@@ -11905,17 +12020,40 @@ try {
               />
             ) : (
               <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-brand to-brand-hover text-white flex items-center justify-center font-black text-2xl shadow-md uppercase shrink-0">
-                {userCompany.name.slice(0, 2)}
+                {companyDisplayName.slice(0, 2)}
               </div>
             )}
-            <div className="text-center sm:text-left">
-              <div className="text-[10px] font-extrabold text-brand tracking-widest uppercase mb-0.5">{t('Enterprise Workspace')}</div>
-              <h2 className="text-2xl font-black text-gray-900 tracking-tight">
-                {userCompany.name}
+
+            <div className="flex-1 text-center sm:text-left min-w-0">
+              <div className="text-[10px] font-extrabold text-brand tracking-widest uppercase mb-0.5">
+                {t('Enterprise Workspace')} · {currentUser?.role || t('Operator')}
+              </div>
+              <h2 className="text-2xl font-black text-gray-900 tracking-tight truncate">
+                {companyDisplayName}
               </h2>
+
+              {/* Scope details: Operated Branches & Managed Stores */}
+              <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                <div className="flex items-center gap-1.5 text-gray-600 truncate">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 shrink-0">
+                    {t('Operating Branch')}:
+                  </span>
+                  <span className="font-semibold text-gray-800 truncate" title={branchesDisplayText}>
+                    {branchesDisplayText}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 text-gray-600 truncate">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 shrink-0">
+                    {t('Managed Store')}:
+                  </span>
+                  <span className="font-semibold text-gray-800 truncate" title={storesDisplayText}>
+                    {storesDisplayText}
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
-        )}
+        </div>
 
         {/* System & Data Sync Status — full persistence-health widget mounted in the
             Dashboard header next to the KPI metrics/alerts (overrides the compact
@@ -17197,7 +17335,63 @@ try {
         isOpen={showGameModal}
         onClose={() => setShowGameModal(false)}
         userName={currentUser?.name || currentUser?.username}
+        currentUser={currentUser}
+        users={users}
       />
+
+      {/* Air Hockey Pro Standalone Modal (Can be triggered via direct challenge acceptance) */}
+      {showHockeyModal && (
+        <AirHockeyPro
+          onClose={() => setShowHockeyModal(false)}
+          users={users}
+          currentUser={currentUser}
+        />
+      )}
+
+      {/* Global Real-Time Incoming Game Challenge Banner across ERP */}
+      {pendingGameInvite && !showHockeyModal && !showGameModal && (
+        <div className="fixed top-5 right-5 z-[9999] max-w-sm w-full bg-slate-900/95 border-2 border-cyan-400 rounded-2xl shadow-2xl p-4 text-white backdrop-blur-md animate-fadeIn">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-indigo-600 flex items-center justify-center text-xl shadow">
+              {pendingGameInvite.gameType === 'air_hockey' ? '🏒' : '👾'}
+            </div>
+            <div>
+              <div className="font-extrabold text-sm flex items-center gap-1.5">
+                <span>{pendingGameInvite.senderName}</span>
+                <span className="text-[10px] bg-cyan-400/20 text-cyan-300 border border-cyan-400/50 px-1.5 py-0.2 rounded font-mono uppercase font-bold">
+                  Live Challenge
+                </span>
+              </div>
+              <div className="text-xs text-gray-300">
+                Challenged you to {pendingGameInvite.gameTitle || 'a match'}!
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 mt-3">
+            <button
+              onClick={() => {
+                if (pendingGameInvite.gameType === 'air_hockey') {
+                  setShowHockeyModal(true);
+                } else {
+                  setShowGameModal(true);
+                }
+              }}
+              className="flex-1 py-2 bg-gradient-to-r from-emerald-500 to-cyan-400 hover:brightness-110 text-slate-950 font-black text-xs rounded-xl shadow transition cursor-pointer flex items-center justify-center gap-1"
+            >
+              <span>🚀</span> ACCEPT & PLAY
+            </button>
+            <button
+              onClick={async () => {
+                await respondGameInvite(pendingGameInvite.id, 'decline');
+                setPendingGameInvite(null);
+              }}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-gray-300 text-xs font-bold rounded-xl border border-slate-700 transition cursor-pointer"
+            >
+              Decline
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Debug Sync Button — Chrome vs Edge desync helper */}
       <button

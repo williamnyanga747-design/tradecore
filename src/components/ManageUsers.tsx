@@ -100,9 +100,9 @@ export default function ManageUsers({
   });
 
   // Helper getters
-  const getCompanyName = (id: number | null) => id ? (companies.find(c => sameId(c.id, id))?.name || t('Unknown')) : t('Global / All');
-  const getBranchName = (id: number | null) => id ? (branches.find(b => b.id === id)?.name || t('Unknown')) : t('Global / All');
-  const getStoreName = (id: number | null) => id ? (stores.find(s => s.id === id)?.name || t('Unknown')) : t('Global / All');
+  const getCompanyName = (id: any) => id ? (companies.find(c => sameId(c.id, id))?.name || t('Unknown')) : t('Global / All');
+  const getBranchName = (id: any) => id ? (branches.find(b => sameId(b.id, id))?.name || t('Unknown')) : t('Global / All');
+  const getStoreName = (id: any) => id ? (stores.find(s => sameId(s.id, id))?.name || t('Unknown')) : t('Global / All');
 
   // BUILD 2026-09-08-19 (Required Fix 4): explicit company switch → close the editing
   // modal / confirm dialog so a user form of the previous company scope can never be
@@ -404,12 +404,21 @@ export default function ManageUsers({
     const isBranchScoped = branchAdminRoles.includes(roleLower) || storeAdminRoles.includes(roleLower);
     const isAdminLike = isTopAdmin || isBranchScoped || roleLower.includes('admin') || roleLower.includes('manager');
 
+    const assignedBranches = (data.assignedBranchIds || data.branchIds || (data.branchId != null ? [data.branchId] : []))
+      .map((id: any) => sv(id))
+      .filter((id: string, idx: number, arr: string[]) => id !== '' && arr.indexOf(id) === idx);
+    data.assignedBranchIds = assignedBranches;
+    data.branchIds = assignedBranches;
+    if ((!data.branchId || String(data.branchId).toLowerCase() === 'nan') && assignedBranches.length > 0) {
+      data.branchId = assignedBranches[0];
+    }
+
     if ((data as any).role !== 'Super Admin') {
       if (!data.companyId) {
         toast.error(t('Company is required for this account.'));
         return;
       }
-      if (!isTopAdmin && !data.branchId) {
+      if (!isTopAdmin && !data.branchId && assignedBranches.length === 0) {
         toast.error(t('Please assign a Branch — Branch/Store managers must be anchored to a branch.'));
         return;
       }
@@ -613,7 +622,24 @@ export default function ManageUsers({
                         </span>
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-500">{getCompanyName(u.companyId)}</td>
-                      <td className="px-4 py-3 text-xs text-gray-500">{getBranchName(u.branchId)}</td>
+                      <td className="px-4 py-3 text-xs text-gray-500">
+                        {(() => {
+                          const bIds = [
+                            ...((u as any).assignedBranchIds || []),
+                            ...((u as any).branchIds || []),
+                            ...(u.branchId != null ? [u.branchId] : [])
+                          ].map(id => sv(id)).filter((id, idx, arr) => id !== '' && arr.indexOf(id) === idx);
+                          if (bIds.length > 1) {
+                            const names = bIds.map(bid => getBranchName(bid)).filter(Boolean);
+                            return (
+                              <span title={names.join(', ')}>
+                                {names.slice(0, 2).join(', ')}{names.length > 2 ? ` (+${names.length - 2})` : ''}
+                              </span>
+                            );
+                          }
+                          return getBranchName(u.branchId);
+                        })()}
+                      </td>
                       <td className="px-4 py-3 text-xs text-gray-500">{getStoreName(u.storeId)}</td>
                       <td className="px-4 py-3">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${isBlocked ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
@@ -1520,17 +1546,115 @@ export default function ManageUsers({
               )}
 
               <div>
-                <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Assigned Branch')}</label>
-                <select
-                  value={editingUser.branchId || 'None'}
-                  onChange={(e) => setEditingUser({ ...editingUser, branchId: e.target.value === 'None' ? null : sv(e.target.value) })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand bg-white font-semibold"
-                >
-                  <option value="None">{t('None (Global / All Branches)')}</option>
-                  {filteredBranches.map(b => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-gray-600 block uppercase tracking-wider">{t('Assigned Branches')} ({t('Multiple Support')})</label>
+                  {filteredBranches.length > 1 && (
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allIds = filteredBranches.map(b => b.id);
+                          setEditingUser({
+                            ...editingUser,
+                            assignedBranchIds: allIds,
+                            branchIds: allIds,
+                            branchId: editingUser.branchId || allIds[0] || null
+                          });
+                        }}
+                        className="text-brand hover:underline font-bold"
+                      >
+                        {t('Select All')}
+                      </button>
+                      <span className="text-gray-300">|</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingUser({
+                            ...editingUser,
+                            assignedBranchIds: [],
+                            branchIds: [],
+                            branchId: null
+                          });
+                        }}
+                        className="text-gray-400 hover:underline"
+                      >
+                        {t('Clear')}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {filteredBranches.length > 0 && (
+                  <div className="border border-gray-200 rounded-lg p-2.5 max-h-36 overflow-y-auto space-y-1.5 bg-gray-50/50 mb-2">
+                    {filteredBranches.map(b => {
+                      const selectedIds: string[] = [
+                        ...((editingUser as any).assignedBranchIds || []),
+                        ...((editingUser as any).branchIds || []),
+                        ...(editingUser.branchId ? [editingUser.branchId] : [])
+                      ].map(id => sv(id)).filter((id, idx, arr) => id !== '' && arr.indexOf(id) === idx);
+                      const isChecked = selectedIds.some(sid => sameId(sid, b.id));
+
+                      return (
+                        <label key={b.id} className="flex items-center gap-2 text-xs text-gray-700 hover:text-gray-900 cursor-pointer font-medium p-1 rounded hover:bg-white transition">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {
+                              let next: string[];
+                              if (isChecked) {
+                                next = selectedIds.filter(id => !sameId(id, b.id));
+                              } else {
+                                next = [...selectedIds, sv(b.id)];
+                              }
+                              const currPrimary = sv(editingUser.branchId);
+                              setEditingUser({
+                                ...editingUser,
+                                assignedBranchIds: next,
+                                branchIds: next,
+                                branchId: next.some(id => sameId(id, currPrimary)) ? editingUser.branchId : (next[0] || null)
+                              });
+                            }}
+                            className="accent-brand w-4 h-4 rounded cursor-pointer"
+                          />
+                          <span className="font-semibold text-gray-800">{b.name}</span>
+                          {sameId(editingUser.branchId, b.id) && (
+                            <span className="text-[10px] text-brand font-bold ml-auto">{t('Primary')}</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div>
+                  <label className="text-[11px] font-semibold text-gray-500 mb-1 block">{t('Primary Operating Branch')}</label>
+                  <select
+                    value={editingUser.branchId ? sv(editingUser.branchId) : 'None'}
+                    onChange={(e) => {
+                      const nextVal = e.target.value === 'None' ? null : sv(e.target.value);
+                      const currentSelected = [
+                        ...((editingUser as any).assignedBranchIds || []),
+                        ...((editingUser as any).branchIds || []),
+                        ...(editingUser.branchId ? [editingUser.branchId] : [])
+                      ].map(id => sv(id)).filter((id, idx, arr) => id !== '' && arr.indexOf(id) === idx);
+                      const updatedBranches = nextVal && !currentSelected.some(sid => sameId(sid, nextVal))
+                        ? [...currentSelected, nextVal]
+                        : currentSelected;
+                      setEditingUser({
+                        ...editingUser,
+                        branchId: nextVal,
+                        assignedBranchIds: updatedBranches,
+                        branchIds: updatedBranches
+                      });
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand bg-white font-semibold"
+                  >
+                    <option value="None">{t('None (Global / All Branches)')}</option>
+                    {filteredBranches.map(b => (
+                      <option key={b.id} value={sv(b.id)}>{b.name}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div>

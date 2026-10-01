@@ -1,10 +1,21 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Gamepad2, Volume2, VolumeX, Power, RotateCcw } from 'lucide-react';
+import { X, Gamepad2, Volume2, VolumeX, Power, RotateCcw, Users, Send, CheckCircle2, Clock, XCircle, Bell, Trophy, Shield, ChevronDown, ChevronUp } from 'lucide-react';
+import {
+  sendGameInvite,
+  fetchGameInvites,
+  respondGameInvite,
+  cancelGameInvite,
+  subscribeToSentInvite,
+  subscribeToIncomingInvites
+} from '../utils/gameInvitationEngine';
+import { GameInvitation } from '../types';
 
 interface ArcadeGameModalProps {
   isOpen: boolean;
   onClose: () => void;
   userName?: string;
+  currentUser?: any;
+  users?: any[];
 }
 
 interface Particle {
@@ -89,7 +100,7 @@ const MAX_AMMO = 50;
 const MAX_LIVES = 5;
 const SHOOT_COOLDOWN = 135;
 
-export default function ArcadeGameModal({ isOpen, onClose, userName }: ArcadeGameModalProps) {
+export default function ArcadeGameModal({ isOpen, onClose, userName, currentUser, users = [] }: ArcadeGameModalProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isPowerOn, setIsPowerOn] = useState(true);
   const [isSoundOn, setIsSoundOn] = useState(true);
@@ -101,6 +112,53 @@ export default function ArcadeGameModal({ isOpen, onClose, userName }: ArcadeGam
   const [bossBarVisible, setBossBarVisible] = useState(false);
   const [bossBarWidth, setBossBarWidth] = useState('100%');
   const [bossLabelVisible, setBossLabelVisible] = useState(false);
+
+  // --- Real-time Challenge & Invitation States ---
+  const [showChallengesTab, setShowChallengesTab] = useState(false);
+  const [incomingInvites, setIncomingInvites] = useState<GameInvitation[]>([]);
+  const [sentInvites, setSentInvites] = useState<GameInvitation[]>([]);
+  const [activeChallengeNotice, setActiveChallengeNotice] = useState<string | null>(null);
+  const [isSendingChallenge, setIsSendingChallenge] = useState(false);
+  const sentSubscribersRef = useRef<Map<string, () => void>>(new Map());
+
+  // Filter available competitors (excluding current player and demo accounts)
+  const availableCompetitors = React.useMemo(() => {
+    if (!users || !Array.isArray(users)) return [];
+    const currentId = currentUser?.id != null ? String(currentUser.id) : '';
+    const currentUsername = String(currentUser?.username || '').trim().toLowerCase();
+
+    return users
+      .filter((u: any) => {
+        if (!u) return false;
+        const uid = String(u.id ?? '');
+        const uname = String(u.username || '').trim().toLowerCase();
+        const displayName = String(u.name || u.username || '').trim();
+
+        if (uid && currentId && uid === currentId) return false;
+        if (uname && currentUsername && uname === currentUsername) return false;
+
+        if (u.isDemo === true || (u as any).demo === true) return false;
+        if (uname.includes('demo') || displayName.toLowerCase().includes('demo') || uid.toLowerCase().includes('demo')) return false;
+
+        const st = String(u.status || '').trim().toLowerCase();
+        if (st !== 'active') return false;
+        if (u.isDeleted || u.remoteTerminated) return false;
+
+        return true;
+      })
+      .map((u: any) => ({
+        id: String(u.id),
+        name: u.name || u.username || 'Colleague',
+        username: u.username,
+        role: u.role || 'Operator',
+        avatar: (u.name || u.username || 'U').charAt(0).toUpperCase(),
+        online: true
+      }));
+  }, [users, currentUser]);
+
+  const pendingIncomingCount = incomingInvites.filter(i => i.status === 'pending').length;
+  const pendingSentCount = sentInvites.filter(i => i.status === 'pending').length;
+  const totalPendingCount = pendingIncomingCount + pendingSentCount;
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const engineOscRef = useRef<OscillatorNode | null>(null);
@@ -298,6 +356,119 @@ export default function ArcadeGameModal({ isOpen, onClose, userName }: ArcadeGam
       playTone(90, 'sine', 0.8, 0.4);
       stopEngineHum();
     },
+    challengeAccept: () => {
+      if (!isSoundOn) return;
+      initAudio();
+      playTone(523.25, 'triangle', 0.12, 0.35);
+      setTimeout(() => playTone(659.25, 'triangle', 0.12, 0.35), 110);
+      setTimeout(() => playTone(783.99, 'triangle', 0.14, 0.4), 220);
+      setTimeout(() => playTone(1046.50, 'triangle', 0.28, 0.45), 350);
+    }
+  };
+
+  // --- Real-time Challenge Synchronizer & Listeners ---
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const refreshInvites = async () => {
+      const res = await fetchGameInvites({
+        userId: currentUser?.id,
+        username: currentUser?.username
+      });
+      if (res.success) {
+        setIncomingInvites(res.pendingReceived || []);
+        setSentInvites(res.sent || []);
+      }
+    };
+
+    refreshInvites();
+
+    // Listen to incoming challenges from other users in real-time
+    const unsubIncoming = subscribeToIncomingInvites(
+      currentUser?.id,
+      currentUser?.username,
+      (pending) => {
+        setIncomingInvites(pending);
+      }
+    );
+
+    return () => {
+      unsubIncoming();
+    };
+  }, [isOpen, currentUser]);
+
+  // Listener to notify the inviting user when the competitor accepts the invitation
+  useEffect(() => {
+    if (!isOpen || sentInvites.length === 0) return;
+
+    // For any pending sent invites, set up active status listener
+    sentInvites.forEach(inv => {
+      if (inv.status === 'pending' && !sentSubscribersRef.current.has(inv.id)) {
+        const unsub = subscribeToSentInvite(inv.id, (updatedInvite) => {
+          setSentInvites(prev => prev.map(i => i.id === updatedInvite.id ? updatedInvite : i));
+          if (updatedInvite.status === 'accepted') {
+            sfx.challengeAccept();
+            setActiveChallengeNotice(`🎉 Competitor ${updatedInvite.recipientName} accepted your challenge!`);
+          } else if (updatedInvite.status === 'declined') {
+            setActiveChallengeNotice(`Competitor ${updatedInvite.recipientName} declined the challenge.`);
+          }
+        });
+        sentSubscribersRef.current.set(inv.id, unsub);
+      }
+    });
+
+    return () => {
+      sentSubscribersRef.current.forEach(u => u());
+      sentSubscribersRef.current.clear();
+    };
+  }, [isOpen, sentInvites]);
+
+  const handleSendChallenge = async (recipient: any) => {
+    setIsSendingChallenge(true);
+    const room = `ROOM-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+    try {
+      const res = await sendGameInvite({
+        senderId: currentUser?.id != null ? currentUser.id : 'operator',
+        senderName: currentUser?.name || userName || 'Operator',
+        senderUsername: currentUser?.username,
+        recipientId: recipient.id,
+        recipientName: recipient.name,
+        recipientUsername: recipient.username,
+        gameType: 'arcade',
+        gameTitle: 'Mind Refresh Arcade Break',
+        roomId: room,
+        timerMinutes: 3
+      });
+
+      if (res.success && res.invitation) {
+        setSentInvites(prev => [res.invitation!, ...prev.filter(i => i.id !== res.invitation!.id)]);
+        setActiveChallengeNotice(`Challenge sent to ${recipient.name}! Live status: Pending acceptance...`);
+      }
+    } catch {
+      setActiveChallengeNotice('Failed to send challenge.');
+    } finally {
+      setIsSendingChallenge(false);
+    }
+  };
+
+  const handleAcceptInvite = async (invite: GameInvitation) => {
+    const res = await respondGameInvite(invite.id, 'accept');
+    if (res.success) {
+      sfx.challengeAccept();
+      setActiveChallengeNotice(`Challenge accepted! Connected with ${invite.senderName}.`);
+      setIncomingInvites(prev => prev.filter(i => i.id !== invite.id));
+      setSentInvites(prev => prev.map(i => i.id === invite.id ? { ...i, status: 'accepted' } : i));
+    }
+  };
+
+  const handleDeclineInvite = async (inviteId: string) => {
+    await respondGameInvite(inviteId, 'decline');
+    setIncomingInvites(prev => prev.filter(i => i.id !== inviteId));
+  };
+
+  const handleCancelInvite = async (inviteId: string) => {
+    await cancelGameInvite(inviteId);
+    setSentInvites(prev => prev.map(i => i.id === inviteId ? { ...i, status: 'cancelled' } : i));
   };
 
   // --- Game Logic ---
@@ -1055,14 +1226,219 @@ export default function ArcadeGameModal({ isOpen, onClose, userName }: ArcadeGam
               <span className="text-[10px] text-gray-300 block font-mono">Welcome, {userName || 'Operator'}</span>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition cursor-pointer"
-            title="Close Game"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          <div className="flex items-center gap-1.5">
+            {/* Visual Indicator & Competitor Challenges Button */}
+            <button
+              onClick={() => setShowChallengesTab(!showChallengesTab)}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold transition cursor-pointer border ${
+                showChallengesTab
+                  ? 'bg-amber-400 text-slate-950 border-amber-300 shadow-md'
+                  : totalPendingCount > 0
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-400/60 shadow-[0_0_15px_rgba(251,191,36,0.35)] animate-pulse'
+                  : 'bg-white/10 hover:bg-white/20 text-gray-200 border-white/20'
+              }`}
+              title="Competitor Challenges & Invites"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Challenges</span>
+              {totalPendingCount > 0 && (
+                <span className="bg-amber-400 text-slate-950 text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                  {totalPendingCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={onClose}
+              className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition cursor-pointer"
+              title="Close Game"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
+
+        {/* Live Notification Banner */}
+        {activeChallengeNotice && (
+          <div className="w-full max-w-[390px] mb-2 p-2.5 bg-gradient-to-r from-indigo-950 via-slate-900 to-indigo-950 border border-indigo-400/60 rounded-xl text-xs text-indigo-100 flex items-center justify-between shadow-lg">
+            <div className="flex items-center gap-2">
+              <span className="text-base">📢</span>
+              <span className="font-medium">{activeChallengeNotice}</span>
+            </div>
+            <button 
+              onClick={() => setActiveChallengeNotice(null)} 
+              className="text-gray-400 hover:text-white p-0.5 text-xs font-bold"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
+        {/* Quick Pending Incoming Invite Bar */}
+        {pendingIncomingCount > 0 && !showChallengesTab && (
+          <div className="w-full max-w-[390px] mb-2 p-2.5 bg-gradient-to-r from-amber-950 via-slate-900 to-amber-950 border-2 border-amber-400 rounded-xl shadow-[0_0_20px_rgba(251,191,36,0.35)] animate-pulse text-white">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-base">⚔️</span>
+                <div className="text-xs">
+                  <span className="font-extrabold text-amber-300">{incomingInvites[0].senderName}</span> challenged you!
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => handleAcceptInvite(incomingInvites[0])}
+                  className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black text-[10px] rounded-lg shadow transition cursor-pointer"
+                >
+                  Accept
+                </button>
+                <button
+                  onClick={() => handleDeclineInvite(incomingInvites[0].id)}
+                  className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-gray-300 text-[10px] font-bold rounded-lg border border-slate-700 transition cursor-pointer"
+                >
+                  Decline
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Competitor Challenges Drawer */}
+        {showChallengesTab && (
+          <div className="w-full max-w-[390px] bg-slate-900/95 border-2 border-slate-700 rounded-2xl p-3.5 mb-2 shadow-2xl text-white max-h-[380px] overflow-y-auto">
+            <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2 font-bold text-xs">
+                <Trophy className="w-4 h-4 text-amber-400" />
+                <span>Competitor Challenges</span>
+              </div>
+              <button
+                onClick={() => setShowChallengesTab(false)}
+                className="text-xs text-gray-400 hover:text-white"
+              >
+                Close ✕
+              </button>
+            </div>
+
+            {/* Incoming Challenges Section */}
+            <div className="mb-4">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-amber-400 mb-1.5 flex items-center justify-between">
+                <span>Incoming Challenges</span>
+                <span className="bg-amber-400/20 text-amber-300 px-1.5 rounded">{incomingInvites.length}</span>
+              </div>
+              {incomingInvites.length === 0 ? (
+                <div className="text-[11px] text-gray-500 py-1 italic">No incoming challenges at the moment.</div>
+              ) : (
+                <div className="space-y-2">
+                  {incomingInvites.map(inv => (
+                    <div key={inv.id} className="bg-slate-800/80 p-2.5 rounded-xl border border-slate-700 flex items-center justify-between">
+                      <div>
+                        <div className="text-xs font-bold text-white">{inv.senderName}</div>
+                        <div className="text-[10px] text-gray-400 font-mono">
+                          Status: <span className="text-amber-400 font-bold">{inv.status}</span> • {inv.gameTitle}
+                        </div>
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => handleAcceptInvite(inv)}
+                          className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[10px] rounded-lg transition"
+                        >
+                          Accept
+                        </button>
+                        <button
+                          onClick={() => handleDeclineInvite(inv.id)}
+                          className="px-2 py-1 bg-slate-700 hover:bg-slate-600 text-gray-300 text-[10px] rounded-lg transition"
+                        >
+                          Decline
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Outgoing Challenges Section */}
+            <div className="mb-4">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-cyan-400 mb-1.5 flex items-center justify-between">
+                <span>Sent Challenges (Live Status)</span>
+                <span className="bg-cyan-400/20 text-cyan-300 px-1.5 rounded">{sentInvites.length}</span>
+              </div>
+              {sentInvites.length === 0 ? (
+                <div className="text-[11px] text-gray-500 py-1 italic">You have not sent any challenges yet.</div>
+              ) : (
+                <div className="space-y-2 max-h-[130px] overflow-y-auto">
+                  {sentInvites.map(inv => (
+                    <div key={inv.id} className="bg-slate-800/60 p-2 rounded-xl border border-slate-700/80 flex items-center justify-between text-xs">
+                      <div>
+                        <div className="font-bold text-gray-200">{inv.recipientName}</div>
+                        <div className="text-[10px] text-gray-400 font-mono flex items-center gap-1.5">
+                          <span>Status:</span>
+                          {inv.status === 'pending' && (
+                            <span className="text-amber-300 font-bold flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                              pending
+                            </span>
+                          )}
+                          {inv.status === 'accepted' && (
+                            <span className="text-emerald-400 font-bold">accepted ✓</span>
+                          )}
+                          {inv.status === 'declined' && (
+                            <span className="text-red-400 font-bold">declined ✕</span>
+                          )}
+                          {inv.status === 'cancelled' && (
+                            <span className="text-gray-400">cancelled</span>
+                          )}
+                        </div>
+                      </div>
+                      {inv.status === 'pending' && (
+                        <button
+                          onClick={() => handleCancelInvite(inv.id)}
+                          className="text-[10px] px-2 py-0.5 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded border border-red-500/40"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Available Competitors to Challenge */}
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1.5">
+                Active Competitors to Challenge
+              </div>
+              {availableCompetitors.length === 0 ? (
+                <div className="text-[11px] text-gray-500 py-1 italic">No other active colleagues available online.</div>
+              ) : (
+                <div className="space-y-1.5 max-h-[140px] overflow-y-auto">
+                  {availableCompetitors.map(u => (
+                    <div key={u.id} className="bg-slate-800/40 hover:bg-slate-800/80 p-2 rounded-xl border border-slate-700/60 flex items-center justify-between transition">
+                      <div className="flex items-center gap-2">
+                        <div className="w-6 h-6 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold text-white">
+                          {u.avatar}
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-gray-200">{u.name}</div>
+                          <div className="text-[9px] text-gray-400">{u.role}</div>
+                        </div>
+                      </div>
+                      <button
+                        disabled={isSendingChallenge}
+                        onClick={() => handleSendChallenge(u)}
+                        className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold text-[10px] rounded-lg transition flex items-center gap-1 cursor-pointer"
+                      >
+                        <Send className="w-2.5 h-2.5" />
+                        <span>Challenge</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Handheld Case */}
         <div className="w-[min(94vw,380px)] bg-gradient-to-b from-slate-700 to-slate-800 border-[5px] border-slate-900 rounded-[26px] p-3 flex flex-col shadow-2xl relative">

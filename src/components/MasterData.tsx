@@ -84,6 +84,17 @@ export default function MasterData({
   const [activeStoreDetailsId, setActiveStoreDetailsId] = useState<number | null>(null);
   const [categoryFilterStore, setCategoryFilterStore] = useState<string>('');
 
+  const userAssignedBranchIds = React.useMemo(() => {
+    const raw = [
+      ...((currentUser as any)?.assignedBranchIds || []),
+      ...((currentUser as any)?.branchIds || []),
+      ...(currentUser?.branchId != null ? [currentUser.branchId] : [])
+    ];
+    return raw
+      .map(id => sv(id))
+      .filter((id, idx, arr) => id !== '' && id !== 'none' && arr.indexOf(id) === idx);
+  }, [currentUser]);
+
   const activeCompanyStores = React.useMemo(() => {
     const coId = currentCompanyId || currentUser?.companyId;
     if (!coId) return stores.filter(s => !s.isDeleted);
@@ -455,8 +466,11 @@ export default function MasterData({
       const coLang = data.language || 'en';
       const coCurr = data.currency || 'USD';
       const coRate = data.exchangeRate !== undefined ? Number(data.exchangeRate) : 1;
+      const subEnd = data.subscriptionEnd || data.subscription_end || '';
       const cleanCompany = {
         ...data,
+        subscriptionEnd: subEnd,
+        subscription_end: subEnd,
         language: coLang,
         currency: coCurr,
         exchangeRate: coRate
@@ -465,7 +479,7 @@ export default function MasterData({
       if (data.id) {
         // Edit
         const compId = data.id;
-        const updated = companies.map(c => sameId(c.id, compId) ? cleanCompany : c);
+        const updated = companies.map(c => sameId(c.id, compId) ? { ...c, ...cleanCompany } : c);
         const nextSettings = {
           ...settings,
           companyLanguages: { ...(settings?.companyLanguages || {}), [compId]: coLang },
@@ -473,6 +487,9 @@ export default function MasterData({
           companyExchangeRates: { ...(settings?.companyExchangeRates || {}), [compId]: coRate }
         };
         saveAllData({ companies: updated, settings: nextSettings });
+        if (mutateRecord) {
+          mutateRecord('companies', 'upsert', compId, cleanCompany).catch(() => {});
+        }
         logAction('Edit Company', `Modified Company details for: ${data.name}`);
       } else {
         // Create — DIRECT MySQL via addCompany (2026-09-08-13): explicit awaited
@@ -833,7 +850,13 @@ export default function MasterData({
     case 'branches':
       const branchData = (isSuperAdmin
         ? branches
-        : branches.filter(b => sameId(b.companyId, currentCompanyId))
+        : branches.filter(b => {
+            if (!sameId(b.companyId, currentCompanyId)) return false;
+            if (userAssignedBranchIds.length > 0) {
+              return userAssignedBranchIds.some(bid => sameId(bid, b.id));
+            }
+            return true;
+          })
       ).filter(b => !b.isDeleted);
 
       return (
@@ -922,13 +945,26 @@ export default function MasterData({
         return br ? String((br as any).company_id ?? br.companyId ?? '') : '';
       };
       const allowedBranches = branches
-        .filter(b => b && !b.isDeleted && (isSuperAdmin || String((b as any).company_id ?? b.companyId ?? '') === activeCompanyId))
+        .filter(b => {
+          if (!b || b.isDeleted) return false;
+          if (isSuperAdmin) return true;
+          const matchCo = String((b as any).company_id ?? b.companyId ?? '') === activeCompanyId;
+          if (!matchCo) return false;
+          if (userAssignedBranchIds.length > 0) {
+            return userAssignedBranchIds.some(bid => sameId(bid, b.id));
+          }
+          return true;
+        })
         .map(b => b.id);
       const storeData = stores.filter(s => {
         // Defensive guard (Req 5): a null/malformed store row must never crash the filter.
         if (!s || s.isDeleted) return false;
         if (isSuperAdmin) return true;
-        return storeCompanyId(s) === activeCompanyId;
+        if (storeCompanyId(s) !== activeCompanyId) return false;
+        if (userAssignedBranchIds.length > 0 && s.branchId) {
+          return userAssignedBranchIds.some(bid => sameId(bid, s.branchId));
+        }
+        return true;
       });
 
       return (
@@ -2020,7 +2056,8 @@ export default function MasterData({
                   {visibleExchangeCompanies.map(c => {
                     const companyCurrency = settings?.companyCurrencies?.[c.id] || currentGlobalCurrency;
                     const companyRate = settings?.companyExchangeRates?.[c.id] !== undefined ? settings.companyExchangeRates[c.id] : currentGlobalRate;
-                    const rateInputVal = localCompanyRates[c.id] !== undefined ? localCompanyRates[c.id] : String(companyRate);
+                    const safeCompanyRateStr = companyRate !== undefined && !isNaN(Number(companyRate)) ? String(companyRate) : '1';
+                    const rateInputVal = localCompanyRates[c.id] !== undefined ? localCompanyRates[c.id] : safeCompanyRateStr;
 
                     return (
                       <tr key={c.id} className="hover:bg-gray-50/30">
@@ -2046,7 +2083,7 @@ export default function MasterData({
                             <input
                               type="number"
                               step="any"
-                              value={rateInputVal}
+                              value={rateInputVal !== undefined && !Number.isNaN(rateInputVal) ? String(rateInputVal) : '1'}
                               onChange={(e) => setLocalCompanyRates({ ...localCompanyRates, [c.id]: e.target.value })}
                               className="w-28 px-2 py-1 border border-gray-300 rounded-lg text-xs font-black outline-none focus:border-brand"
                               placeholder="e.g. 2500"
@@ -2099,7 +2136,8 @@ export default function MasterData({
                   {visibleExchangeUsers.map(u => {
                     const userCurrency = settings?.userCurrencies?.[u.username] || '';
                     const userRate = settings?.userExchangeRates?.[u.username];
-                    const rateInputVal = localUserRates[u.username] !== undefined ? localUserRates[u.username] : (userRate !== undefined ? String(userRate) : '');
+                    const safeUserRateStr = userRate !== undefined && !isNaN(Number(userRate)) ? String(userRate) : '';
+                    const rateInputVal = localUserRates[u.username] !== undefined ? localUserRates[u.username] : safeUserRateStr;
                     const belongsToCompany = companies.find(c => sameId(c.id, u.companyId))?.name || t('Global / Super');
 
                     return (
@@ -2134,7 +2172,7 @@ export default function MasterData({
                             <input
                               type="number"
                               step="any"
-                              value={rateInputVal}
+                              value={rateInputVal !== undefined && !Number.isNaN(rateInputVal) ? String(rateInputVal) : ''}
                               onChange={(e) => setLocalUserRates({ ...localUserRates, [u.username]: e.target.value })}
                               className="w-28 px-2 py-1 border border-gray-300 rounded-lg text-xs font-black outline-none focus:border-brand"
                               placeholder={t('Inherit')}
@@ -2208,7 +2246,7 @@ export default function MasterData({
                   <input
                     type="number"
                     step="any"
-                    value={localGlobalRate !== '' ? localGlobalRate : String(currentGlobalRate)}
+                    value={localGlobalRate !== '' ? localGlobalRate : (!isNaN(Number(currentGlobalRate)) && Number(currentGlobalRate) > 0 ? String(currentGlobalRate) : '1')}
                     onChange={(e) => setLocalGlobalRate(e.target.value)}
                     className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-xs font-black outline-none focus:border-brand"
                     placeholder="1"
@@ -2499,8 +2537,15 @@ export default function MasterData({
                       <input
                         type="number"
                         step="any"
-                        value={data.exchangeRate !== undefined ? data.exchangeRate : (settings?.companyExchangeRates?.[data.id] ?? 1)}
-                        onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, exchangeRate: parseFloat(e.target.value) || 1 } })}
+                        value={
+                          data.exchangeRate !== undefined && !isNaN(Number(data.exchangeRate))
+                            ? String(data.exchangeRate)
+                            : (!isNaN(Number(settings?.companyExchangeRates?.[data.id])) ? String(settings?.companyExchangeRates?.[data.id]) : '1')
+                        }
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setEditingItem({ ...editingItem, data: { ...data, exchangeRate: isNaN(val) ? 1 : val } });
+                        }}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs font-mono font-bold bg-white outline-none focus:border-brand"
                         placeholder="e.g. 2600"
                       />

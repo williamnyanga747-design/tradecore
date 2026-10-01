@@ -617,10 +617,11 @@ export default function PurchaseOrderModal({
                           <input
                             type="number"
                             step="any"
-                            value={activeCurrency === 'TZS' ? Math.round((p.discount || 0) * activeExchangeRate) : (p.discount || 0)}
+                            value={activeCurrency === 'TZS' ? Math.round((p.discount || 0) * (!isNaN(Number(activeExchangeRate)) && Number(activeExchangeRate) > 0 ? Number(activeExchangeRate) : 1)) : (p.discount || 0)}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value) || 0;
-                              const normalizedVal = activeCurrency === 'TZS' ? val / activeExchangeRate : val;
+                              const rate = (!isNaN(Number(activeExchangeRate)) && Number(activeExchangeRate) > 0 ? Number(activeExchangeRate) : 1);
+                              const normalizedVal = activeCurrency === 'TZS' ? val / rate : val;
                               handleUpdateDiscount(p.productId, unitType, normalizedVal);
                             }}
                             className="w-full border rounded-lg px-2 py-1 text-xs font-bold font-mono text-gray-900 outline-none focus:border-brand"

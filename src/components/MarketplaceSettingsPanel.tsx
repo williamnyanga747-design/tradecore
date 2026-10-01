@@ -15,6 +15,7 @@ import { CompanyStoriesManager } from './marketplace/MegaStories';
 import MegaChat from './marketplace/MegaChat';
 import MegaBulkUpload from './marketplace/MegaBulkUpload';
 import { CompanyReturnsPanel, AdminDisputeCenter } from './marketplace/MegaReturns';
+import ProductMediaStudioModal from './marketplace/ProductMediaStudioModal';
 
 interface Props {
   company: Company | null;
@@ -140,6 +141,31 @@ export default function MarketplaceSettingsPanel({
   const productFileRef = useRef<HTMLInputElement | null>(null);
   const videoFileRef = useRef<HTMLInputElement | null>(null);
   const [aiDescLoading, setAiDescLoading] = useState(false);
+
+  // TradeCore Product Media Studio states
+  const [studioModalOpen, setStudioModalOpen] = useState(false);
+  const [studioTargetImage, setStudioTargetImage] = useState<string>('');
+  const [studioTargetIndex, setStudioTargetIndex] = useState<number>(-1);
+  const [studioInitialTab, setStudioInitialTab] = useState<'image_studio' | 'video_studio'>('image_studio');
+
+  const openImageStudio = (imgUrl: string, index: number) => {
+    setStudioTargetImage(imgUrl);
+    setStudioTargetIndex(index);
+    setStudioInitialTab('image_studio');
+    setStudioModalOpen(true);
+  };
+
+  const openVideoStudio = () => {
+    const mainImg = productImages[0] || productForm.image || '';
+    if (!mainImg) {
+      toast.error(t('Please add at least 1 product image first to generate a 360° video.'));
+      return;
+    }
+    setStudioTargetImage(mainImg);
+    setStudioTargetIndex(0);
+    setStudioInitialTab('video_studio');
+    setStudioModalOpen(true);
+  };
 
   const MAX_IMAGES = 6;
   const MAX_VIDEO_MB = 100;
@@ -912,21 +938,72 @@ export default function MarketplaceSettingsPanel({
                   })()}
                 </div>
                 <div className="sm:col-span-2">
-                  <label className={labelCls}>{t('Product Images')} * ({t('1-6 images, at least 1')})</label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className={labelCls + ' mb-0'}>{t('Product Images')} * ({t('1-6 images, at least 1')})</label>
+                    {productImages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => openImageStudio(productImages[0], 0)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 text-[10px] font-black text-brand bg-brand/10 hover:bg-brand/20 border border-brand/20 rounded-full transition cursor-pointer"
+                        title={t('Open TradeCore Image Studio to remove background and enhance to 4K pure white #FFFFFF')}
+                      >
+                        <Sparkles className="w-3 h-3 text-brand" />
+                        <span>{t('✨ AI Studio (#FFFFFF & Shadow)')}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* TradeCore Image Studio Banner */}
+                  <div className="mb-3 p-3 bg-gradient-to-r from-brand/5 via-cyan-50/50 to-indigo-50/40 rounded-xl border border-brand/20 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-brand text-white flex items-center justify-center font-bold shrink-0 shadow-xs">
+                        <Sparkles className="w-4 h-4 text-white" />
+                      </div>
+                      <div className="space-y-0.5">
+                        <div className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                          <span>{t('TradeCore Image Editor')}</span>
+                          <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded font-mono">1000x1000 #FFFFFF</span>
+                        </div>
+                        <p className="text-[10px] text-gray-600 leading-tight">
+                          {t('1. Remove background completely -> pure white #FFFFFF • 2. Add soft shadow • 3. Enhance to 4K • 4. Keep label readable • 5. 1000x1000px centered')}
+                        </p>
+                      </div>
+                    </div>
+                    {productImages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => openImageStudio(productImages[0], 0)}
+                        className="px-3 py-1.5 bg-brand hover:bg-brand-hover text-white text-[11px] font-bold rounded-lg transition shadow-xs flex items-center justify-center gap-1.5 shrink-0 cursor-pointer"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>{t('Enhance Main Photo')}</span>
+                      </button>
+                    )}
+                  </div>
+
                   <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
                     {productImages.map((img, i) => (
-                      <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-200 group">
+                      <div key={i} className="relative aspect-square rounded-xl overflow-hidden border border-gray-200 group bg-slate-50">
                         <img src={img} alt={`${productForm.name || 'product'} ${i + 1}`} className="w-full h-full object-cover" />
                         <button
                           onClick={() => removeProductImage(i)}
-                          className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-red-600 transition cursor-pointer"
+                          className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-red-600 transition cursor-pointer z-10"
                           title={t('Remove image')}
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
                         {i === 0 && (
-                          <span className="absolute bottom-1 left-1 text-[8px] font-black uppercase tracking-wider bg-amber-500 text-white px-1.5 py-0.5 rounded-md">{t('Main')}</span>
+                          <span className="absolute bottom-1 left-1 text-[8px] font-black uppercase tracking-wider bg-amber-500 text-white px-1.5 py-0.5 rounded-md z-10">{t('Main')}</span>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => openImageStudio(img, i)}
+                          className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded-md bg-slate-900/85 hover:bg-brand text-white text-[9px] font-bold backdrop-blur-xs flex items-center gap-1 transition cursor-pointer shadow-xs z-10"
+                          title={t('Edit in TradeCore Studio (Pure White #FFFFFF & Shadow)')}
+                        >
+                          <Sparkles className="w-3 h-3 text-amber-300" />
+                          <span>Studio</span>
+                        </button>
                       </div>
                     ))}
                     {productImages.length < MAX_IMAGES && (
@@ -945,7 +1022,20 @@ export default function MarketplaceSettingsPanel({
                 </div>
 
                 <div className="sm:col-span-2">
-                  <label className={labelCls}>{t('Product Video')} ({t('optional')})</label>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className={labelCls + ' mb-0'}>{t('Product Video')} ({t('optional')})</label>
+                    {productImages.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={openVideoStudio}
+                        className="inline-flex items-center gap-1.5 px-3 py-1 text-[10px] font-black text-cyan-700 bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 rounded-full transition cursor-pointer"
+                        title={t('Animate product photo into 8-10s 360° turntable, 24-frame packaging spin, or TikTok 9:16 vertical video')}
+                      >
+                        <Video className="w-3 h-3 text-cyan-600" />
+                        <span>{t('🎥 Generate 360° Video from Photo')}</span>
+                      </button>
+                    )}
+                  </div>
                   <div className={`rounded-xl border ${productVideo ? 'border-gray-200' : 'border-2 border-dashed border-gray-300'} p-3`}>
                     {productVideo ? (
                       <div className="space-y-2.5">
@@ -954,8 +1044,11 @@ export default function MarketplaceSettingsPanel({
                           <span className="inline-flex items-center gap-1.5 text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1">
                             <Play className="w-3 h-3" /> {t('Video attached')}
                           </span>
+                          <button onClick={openVideoStudio} className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold text-cyan-700 bg-cyan-50 border border-cyan-200 rounded-lg hover:bg-cyan-100 transition cursor-pointer">
+                            <Video className="w-3 h-3 text-cyan-600" /> {t('360° Studio Generator')}
+                          </button>
                           <button onClick={() => videoFileRef.current?.click()} className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition cursor-pointer">
-                            <Upload className="w-3 h-3" /> {t('Replace')}
+                            <Upload className="w-3 h-3" /> {t('Upload File')}
                           </button>
                           <button onClick={() => setProductVideo(undefined)} className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold text-red-500 border border-red-200 rounded-lg hover:bg-red-50 transition cursor-pointer">
                             <X className="w-3 h-3" /> {t('Remove')}
@@ -963,12 +1056,30 @@ export default function MarketplaceSettingsPanel({
                         </div>
                       </div>
                     ) : (
-                      <div>
-                        <button onClick={() => videoFileRef.current?.click()} className={`w-full flex items-center justify-center gap-2 px-3 py-4 text-xs font-bold text-gray-400 hover:text-brand hover:border-brand/50 transition cursor-pointer`}>
-                          <Video className="w-5 h-5" /> {t('Add Product Video (Optional)')}
-                        </button>
-                        <p className={`text-[10px] font-medium text-gray-400 text-center flex items-center justify-center gap-1`}>
-                          <AlertTriangle className="w-3 h-3" /> {t('Video is optional, helps increase sales by 80%')}
+                      <div className="flex flex-col items-center justify-center py-4 space-y-2.5">
+                        <div className="flex flex-wrap items-center justify-center gap-2">
+                          {productImages.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={openVideoStudio}
+                              className="px-4 py-2 bg-gradient-to-r from-cyan-600 to-indigo-600 hover:brightness-110 text-white rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-xs cursor-pointer"
+                            >
+                              <Video className="w-4 h-4" />
+                              <span>{t('Generate 360° Studio Video from Photo')}</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => videoFileRef.current?.click()}
+                            className="px-4 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer"
+                          >
+                            <Upload className="w-4 h-4" />
+                            <span>{t('Upload Video File')}</span>
+                          </button>
+                        </div>
+                        <p className="text-[10px] text-gray-400 text-center flex items-center justify-center gap-1">
+                          <AlertTriangle className="w-3 h-3" />
+                          <span>{t('Presets: 10s 360° E-Commerce Turntable (1:1), 24-Frame Packaging Spin, or 8s TikTok Vertical (9:16)')}</span>
                         </p>
                       </div>
                     )}
@@ -1121,6 +1232,31 @@ export default function MarketplaceSettingsPanel({
           t={t}
         />
       )}
+
+      <ProductMediaStudioModal
+        isOpen={studioModalOpen}
+        onClose={() => setStudioModalOpen(false)}
+        productImage={studioTargetImage}
+        productName={productForm.name || 'Product'}
+        initialTab={studioInitialTab}
+        onApplyImage={(newImageDataUrl) => {
+          if (studioTargetIndex >= 0 && studioTargetIndex < productImages.length) {
+            const updated = [...productImages];
+            updated[studioTargetIndex] = newImageDataUrl;
+            setProductImages(updated);
+            if (studioTargetIndex === 0) {
+              setProductForm(prev => ({ ...prev, image: newImageDataUrl }));
+            }
+          } else {
+            setProductImages(prev => [newImageDataUrl, ...prev].slice(0, MAX_IMAGES));
+            setProductForm(prev => ({ ...prev, image: newImageDataUrl }));
+          }
+        }}
+        onApplyVideo={(newVideoUrl) => {
+          setProductVideo(newVideoUrl);
+        }}
+        translate={t}
+      />
 
       <ConfirmActionModal
         isOpen={deleteProductId !== null}
