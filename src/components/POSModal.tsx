@@ -1412,6 +1412,15 @@ export default function POSModal({
                 {t('Close Drawer / Shift')}
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => window.dispatchEvent(new CustomEvent('tradecore:open_calculator'))}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+              title="Open Scientific & Retail Calculator (Ctrl+Alt+C)"
+            >
+              <Calculator className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{t('Calculator')}</span>
+            </button>
             <button onClick={onClose} className="p-1 hover:bg-gray-800 rounded text-gray-400 hover:text-white">
               <X className="w-5 h-5" />
             </button>
@@ -1889,7 +1898,7 @@ export default function POSModal({
                           type="number"
                           step="any"
                           min="0"
-                          value={c.qty}
+                          value={typeof c.qty === 'number' && !Number.isNaN(c.qty) ? c.qty : 0}
                           onChange={(e) => handleUpdateQty(c.productId, currentUnitType, parseFloat(e.target.value) || 0)}
                           className="w-12 px-1 py-0.5 text-xs font-bold text-center border rounded bg-gray-50 text-gray-900 focus:outline-none focus:ring-1 focus:ring-brand"
                         />
@@ -1986,7 +1995,7 @@ export default function POSModal({
                         <input
                           type="number"
                           min="0"
-                          value={orderDiscountValue}
+                          value={typeof orderDiscountValue === 'number' && !Number.isNaN(orderDiscountValue) ? orderDiscountValue : 0}
                           onChange={(e) => setOrderDiscountValue(parseFloat(e.target.value) || 0)}
                           className="w-full px-2 py-1 border border-gray-300 rounded text-xs font-semibold outline-none focus:border-brand"
                         />

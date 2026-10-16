@@ -171,7 +171,10 @@ export default function MarketplaceSettingsPanel({
   const MAX_VIDEO_MB = 100;
   const MAX_VIDEO_SECONDS = 300;
 
-  const nextProductId = useMemo(() => Math.max(0, ...(products || []).map(p => p.id)) + 1, [products]);
+  const nextProductId = useMemo(() => {
+    const maxExisting = Math.max(0, ...(products || []).map(p => Number(p.id) || 0));
+    return Math.max(maxExisting + 1, Date.now());
+  }, [products]);
   const nextMethodId = useMemo(() => Math.max(0, ...(company?.paymentMethods || []).map(m => m.id)) + 1, [company]);
 
   const whatsappClicksFor = (productId: number) => (clicks || []).filter(c => c.productId === productId && c.type === 'whatsapp').length;
@@ -1079,7 +1082,7 @@ export default function MarketplaceSettingsPanel({
                         </div>
                         <p className="text-[10px] text-gray-400 text-center flex items-center justify-center gap-1">
                           <AlertTriangle className="w-3 h-3" />
-                          <span>{t('Presets: 10s 360° E-Commerce Turntable (1:1), 24-Frame Packaging Spin, or 8s TikTok Vertical (9:16)')}</span>
+                          <span>{t('Presets: 1 Minute 360° E-Commerce Turntable (1:1), 1 Minute Packaging Spin, or 1 Minute TikTok Vertical (9:16) with slow motions')}</span>
                         </p>
                       </div>
                     )}

@@ -119,7 +119,12 @@ let resolvingApiUrl: Promise<string | null> | null = null;
 async function resolveApiUrl(): Promise<string> {
   if (cachedApiUrl) return cachedApiUrl;
   const { apiUrl } = getPhpConfig();
-  if (apiUrl && !apiUrl.endsWith('/api.php')) return (cachedApiUrl = apiUrl);
+  if (apiUrl && !apiUrl.endsWith('/api.php')) {
+    if (typeof window !== 'undefined' && window.location.protocol === 'https:' && (apiUrl.includes('localhost') || apiUrl.startsWith('http://'))) {
+      return (cachedApiUrl = '/cpanel/api.php');
+    }
+    return (cachedApiUrl = apiUrl);
+  }
   if (!resolvingApiUrl) {
     resolvingApiUrl = discoverApiUrl()
       .then((found) => {
@@ -176,8 +181,11 @@ async function v2Post<T>(action: string, payload: Record<string, unknown>): Prom
     } finally {
       clearTimeout(timeoutId);
     }
-  } catch (error) {
-    console.warn('[PBS v2] POST failed for ' + action, error);
+  } catch (error: any) {
+    const isNetworkErr = error?.name === 'TypeError' || error?.message?.includes('Failed to fetch') || error?.name === 'AbortError';
+    if (!isNetworkErr) {
+      console.warn('[PBS v2] POST warning for ' + action, error?.message || error);
+    }
     return null;
   }
 }
@@ -202,28 +210,36 @@ async function postOrQueue<T extends { success?: boolean; id?: string; error?: s
 ): Promise<T | null> {
   const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
   if (isOffline) {
-    queueMutations([{
-      op,
-      table,
-      id: String(id),
-      data: op === 'delete' ? null : (data ?? payload.entity ?? payload),
-      companyId: companyId ? String(companyId) : undefined,
-      timestamp: Date.now()
-    }]);
+    try {
+      queueMutations([{
+        op,
+        table,
+        id: String(id),
+        data: op === 'delete' ? null : (data ?? payload.entity ?? payload),
+        companyId: companyId ? String(companyId) : undefined,
+        timestamp: Date.now()
+      }]);
+    } catch (idbErr) {
+      console.warn('[PBS v2] IndexedDB offline queue warning:', idbErr);
+    }
     return { success: true, id: String(id) } as unknown as T;
   }
 
   const res = await v2Post<T>(action, payload);
   if (!res || !(res as any).success) {
     // If request failed (network error / timeout / server unreachable)
-    queueMutations([{
-      op,
-      table,
-      id: String(id),
-      data: op === 'delete' ? null : (data ?? payload.entity ?? payload),
-      companyId: companyId ? String(companyId) : undefined,
-      timestamp: Date.now()
-    }]);
+    try {
+      queueMutations([{
+        op,
+        table,
+        id: String(id),
+        data: op === 'delete' ? null : (data ?? payload.entity ?? payload),
+        companyId: companyId ? String(companyId) : undefined,
+        timestamp: Date.now()
+      }]);
+    } catch (idbErr) {
+      console.warn('[PBS v2] IndexedDB offline queue warning:', idbErr);
+    }
     return { success: true, id: String(id) } as unknown as T;
   }
   return res;
@@ -234,7 +250,13 @@ async function postOrQueue<T extends { success?: boolean; id?: string; error?: s
 // ----------------------------------------------------------------------------
 export async function v2ListCompanies(): Promise<Company[]> {
   const res = await v2Post<V2ListResponse<Company>>('v2_list_companies', {});
-  return res && Array.isArray(res.list) ? res.list : [];
+  const list = res && Array.isArray(res.list) ? res.list : [];
+  return list
+    .filter(c => c && (c.id != null || (c as any).company_id != null))
+    .map((c, idx) => {
+      const id = c.id != null ? c.id : ((c as any).company_id || `co_${idx + 1}`);
+      return { ...c, id, company_id: id } as Company;
+    });
 }
 
 export async function v2UpsertCompany(entity: Company): Promise<boolean> {

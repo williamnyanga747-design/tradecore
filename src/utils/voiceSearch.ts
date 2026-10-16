@@ -12,17 +12,27 @@ export const SWAHILI_STOPWORDS = [
   'kitu', 'sasa', 'leo', 'bado', 'tu', 'jinsi', 'mimi', 'wewe', 'kwani', 'basi', 'si', 'sijui', 'hivi'
 ];
 
+/** Common English filler/search words removed before matching products. */
+export const ENGLISH_STOPWORDS = [
+  'i', 'want', 'to', 'buy', 'find', 'search', 'for', 'the', 'a', 'an', 'in', 'on', 'at', 'is', 'are',
+  'and', 'or', 'of', 'please', 'show', 'me', 'looking', 'need', 'give', 'any', 'some', 'good', 'cheap',
+  'get', 'where', 'how', 'much', 'product', 'items', 'item'
+];
+
 const STRIP_RE = /[.,!?;:"'()\[\]{}<>@#$%^&*+=|\\/~`]/g;
 
 /** Normalise a voice transcript into a compact search query (stopwords removed). */
-export function extractSwahiliKeywords(transcript: string): string {
-  return transcript
+export function extractSwahiliKeywords(transcript: string, lang = 'sw-TZ'): string {
+  const isEn = lang.startsWith('en');
+  const stopwords = isEn ? [...ENGLISH_STOPWORDS, ...SWAHILI_STOPWORDS] : [...SWAHILI_STOPWORDS, ...ENGLISH_STOPWORDS];
+  const cleaned = transcript
     .toLowerCase()
     .replace(STRIP_RE, ' ')
     .split(/\s+/)
     .filter(w => w.length >= 2)
-    .filter(w => !SWAHILI_STOPWORDS.includes(w))
+    .filter(w => !stopwords.includes(w))
     .join(' ');
+  return cleaned || transcript.trim();
 }
 
 /** Quick keyword set match for banner suggestions (e.g. "kiatu", "simu", "nguo"). */
@@ -105,7 +115,7 @@ export function useVoiceSearch({ onResult, onListeningChange, lang = 'sw-TZ' }: 
         }
         const text = (final || interim).trim();
         if (text) {
-          onResultRef.current(text, extractSwahiliKeywords(text));
+          onResultRef.current(text, extractSwahiliKeywords(text, lang));
         }
       };
       rec.onend = () => { setListening(false); onListeningRef.current?.(false); };

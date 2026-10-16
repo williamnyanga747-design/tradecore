@@ -297,8 +297,8 @@ export default function Homepage({
                   if (!co) return true;
                   const st = String(co.status || '').toLowerCase();
                   return st !== 'pending payment' && st !== 'pending' && st !== 'rejected' && co.isMarketplaceActive !== false && !isCompanySubscriptionExpired(co);
-                }).slice(0, 4).map(p => (
-                  <div key={p.id} className={`${th.featureCard} ${th.cardBorder} rounded-xl overflow-hidden text-center`}>
+                }).slice(0, 4).map((p, pIdx) => (
+                  <div key={p.id != null ? `hp-prod-${p.id}-${pIdx}` : `hp-prod-${pIdx}`} className={`${th.featureCard} ${th.cardBorder} rounded-xl overflow-hidden text-center`}>
                     <div className="h-16 overflow-hidden">
                       {p.image ? (
                         <img src={p.image} alt={p.name} className="w-full h-full object-cover" />
@@ -327,7 +327,7 @@ export default function Homepage({
                 t('Mashirika na taasisi za kibiashara zinazowezesha na kukuza biashara za Tanzania kupitia mfumo wa Global TradeCore.')
               )}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-stretch">
-                {activeSponsors.map((sp: Sponsor) => {
+                {activeSponsors.map((sp: Sponsor, spIdx: number) => {
                   const tier = (sp.tier || 'gold').toLowerCase();
                   const isPlatinum = tier === 'platinum';
                   const isGold = tier === 'gold';
@@ -416,7 +416,7 @@ export default function Homepage({
                   if (hasUrl) {
                     return (
                       <a
-                        key={sp.id}
+                        key={sp.id != null ? `hp-sp-${sp.id}-${spIdx}` : `hp-sp-${spIdx}`}
                         href={href}
                         target="_blank"
                         rel="noopener noreferrer"
@@ -428,7 +428,7 @@ export default function Homepage({
                     );
                   }
 
-                  return <div key={sp.id} className="h-full">{cardBody}</div>;
+                  return <div key={sp.id != null ? `hp-sp-${sp.id}-${spIdx}` : `hp-sp-${spIdx}`} className="h-full">{cardBody}</div>;
                 })}
               </div>
             </section>

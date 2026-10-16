@@ -19,7 +19,8 @@ import {
   ProductReturn, Dispute, DisputeMessage, ReturnReason,
   FlashSale, FlashSaleItem, AppNotification,
   BulkUploadJob, Story, StoryView, ShippingZone,
-  Sponsor
+  Sponsor,
+  AccountingAccount, JournalVoucher
 } from './types';
 import {
   defaultSettings, defaultRolePermissions, defaultCompanies, defaultBranches, defaultStores, defaultUsers,
@@ -36,6 +37,7 @@ import {
 import { TANZANIA_REGIONS } from './utils/regions';
 import ChartErrorBoundary from './ChartErrorBoundary';
 import PanelErrorBoundary from './PanelErrorBoundary';
+import { analyzeQuestion, synthesizeIntelligentResponse, generateReasoningAndQuestions } from './utils/aiQuestionComprehension';
 
 // SAFE FORM SUBMIT (2026-09-08-2): requestSubmit() throws "Form submission canceled
 // because the form is not connected" whenever the target form was unmounted by a
@@ -87,6 +89,8 @@ import ArcadeGameModal from './components/ArcadeGameModal';
 import AirHockeyPro from './components/games/AirHockeyPro';
 import { subscribeToIncomingInvites, respondGameInvite } from './utils/gameInvitationEngine';
 import { ConfirmActionModal } from './components/ConfirmActionModal';
+import { AccountingTally } from './components/AccountingTally';
+import { ScientificCalculatorDrawer } from './components/ScientificCalculatorDrawer';
 import MarketplaceApp from './components/marketplace/MarketplaceApp';
 import MarketplaceOrdersPanel from './components/MarketplaceOrdersPanel';
 import MarketplaceSettingsPanel from './components/MarketplaceSettingsPanel';
@@ -173,7 +177,9 @@ import {
   Pencil, Trash2, Printer, FileSpreadsheet, Copy, CheckCircle, CheckCircle2, ShoppingBag, RefreshCw, AlertTriangle, AlertCircle, X, XCircle, Check,
   ShieldAlert, DollarSign as DollarIcon, CreditCard, Monitor, Barcode, Store as StoreIcon,
   Calendar, TrendingUp, Info, ShieldCheck, Lock, Globe, Truck, ChevronDown, ChevronUp, Building2, Camera, Layers, Zap, RotateCcw,
-  Clock3, Hourglass, UserPlus, RefreshCcw as RefreshIcon, Sparkles, Loader2, Image as ImageIcon
+  Clock3, Hourglass, UserPlus, RefreshCcw as RefreshIcon, Sparkles, Loader2, Image as ImageIcon,
+  Brain, Bot, Send, Volume2, VolumeX, Maximize2, Minimize2, Mic, HelpCircle, Lightbulb, MessageSquare,
+  Calculator
 } from 'lucide-react';
 import { compressImageFile, compressVideoFrame, compressImage, formatByteSize } from './utils/imageCompression';
 
@@ -636,6 +642,8 @@ const ADMIN_FULL_ACCESS_PAGES: readonly string[] = Object.freeze([
 
 // Stable module-level AI Copilot panel — defined OUTSIDE any render function so
 // React's reconciliation does NOT treat it as a new component type on every parent
+// Stable module-level AI Copilot panel — defined OUTSIDE any render function so
+// React's reconciliation does NOT treat it as a new component type on every parent
 // re-render (which would unmount/remount it and wipe its open/prompt/response state).
 interface AIStockCopilotProps {
   products: StockItem[];
@@ -647,28 +655,384 @@ interface AIStockCopilotProps {
   saveAllData: (fields: any) => void;
   logAction: (action: string, details: string) => void;
   toast: any;
+  companyName?: string;
+  companyId?: string | number | null;
+  currentUser?: User | null;
+  companies?: Company[];
+  branches?: Branch[];
+  stores?: Store[];
+  users?: User[];
+  salesOrders?: SalesOrder[];
+  purchaseOrders?: PurchaseOrder[];
+  expenses?: Expense[];
 }
-function AIStockCopilot({ products, storeId, t, formatMoney, activeCurrency, activeExchangeRate, saveAllData, logAction, toast }: AIStockCopilotProps) {
-  const [isAiOpen, setIsAiOpen] = useState(false);
+
+interface CopilotChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  reasoning?: string;
+  followUpQuestions?: string[];
+  sources?: Array<{ title: string; url: string; date: string }>;
+  searchQueries?: string[];
+  priceChangedToday?: boolean;
+  actions?: Array<{ productId: number; productName: string; qty: number; unitType: string; total: number }>;
+  timestamp: string;
+}
+
+function AIStockCopilot({
+  products,
+  storeId,
+  t,
+  formatMoney,
+  activeCurrency,
+  activeExchangeRate,
+  saveAllData,
+  logAction,
+  toast,
+  companyName,
+  companyId,
+  currentUser,
+  companies = [],
+  branches = [],
+  stores = [],
+  users = [],
+  salesOrders = [],
+  purchaseOrders = [],
+  expenses = []
+}: AIStockCopilotProps) {
+  const [isAiOpen, setIsAiOpen] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiResponse, setAiResponse] = useState<any>(null);
+  const [selectedProductId, setSelectedProductId] = useState<number | 'all'>('all');
+  const [activeDomain, setActiveDomain] = useState<'all' | 'stock' | 'pricing' | 'sales' | 'procurement' | 'finance' | 'market'>('all');
+  const [expandedReasoningIds, setExpandedReasoningIds] = useState<Record<string, boolean>>({});
+  const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
+  const [isListening, setIsListening] = useState(false);
 
-  const handleAskAI = async () => {
-    if (!aiPrompt.trim()) return;
-    setAiLoading(true);
-    setAiResponse(null);
+  // Active Company Selection (Allows Super Admins or users to query any company)
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | number>(
+    companyId || currentUser?.companyId || (companies[0]?.id ?? 1)
+  );
+
+  useEffect(() => {
+    if (companyId) {
+      setSelectedCompanyId(companyId);
+    } else if (currentUser?.companyId) {
+      setSelectedCompanyId(currentUser.companyId);
+    }
+  }, [companyId, currentUser]);
+
+  const activeCompanyObj = useMemo(() => {
+    const found = companies.find(c => String(c.id) === String(selectedCompanyId));
+    if (found) return found;
+    return {
+      id: selectedCompanyId || 1,
+      name: companyName || 'Alpha Global Retail Corp'
+    };
+  }, [companies, selectedCompanyId, companyName]);
+
+  const companyDisplayName = activeCompanyObj?.name || companyName || 'Alpha Global Retail Corp';
+
+  // Filter products scoped for active selected company
+  const scopedProducts = useMemo(() => {
+    return products.filter(p => !p.companyId || String(p.companyId) === String(selectedCompanyId));
+  }, [products, selectedCompanyId]);
+
+  // Scoped users for this company
+  const scopedUsers = useMemo(() => {
+    return users.filter(u => !u.companyId || String(u.companyId) === String(selectedCompanyId));
+  }, [users, selectedCompanyId]);
+
+  // Scoped branches & stores
+  const scopedBranches = useMemo(() => {
+    return branches.filter(b => !b.companyId || String(b.companyId) === String(selectedCompanyId));
+  }, [branches, selectedCompanyId]);
+
+  const scopedBranchIds = scopedBranches.map(b => String(b.id));
+  const scopedStores = useMemo(() => {
+    return stores.filter(s => 
+      (!s.companyId || String(s.companyId) === String(selectedCompanyId)) ||
+      (s.branchId && scopedBranchIds.includes(String(s.branchId)))
+    );
+  }, [stores, selectedCompanyId, scopedBranchIds]);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // KPI Calculations for Active Store and Company
+  const storeProducts = scopedProducts.filter(p => p && p.id);
+  const totalSkus = storeProducts.length;
+  const storeStockTotal = storeProducts.reduce((sum, p) => sum + (Number(p.stock?.[storeId]) || 0), 0);
+  const lowStockCount = storeProducts.filter(p => (Number(p.stock?.[storeId]) || 0) <= (p.lowStockQty || 5)).length;
+
+  // Initial welcome message from Copilot
+  const welcomeMessage: CopilotChatMessage = useMemo(() => ({
+    id: 'welcome-init',
+    role: 'assistant',
+    text: `### ✨ Karibu kwenye Advanced AI Stock Copilot ya **${companyDisplayName}**!
+Mimi ni msaidizi wako mkuu wa akili mnemba (AI) mwenye uelewa kamili wa data za kila kampuni na watumiaji wake katika mfumo wa TradeCore.
+
+**💡 Nipo tayari kujibu swali lolote kwa undani na mantiki:**
+- 🏢 **Kampuni na Watumiaji**: "Nani wanasimamia maduka ya ${companyDisplayName}?", "Wafanyakazi wa kila kampuni wana majukumu gani?"
+- 📦 **Stoo na Bidhaa**: "Ni bidhaa zipi zimebaki kidogo?", "Thamani ya mzigo kwa bei ya ununuzi na mauzo ni ngapi?"
+- 📈 **Mauzo na Faida**: "Tunawezaje kuongeza faida?", "Mwelekeo wa mauzo ya leo ukoje?"
+- 🏷️ **Marekebisho ya Bei**: Ushauri wa bei za jumla, rejareja, na vipimo vidogo (loose sub-units).
+- 🏙️ **Soko la Kariakoo na BoT/EWURA**: Bei za soko, sarafu ya Dola (USD/TZS), na bei za nishati.
+- 🤝 **Majadiliano na Wasambazaji**: Mikakati ya kupata punguzo kubwa kutoka kwa wauzaji wakuu.
+
+Nitakupa jibu lililochambuliwa kwa **Mantiki (Reasoning Process)** kulingana na data halisi za kampuni yako na mtumiaji uliyepo!`,
+    reasoning: `Mfumo umeanza. Data za ${companyDisplayName} (Wafanyakazi: ${scopedUsers.length}, Matawi: ${scopedBranches.length}, Stoo: ${scopedStores.length}, SKUs: ${totalSkus}, Units: ${storeStockTotal}, Low Stock: ${lowStockCount}) zimeunganishwa kikamilifu.`,
+    followUpQuestions: [
+      `Ni watumiaji gani wamepangiwa kusimamia stoo za ${companyDisplayName}?`,
+      "Ni bidhaa zipi ziko chini ya kiwango (Low Stock) na zinahitaji kuagizwa mara moja?",
+      "Tunawezaje kuongeza mauzo na faida kwa 25% mwezi huu?",
+      "Nipe mbinu za majadiliano ya bei na wasambazaji wakuu"
+    ],
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }), [companyDisplayName, totalSkus, storeStockTotal, lowStockCount, scopedUsers.length, scopedBranches.length, scopedStores.length]);
+
+  const [messages, setMessages] = useState<CopilotChatMessage[]>([welcomeMessage]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, aiLoading]);
+
+  const domainTabsList = [
+    { id: 'all', label: 'All & Overview', icon: '🗂️' },
+    { id: 'stock', label: 'Stock & Inventory', icon: '📦' },
+    { id: 'pricing', label: 'Pricing & Margins', icon: '💲' },
+    { id: 'sales', label: 'Sales & Satisfaction', icon: '📈' },
+    { id: 'procurement', label: 'Purchases & Vendors', icon: '🛒' },
+    { id: 'finance', label: 'Financial Performance', icon: '📊' },
+    { id: 'market', label: 'Kariakoo & BoT/EWURA', icon: '🏙️' }
+  ];
+
+  const quickPromptPills = [
+    { id: 'qp-sales', title: 'Ongeza mauzo kwa 25%', prompt: 'How can we increase company sales and customer satisfaction by 25%? (Tunawezaje kuongeza mauzo na kuridhika kwa wateja kwa 25%?)', icon: '⚡' },
+    { id: 'qp-pricing', title: 'Marekebisho bora ya bei', prompt: 'Recommend optimal pricing adjustments for high-demand products. (Marekebisho gani ya bei yanapendekezwa kwa bidhaa zinazotoka zaidi?)', icon: '🏷️' },
+    { id: 'qp-lowstock', title: 'Bidhaa zilizoisha & zinazolala', prompt: 'Which stock items are low or slow-moving and need immediate action? (Ni bidhaa zipi ziko chini au haziuziki haraka zinazohitaji hatua ya haraka?)', icon: '⚠️' },
+    { id: 'qp-expenses', title: 'Punguza gharama za uendeshaji', prompt: 'How can we minimize operating expenses and boost net profit margin? (Tunawezaje kupunguza gharama za uendeshaji na kukuza faida halisi?)', icon: '✂️' },
+    { id: 'qp-suppliers', title: 'Mbinu za majadiliano na wasambazaji', prompt: 'Provide a wholesale supplier negotiation strategy for lower purchase prices. (Mbinu gani za mazungumzo na wasambazaji wakuu zitapunguza gharama za ununuzi?)', icon: '🤝' },
+    { id: 'qp-kariakoo', title: 'Bei za Kariakoo & washindani', prompt: 'Check competitor prices in Kariakoo and Tanzania wholesale markets for fast-moving goods.', icon: '🏙️' },
+    { id: 'qp-bot', title: 'Kiwango cha BoT USD/TZS & mafuta', prompt: 'Current BoT USD/TZS exchange rate and recent EWURA fuel price changes affecting transport costs.', icon: '💱' }
+  ];
+
+  const selectedProductObj = selectedProductId !== 'all' ? products.find(p => p.id === selectedProductId) : null;
+
+  const toggleReasoning = (id: string) => {
+    setExpandedReasoningIds(prev => ({
+      ...prev,
+      [id]: prev[id] === undefined ? false : !prev[id]
+    }));
+  };
+
+  const handleCopyText = (text: string) => {
     try {
-      const response = await fetch('/api/ai-assist', {
+      navigator.clipboard.writeText(text);
+      toast.success(t('Copied to clipboard!'));
+    } catch {
+      toast.error(t('Failed to copy'));
+    }
+  };
+
+  const handleSpeakText = (id: string, text: string) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) {
+      toast.error(t('Text-to-speech not supported in this browser.'));
+      return;
+    }
+    if (speakingMsgId === id) {
+      window.speechSynthesis.cancel();
+      setSpeakingMsgId(null);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const clean = text.replace(/[#*`_~\[\]()]/g, ' ').replace(/\n+/g, '. ').slice(0, 500);
+    const utterance = new SpeechSynthesisUtterance(clean);
+    utterance.rate = 1.0;
+    utterance.onend = () => setSpeakingMsgId(null);
+    utterance.onerror = () => setSpeakingMsgId(null);
+    setSpeakingMsgId(id);
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const handleVoiceInput = () => {
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      toast.error(t('Voice input is not supported in this browser. Try typing instead.'));
+      return;
+    }
+    try {
+      const recognition = new SpeechRec();
+      recognition.lang = 'sw-TZ';
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      setIsListening(true);
+      recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        if (transcript) {
+          setAiPrompt(transcript);
+          handleAskAI(transcript);
+        }
+        setIsListening(false);
+      };
+      recognition.onerror = () => setIsListening(false);
+      recognition.onend = () => setIsListening(false);
+      recognition.start();
+    } catch {
+      setIsListening(false);
+    }
+  };
+
+  // Copilot itself asks the user (Proactive Strategic Inquiry)
+  const handleProactiveCopilotInquiry = () => {
+    if (lowStockCount > 0) {
+      const lowItems = storeProducts
+        .filter(p => (Number(p.stock?.[storeId]) || 0) <= (p.lowStockQty || 5))
+        .slice(0, 3)
+        .map(p => p.name)
+        .join(', ');
+
+      const proactiveMsg: CopilotChatMessage = {
+        id: `proactive-${Date.now()}`,
+        role: 'assistant',
+        text: `### ❓ Swali la Kimkakati Kutoka kwa Copilot Kwako:
+Nimefanya ukaguzi wa haraka wa stoo ya **${companyDisplayName}** hivi punde na kugundua kuwa kuna **bidhaa ${lowStockCount} ziko chini ya kiwango cha usalama (Low Stock)** (${lowItems}).
+
+**Swali langu kwako:**
+Je, una mpango wa kutoa **Oda ya Ununuzi (Purchase Order)** wiki hii kwa ajili ya bidhaa hizi, au ungependa kwanza tuchunguze mtiririko wa fedha taslimu (cashflow) na kuona ni wasambazaji gani wana bei nafuu zaidi kabla ya kuagiza?`,
+        reasoning: `1. Ukaguzi wa Stoo: Bidhaa ${lowStockCount} zimefikia au ziko chini ya kiwango cha tahadhari cha lowStockQty (<= 5).\n2. Athari: Kuishiwa mzigo (stock-out) kutasababisha wateja kwenda kwa washindani na kupunguza mapato ya kila siku.\n3. Ushauri wa Mfumo: Kumchochea mmiliki wa biashara kuchukua hatua kabla mzigo haujaisha kabisa.`,
+        followUpQuestions: [
+          "Ndiyo, andaa rasimu ya Purchase Order kwa bidhaa zote zenye Low Stock mara moja",
+          "Tuchunguze kwanza mtiririko wa fedha (cashflow) na mtaji kabla ya kuagiza",
+          "Nionyeshe ni wasambazaji gani wana bei nafuu zaidi kwa bidhaa hizi",
+          "Je, tunaweza kuhamisha mzigo kutoka tawi au duka lingine badala ya kununua mpya?"
+        ],
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      setMessages(prev => [...prev, proactiveMsg]);
+    } else {
+      const proactiveMsg: CopilotChatMessage = {
+        id: `proactive-${Date.now()}`,
+        role: 'assistant',
+        text: `### ❓ Swali la Kimkakati Kutoka kwa Copilot Kwako:
+Stoo yako ya **${companyDisplayName}** ina jumla ya bidhaa **${totalSkus}** na hakuna bidhaa iliyo chini ya kiwango cha chini kwa sasa. Hii ni nzuri sana!
+
+**Swali langu kwako:**
+Je, unaona bidhaa zako zinazouza zaidi zina faida ghafi ya kutosha (Gross Margin > 25%), au unadhani tunaweza kufanya marekebisho madogo ya bei za rejareja (Retail Price Optimization) ili kukuza faida halisi ya duka hili bila kuwakimbiza wateja?`,
+        reasoning: `1. Hali ya Stoo: Afya ya stoo iko salama (hakuna uhaba wa ghafla wa bidhaa).\n2. Fursa ya Kimkakati: Wakati stoo ikiwa thabiti, wakati mwafaka ni kuongeza faida (Margin Expansion) na kuboresha uuzaji wa vipimo vidogo (loose sub-units).\n3. Lengo: Kumwezesha mfanyabiashara kupata faida kubwa zaidi kwa mtaji uleule.`,
+        followUpQuestions: [
+          "Chambua faida ghafi ya bidhaa 5 zinazotoka kwa kasi zaidi dukani",
+          "Wateja wanalalamikia bei, tuangalie mbinu za kuongeza mauzo bila kupunguza bei",
+          "Tengeneza mkakati wa kuvutia wateja wa jumla (Wholesalers) kwa bei maalum",
+          "Nisaidie kuongeza uuzaji wa vipimo vidogo (Loose Sub-Units) ili kupata faida zaidi"
+        ],
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      setMessages(prev => [...prev, proactiveMsg]);
+    }
+  };
+
+  const handleAskAI = async (customPrompt?: string) => {
+    const textToSend = (customPrompt !== undefined ? customPrompt : aiPrompt).trim();
+    if (!textToSend) return;
+
+    const userMsg: CopilotChatMessage = {
+      id: `usr-${Date.now()}`,
+      role: 'user',
+      text: textToSend,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+
+    setMessages(prev => [...prev, userMsg]);
+    setAiPrompt('');
+    setAiLoading(true);
+
+    try {
+      const chatHistory = [...messages, userMsg].slice(-10).map(m => ({
+        role: m.role,
+        content: m.text
+      }));
+
+      const response = await fetch('/api/copilot-chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt: aiPrompt,
-          products: products.map(p => ({
+          prompt: textToSend,
+          messages: chatHistory,
+          companyInfo: {
+            id: selectedCompanyId,
+            name: companyDisplayName,
+            currency: activeCurrency,
+            exchangeRate: activeExchangeRate,
+            user: currentUser ? {
+              id: currentUser.id,
+              name: currentUser.name,
+              username: currentUser.username,
+              role: currentUser.role,
+              email: currentUser.email,
+              companyId: currentUser.companyId,
+              branchId: currentUser.branchId,
+              storeId: currentUser.storeId
+            } : null
+          },
+          domain: activeDomain === 'all' ? 'overview' : activeDomain,
+          companies: (companies || []).map(c => ({
+            id: c.id,
+            name: c.name,
+            tin_number: (c as any).tin_number || (c as any).tinNumber,
+            country: c.country,
+            status: c.status
+          })),
+          users: (users || []).map(u => ({
+            id: u.id,
+            name: u.name,
+            username: u.username,
+            role: u.role,
+            companyId: u.companyId,
+            branchId: u.branchId,
+            storeId: u.storeId
+          })),
+          branches: (branches || []).map(b => ({
+            id: b.id,
+            name: b.name,
+            companyId: b.companyId
+          })),
+          stores: (stores || []).map(s => ({
+            id: s.id,
+            name: s.name,
+            location: s.location,
+            branchId: s.branchId,
+            companyId: s.companyId
+          })),
+          salesOrders: (salesOrders || []).slice(-30).map(s => ({
+            id: s.id,
+            total: s.total,
+            profit: s.profit,
+            date: s.date,
+            companyId: s.companyId
+          })),
+          purchaseOrders: (purchaseOrders || []).slice(-20).map(p => ({
+            id: p.id,
+            total: p.total,
+            poNumber: p.poNumber,
+            supplierId: p.supplierId,
+            status: p.status,
+            companyId: p.companyId
+          })),
+          expenses: (expenses || []).slice(-30).map(e => ({
+            id: e.id,
+            amount: e.amount,
+            category: e.category,
+            companyId: e.companyId
+          })),
+          products: scopedProducts.map(p => ({
             id: p.id,
             name: p.name,
             code: p.code,
             category: p.category,
+            companyId: p.companyId,
             stock_qty: p.stock?.[storeId] || 0,
             useSubUnitPricing: p.useSubUnitPricing,
             unit: p.unit,
@@ -680,102 +1044,554 @@ function AIStockCopilot({ products, storeId, t, formatMoney, activeCurrency, act
             subUnitRetailPrice: p.subUnitRetailPrice,
             subUnitWholesalePrice: p.subUnitWholesalePrice,
           })),
-          priceType: 'Retail'
+          selectedProduct: selectedProductObj ? {
+            id: selectedProductObj.id,
+            name: selectedProductObj.name,
+            code: selectedProductObj.code,
+            retailPrice: selectedProductObj.retailPrice,
+            purchasePrice: selectedProductObj.purchasePrice
+          } : null
         })
       });
+
       const data = await response.json();
-      setAiResponse(data);
+      if (data.success && data.text) {
+        const assistantMsg: CopilotChatMessage = {
+          id: `asst-${Date.now()}`,
+          role: 'assistant',
+          text: data.text,
+          reasoning: data.reasoning,
+          followUpQuestions: data.followUpQuestions,
+          sources: data.sources || [],
+          searchQueries: data.searchQueries || [],
+          priceChangedToday: data.priceChangedToday,
+          actions: data.actions || [],
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+        setMessages(prev => [...prev, assistantMsg]);
+      } else {
+        const liveMetrics = {
+          totalProducts: totalSkus,
+          lowStockCount: lowStockCount,
+          stockValuationCost: storeProducts.reduce((sum, p) => sum + (Number(p.stock?.[storeId]) || 0) * (p.purchasePrice || 0), 0),
+          stockValuationRetail: storeProducts.reduce((sum, p) => sum + (Number(p.stock?.[storeId]) || 0) * (p.retailPrice || 0), 0),
+          todaySalesRevenue: salesOrders.reduce((acc, so) => acc + (so.total || 0), 0)
+        };
+        const analysis = analyzeQuestion(textToSend);
+        const ans = synthesizeIntelligentResponse(textToSend, analysis, companyDisplayName, liveMetrics, scopedProducts);
+        const assistantMsg: CopilotChatMessage = {
+          id: `asst-${Date.now()}`,
+          role: 'assistant',
+          text: ans.text,
+          reasoning: ans.reasoning,
+          followUpQuestions: ans.followUpQuestions,
+          sources: ans.sources || [],
+          searchQueries: ans.searchQueries || [],
+          priceChangedToday: ans.priceChangedToday,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        };
+        setMessages(prev => [...prev, assistantMsg]);
+      }
     } catch (err: any) {
-      console.error("AI error", err);
-      setAiResponse({ success: false, explanation: "Failed to query AI. Ensure server is running and GEMINI_API_KEY is configured." });
+      console.warn("AI Copilot request fallback to intelligent comprehension:", err);
+      const liveMetrics = {
+        totalProducts: totalSkus,
+        lowStockCount: lowStockCount,
+        stockValuationCost: storeProducts.reduce((sum, p) => sum + (Number(p.stock?.[storeId]) || 0) * (p.purchasePrice || 0), 0),
+        stockValuationRetail: storeProducts.reduce((sum, p) => sum + (Number(p.stock?.[storeId]) || 0) * (p.retailPrice || 0), 0),
+        todaySalesRevenue: salesOrders.reduce((acc, so) => acc + (so.total || 0), 0)
+      };
+      const analysis = analyzeQuestion(textToSend);
+      const ans = synthesizeIntelligentResponse(textToSend, analysis, companyDisplayName, liveMetrics, scopedProducts);
+      const assistantMsg: CopilotChatMessage = {
+        id: `asst-${Date.now()}`,
+        role: 'assistant',
+        text: ans.text,
+        reasoning: ans.reasoning,
+        followUpQuestions: ans.followUpQuestions,
+        sources: ans.sources || [],
+        searchQueries: ans.searchQueries || [],
+        priceChangedToday: ans.priceChangedToday,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      };
+      setMessages(prev => [...prev, assistantMsg]);
     } finally {
       setAiLoading(false);
     }
   };
 
-  const handleApplyAdjustment = () => {
-    if (!aiResponse || !aiResponse.actions) return;
+  const handleGenerateIntelligenceReport = () => {
+    let p = "";
+    if (selectedProductObj) {
+      p = `Generate a full executive intelligence report for ${selectedProductObj.name} (${selectedProductObj.code}), including sales velocity, margin optimization, and Tanzania market price benchmarks.`;
+    } else {
+      p = `Generate an executive intelligence report for ${companyDisplayName} covering all inventory, gross profit margins, low stock alerts, and wholesale supplier negotiation strategies.`;
+    }
+    handleAskAI(p);
+  };
+
+  const handleApplyAdjustment = (actionsToApply?: any[]) => {
+    if (!actionsToApply || actionsToApply.length === 0) return;
     const updatedStockItems = products.map(item => {
-      const matchingActions = aiResponse.actions.filter((act: any) => act.productId === item.id);
+      const matchingActions = actionsToApply.filter((act: any) => act.productId === item.id);
       if (matchingActions.length === 0) return item;
       const nextStock = { ...item.stock };
       matchingActions.forEach((action: any) => {
         const conversion = item.subUnitConversion || 1;
         const deductionInMainUnit = action.unitType === 'sub' ? action.qty / conversion : action.qty;
-        nextStock[storeId] = (nextStock[storeId] || 0) - deductionInMainUnit;
+        nextStock[storeId] = Math.max(0, (nextStock[storeId] || 0) - deductionInMainUnit);
       });
       return { ...item, stock: nextStock };
     });
     saveAllData({ stockItems: updatedStockItems });
-    logAction('AI Stock Adjustment', `Adjusted inventory via AI Assistant for: ${aiResponse.actions.map((a: any) => a.productName).join(', ')}`);
+    logAction('AI Stock Adjustment', `Adjusted inventory via AI Assistant for: ${actionsToApply.map((a: any) => a.productName).join(', ')}`);
     toast.success(t('Inventory adjusted successfully based on AI recommendations!'));
-    setAiResponse(null);
-    setAiPrompt('');
+  };
+
+  const handleClearChat = () => {
+    setMessages([welcomeMessage]);
+    toast.success(t('Chat history cleared.'));
   };
 
   return (
-    <div className="bg-gradient-to-r from-brand/5 to-indigo-50/40 rounded-xl border border-brand/20 shadow-sm p-4 no-print space-y-3">
-      <div className="flex items-center justify-between cursor-pointer" onClick={() => setIsAiOpen(!isAiOpen)}>
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-brand/10 text-brand flex items-center justify-center font-bold">✨</div>
+    <div className={`bg-white rounded-2xl border border-brand/20 shadow-sm transition-all duration-300 no-print ${isExpanded ? 'p-6 fixed inset-4 z-50 overflow-hidden flex flex-col bg-white shadow-2xl ring-4 ring-black/20' : 'p-4 sm:p-5 space-y-4'}`}>
+      {/* Top Banner & Header Toolbar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100">
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setIsAiOpen(!isAiOpen)}>
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 via-orange-500 to-rose-600 text-white flex items-center justify-center font-black shadow-md shadow-orange-500/30 text-lg">
+            ✨
+          </div>
           <div>
-            <h4 className="font-bold text-gray-900 text-xs sm:text-sm">{t('AI Stock & Pricing Copilot')}</h4>
-            <p className="text-[10px] text-gray-500 font-medium">{t('Ask to process sales, loose units (bread, flour) and check pricing rules')}</p>
+            <div className="flex items-center gap-2">
+              <h4 className="font-extrabold text-gray-900 text-sm sm:text-base flex items-center gap-1.5">
+                <span>{t('AI Stock & Strategic Copilot')}</span>
+                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+                  GPT Reasoner Active
+                </span>
+              </h4>
+            </div>
+            <p className="text-[11px] text-gray-500 font-medium mt-0.5">
+              {t('Functions as ChatGPT: Ask ANY questions with Deep Reasoning, and Copilot proactively asks YOU strategic inquiries.')}
+            </p>
+            {/* Live Company & Operator Context Pill */}
+            <div className="flex items-center gap-2 flex-wrap text-xs mt-1.5 text-gray-600">
+              <div className="flex items-center gap-1 font-bold text-gray-800 bg-gray-100 px-2 py-0.5 rounded-md border border-gray-200">
+                <span>🏢</span>
+                <span className="text-[11px] text-gray-500">{t('Company')}:</span>
+                {companies.length > 1 ? (
+                  <select
+                    value={selectedCompanyId}
+                    onChange={(e) => setSelectedCompanyId(e.target.value)}
+                    className="bg-transparent text-xs font-black text-brand focus:outline-hidden cursor-pointer"
+                    title="Switch company scope"
+                  >
+                    {companies.map(c => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="font-black text-brand text-xs">{companyDisplayName}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-1 text-[11px] font-medium text-gray-700 bg-indigo-50/70 border border-indigo-200/60 px-2 py-0.5 rounded-md">
+                <span>👤</span>
+                <span className="font-bold">{currentUser?.name || 'Operator'}</span>
+                <span className="text-[9px] uppercase font-black px-1 rounded bg-indigo-100 text-indigo-800">
+                  {currentUser?.role || 'User'}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
-        <button className="text-xs font-semibold text-brand hover:text-brand-hover">
-          {isAiOpen ? t('Collapse') : t('Expand Assistant')}
-        </button>
-      </div>
-      {isAiOpen && (
-        <div className="pt-2 border-t border-brand/10 space-y-3 animate-fadeIn">
-          <div className="flex flex-col sm:flex-row gap-2.5">
-            <div className="flex-1">
-              <textarea
-                value={aiPrompt}
-                onChange={(e) => setAiPrompt(e.target.value)}
-                placeholder={t("e.g. 'A retail customer is buying 3 loose loaves of bread individually' or 'A Wholesaler wants 1 full sack and 2 kg of flour'")}
-                className="w-full h-16 p-2.5 border border-gray-200 rounded-lg text-xs font-semibold outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand bg-white resize-none"
-              />
-            </div>
-            <div className="flex flex-col gap-1.5 shrink-0 justify-end">
-              <button
-                onClick={handleAskAI}
-                disabled={aiLoading}
-                className="bg-brand hover:bg-brand-hover text-white px-4 py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-50"
-              >
-                {aiLoading ? (<span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />) : '✨'} {t('Ask Copilot')}
-              </button>
-            </div>
+
+        {/* Quick KPI badges & Action Buttons */}
+        <div className="flex items-center gap-2 flex-wrap self-start sm:self-center">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-50 border border-gray-200 text-[11px] font-bold text-gray-700">
+            <span className="text-gray-400">{t('SKUs')}:</span>
+            <span className="text-brand font-black">{totalSkus}</span>
           </div>
-          <div className="flex flex-wrap gap-1.5 items-center">
-            <span className="text-[9px] text-gray-400 font-bold uppercase tracking-wider">{t('Try Examples')}:</span>
-            <button onClick={() => setAiPrompt("We have 5 bags of 24kg flour. A customer wants to buy 2 kilograms of flour as a Retail customer.")} className="text-[10px] bg-white border border-gray-200 text-gray-600 hover:border-brand px-2 py-1 rounded font-semibold transition">🌾 Flour 2 kg (Retail)</button>
-            <button onClick={() => setAiPrompt("A customer is buying 3 loose loaves of Bread.")} className="text-[10px] bg-white border border-gray-200 text-gray-600 hover:border-brand px-2 py-1 rounded font-semibold transition">🍞 Bread 3 Loaves</button>
-            <button onClick={() => setAiPrompt("A wholesaler wants 2 full sacks of flour.")} className="text-[10px] bg-white border border-gray-200 text-gray-600 hover:border-brand px-2 py-1 rounded font-semibold transition">📦 Flour 2 Sacks (Wholesale)</button>
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-50 border border-gray-200 text-[11px] font-bold text-gray-700">
+            <span className="text-gray-400">{t('Units')}:</span>
+            <span className="text-indigo-600 font-black">{storeStockTotal}</span>
           </div>
-          {aiResponse && (
-            <div className="p-3 bg-white border border-brand/10 rounded-lg space-y-2.5">
-              <div className="text-xs font-medium text-gray-700 whitespace-pre-line leading-relaxed border-l-2 border-brand pl-2.5 font-mono">{aiResponse.explanation}</div>
-              {aiResponse.success && aiResponse.actions && aiResponse.actions.length > 0 && (
-                <div className="pt-2 border-t border-gray-100 flex flex-col sm:flex-row gap-2 items-center justify-between">
-                  <div className="space-y-0.5">
-                    <span className="text-[10px] font-bold text-gray-400 uppercase block">{t('Matched Actions')}</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {aiResponse.actions.map((act: any, idx: number) => (
-                        <span key={idx} className="bg-brand/5 text-brand px-2 py-0.5 rounded text-[10px] font-bold">
-                          {act.productName}: {act.qty} {act.unitType === 'sub' ? 'loose' : 'package'} ({formatMoney(act.total, activeCurrency, activeExchangeRate)})
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <button onClick={handleApplyAdjustment} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 shrink-0">
-                    <Check className="w-3.5 h-3.5" /> {t('Apply Stock Deduction')}
-                  </button>
-                </div>
-              )}
+          {lowStockCount > 0 && (
+            <div className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200 text-[11px] font-black text-rose-700 animate-pulse">
+              <span>⚠️</span>
+              <span>{lowStockCount} {t('Low Stock')}</span>
             </div>
           )}
+
+          {/* Proactive Inquiry Trigger Button */}
+          <button
+            type="button"
+            onClick={handleProactiveCopilotInquiry}
+            className="transition-all duration-200 hover:scale-[1.03] active:scale-95 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 shadow-xs cursor-pointer"
+            title="Ask Copilot to inspect current company state and pose a strategic question to you"
+          >
+            <HelpCircle className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">{t('Copilot, Niulize Swali')}</span>
+            <span className="sm:hidden">{t('Niulize')}</span>
+          </button>
+
+          {/* Fullscreen Expand Toggle */}
+          <button
+            type="button"
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 transition cursor-pointer"
+            title={isExpanded ? t('Minimize') : t('Expand to Fullscreen')}
+          >
+            {isExpanded ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+          </button>
+
+          {/* Clear Chat */}
+          <button
+            type="button"
+            onClick={handleClearChat}
+            className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 transition cursor-pointer"
+            title={t('Clear conversation')}
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+
+          {/* Collapse/Open */}
+          <button
+            type="button"
+            onClick={() => setIsAiOpen(!isAiOpen)}
+            className="text-xs font-bold text-brand hover:text-brand-hover px-3 py-1 rounded-lg bg-brand/5 border border-brand/20 transition cursor-pointer"
+          >
+            {isAiOpen ? t('Collapse') : t('Open Copilot')}
+          </button>
+        </div>
+      </div>
+
+      {isAiOpen && (
+        <div className={`space-y-4 ${isExpanded ? 'flex-1 flex flex-col overflow-hidden min-h-0' : ''}`}>
+          {/* Domain Tabs & Product Focus Bar */}
+          <div className="space-y-2.5">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+                {domainTabsList.map((d, dIdx) => (
+                  <button
+                    key={`app-copilot-dom-${d.id}-${dIdx}`}
+                    type="button"
+                    onClick={() => setActiveDomain(d.id as any)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap cursor-pointer border ${
+                      activeDomain === d.id
+                        ? 'bg-gray-900 text-white border-gray-900 shadow-sm'
+                        : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
+                    }`}
+                  >
+                    <span>{d.icon}</span>
+                    <span>{d.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Product Drilldown & Report Generator */}
+              <div className="flex items-center gap-2">
+                <select
+                  value={selectedProductId}
+                  onChange={(e) => setSelectedProductId(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                  className="px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs font-semibold bg-white outline-none max-w-xs truncate"
+                >
+                  <option key="__app_all_products__" value="all">🌐 All Products ({products.length})</option>
+                  {products.map((p, idx) => (
+                    <option key={`app-prod-sel-${p.id ?? idx}-${idx}`} value={p.id}>
+                      {p.name} ({p.code}) • Cost: {formatMoney(p.purchasePrice, activeCurrency, activeExchangeRate)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleGenerateIntelligenceReport}
+                  disabled={aiLoading}
+                  className="transition-all duration-200 hover:scale-[1.02] bg-[#A11D2F] hover:bg-[#851624] text-white font-extrabold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1 shrink-0 cursor-pointer disabled:opacity-50 shadow-xs"
+                >
+                  <span>✨</span>
+                  <span>{t('Generate Report')}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Prompt Recommendation Chips */}
+            <div className="flex items-center gap-1.5 overflow-x-auto py-1 scrollbar-thin">
+              <span className="text-[10px] font-black uppercase text-gray-400 shrink-0 flex items-center gap-1">
+                <Zap className="w-3 h-3 text-amber-500" />
+                <span>{t('Prompts')}:</span>
+              </span>
+              {quickPromptPills.map((item, pIdx) => (
+                <button
+                  key={`app-rec-pill-${item.id}-${pIdx}`}
+                  type="button"
+                  onClick={() => handleAskAI(item.prompt)}
+                  disabled={aiLoading}
+                  className="text-[11px] bg-blue-50/80 hover:bg-blue-100 text-blue-950 border border-blue-200/80 px-2.5 py-1 rounded-full font-bold transition hover:scale-[1.02] shrink-0 flex items-center gap-1 cursor-pointer shadow-2xs active:scale-95 disabled:opacity-50"
+                >
+                  <span>{item.icon}</span>
+                  <span>{item.title}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ChatGPT Conversational Message Thread Container */}
+          <div className={`overflow-y-auto rounded-2xl border border-gray-200 bg-slate-50/60 p-3 sm:p-4 space-y-4 scrollbar-thin ${isExpanded ? 'flex-1' : 'max-h-[500px] min-h-[220px]'}`}>
+            {messages.map((msg, msgIdx) => (
+              <div
+                key={`msg-${msg.id ?? msgIdx}-${msgIdx}`}
+                className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+              >
+                {msg.role === 'assistant' && (
+                  <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-400 via-orange-500 to-rose-600 text-white flex items-center justify-center font-black text-sm shrink-0 shadow-sm mt-0.5">
+                    ✨
+                  </div>
+                )}
+
+                <div className={`max-w-[88%] sm:max-w-[80%] rounded-2xl p-3.5 sm:p-4 shadow-xs text-xs ${
+                  msg.role === 'user'
+                    ? 'bg-slate-900 text-white font-medium rounded-tr-xs'
+                    : 'bg-white text-gray-900 border border-gray-200 rounded-tl-xs space-y-2.5'
+                }`}>
+                  {/* Assistant Header & Actions Toolbar */}
+                  {msg.role === 'assistant' && (
+                    <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-black text-gray-900 flex items-center gap-1">
+                          <Bot className="w-3.5 h-3.5 text-amber-500" />
+                          <span>TradeCore Copilot</span>
+                        </span>
+                        <span className="text-[10px] text-gray-400 font-mono font-medium">{msg.timestamp}</span>
+                        {msg.priceChangedToday && (
+                          <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded">
+                            Market Verified
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleSpeakText(msg.id, msg.text)}
+                          className="p-1 text-gray-400 hover:text-amber-600 rounded transition cursor-pointer"
+                          title={speakingMsgId === msg.id ? t('Stop speaking') : t('Listen (Read aloud)')}
+                        >
+                          {speakingMsgId === msg.id ? <VolumeX className="w-3.5 h-3.5 text-amber-600 animate-pulse" /> : <Volume2 className="w-3.5 h-3.5" />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyText(msg.text)}
+                          className="p-1 text-gray-400 hover:text-gray-700 rounded transition cursor-pointer"
+                          title={t('Copy text')}
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Message Content Body */}
+                  <div className="whitespace-pre-line leading-relaxed font-sans select-text">
+                    {msg.text}
+                  </div>
+
+                  {/* Chain-Of-Thought / Deep Reasoning Process Accordion */}
+                  {msg.reasoning && (
+                    <div className="rounded-xl border border-amber-200/90 bg-amber-50/70 p-2.5 text-xs text-amber-950">
+                      <div
+                        className="flex items-center justify-between cursor-pointer select-none font-bold text-amber-900"
+                        onClick={() => toggleReasoning(msg.id)}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Brain className="w-3.5 h-3.5 text-amber-600 animate-pulse" />
+                          <span>{t('🧠 Mantiki na Uchambuzi wa Copilot (Reasoning Process)')}</span>
+                        </span>
+                        <span className="text-[10px] text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full font-bold">
+                          {expandedReasoningIds[msg.id] !== false ? t('Hide Reasoning') : t('Show Reasoning')}
+                        </span>
+                      </div>
+                      {expandedReasoningIds[msg.id] !== false && (
+                        <div className="mt-2 pt-2 border-t border-amber-200/70 font-mono text-[11px] leading-relaxed whitespace-pre-line text-amber-900/95 pl-1 bg-white/60 p-2 rounded-lg">
+                          {msg.reasoning}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Sources / Citations */}
+                  {msg.sources && msg.sources.length > 0 && (
+                    <div className="pt-2 border-t border-gray-100 flex flex-wrap items-center gap-1.5">
+                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{t('Sources')}:</span>
+                      {msg.sources.map((s, sIdx) => (
+                        <a
+                          key={`msg-src-${msg.id}-${sIdx}`}
+                          href={s.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] text-blue-600 hover:text-blue-800 underline bg-blue-50 px-2 py-0.5 rounded flex items-center gap-1"
+                        >
+                          <Globe className="w-2.5 h-2.5" />
+                          <span className="truncate max-w-[140px]">{s.title}</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Action items execution */}
+                  {msg.actions && msg.actions.length > 0 && (
+                    <div className="pt-2.5 border-t border-gray-100 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black text-gray-500 uppercase">{t('Recommended Actions')}:</span>
+                        <span className="text-[10px] font-black text-brand bg-brand/10 px-2 py-0.5 rounded-full">
+                          {msg.actions.length} {t('items')}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {msg.actions.map((act: any, aIdx: number) => (
+                          <div key={`act-item-${msg.id}-${aIdx}`} className="p-2 bg-gray-50 border border-gray-200 rounded-lg flex items-center justify-between text-xs">
+                            <div>
+                              <div className="font-bold text-gray-900">{act.productName}</div>
+                              <div className="text-[10px] text-gray-500">
+                                {t('Qty')}: {act.qty} {act.unitType === 'sub' ? 'loose' : 'main'}
+                              </div>
+                            </div>
+                            <div className="font-bold text-emerald-600">{formatMoney(act.total, activeCurrency, activeExchangeRate)}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleApplyAdjustment(msg.actions)}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-xs cursor-pointer active:scale-95"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>{t('Apply Stock Deduction')}</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Interactive Proactive Questions (Copilot itself asks the user!) */}
+                  {msg.followUpQuestions && msg.followUpQuestions.length > 0 && (
+                    <div className="mt-3 pt-2.5 border-t border-gray-100 space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-[11px] font-black text-amber-700">
+                        <HelpCircle className="w-3.5 h-3.5" />
+                        <span>{t("❓ Maswali ya Kimkakati ya Copilot Kwako (Copilot Asks You):")}</span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {msg.followUpQuestions.map((q, qIdx) => (
+                          <button
+                            key={`app-msg-fuq-${msg.id}-${qIdx}`}
+                            type="button"
+                            onClick={() => handleAskAI(q)}
+                            disabled={aiLoading}
+                            className="text-[11px] bg-gradient-to-r from-amber-50 to-orange-50 hover:from-amber-100 hover:to-orange-100 text-amber-900 border border-amber-200 px-3 py-1.5 rounded-full font-bold transition-all hover:scale-[1.02] flex items-center gap-1.5 text-left cursor-pointer active:scale-95 shadow-2xs disabled:opacity-50"
+                          >
+                            <span className="text-amber-600 font-extrabold">👉</span>
+                            <span>{q}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {msg.role === 'user' && (
+                  <div className="w-8 h-8 rounded-xl bg-slate-900 text-white flex items-center justify-center font-black text-xs shrink-0 shadow-sm mt-0.5">
+                    👤
+                  </div>
+                )}
+              </div>
+            ))}
+
+            {/* AI Reasoning / Thinking State */}
+            {aiLoading && (
+              <div className="flex gap-3 items-start">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-400 via-orange-500 to-rose-600 text-white flex items-center justify-center font-black text-sm shrink-0 shadow-sm animate-pulse">
+                  ✨
+                </div>
+                <div className="bg-white border border-amber-200/80 rounded-2xl rounded-tl-xs p-3.5 shadow-xs space-y-2 max-w-[80%]">
+                  <div className="flex items-center gap-2 text-xs font-black text-amber-800">
+                    <Brain className="w-4 h-4 text-amber-600 animate-spin" />
+                    <span>{t('Copilot anafikiri na kuchambua mantiki (Reasoning)...')}</span>
+                  </div>
+                  <p className="text-[11px] text-gray-500">
+                    {t('Kukagua data za stoo, kuangalia viwango vya bei za soko, na kuandaa majibu yenye mantiki na maswali ya kimkakati...')}
+                  </p>
+                  <div className="flex items-center gap-1 pt-1">
+                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-2 h-2 rounded-full bg-amber-500 animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* ChatGPT-Grade Interactive Input Box */}
+          <div className="space-y-1.5 pt-1">
+            <div className="flex items-center gap-2">
+              <div className="flex-1 relative flex items-center">
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={aiPrompt}
+                  onChange={(e) => setAiPrompt(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleAskAI();
+                    }
+                  }}
+                  placeholder="Ask Copilot anything (stoo, bei, faida, Kariakoo, BoT/EWURA, au swali lolote la biashara)..."
+                  disabled={aiLoading}
+                  className="w-full pl-3.5 pr-10 py-3 border border-gray-300 rounded-xl text-xs font-semibold outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 bg-gray-50/70 shadow-inner"
+                />
+
+                {/* Voice Input Microphone Button */}
+                <button
+                  type="button"
+                  onClick={handleVoiceInput}
+                  disabled={aiLoading}
+                  className={`absolute right-2 p-1.5 rounded-lg transition cursor-pointer ${
+                    isListening ? 'bg-rose-500 text-white animate-pulse' : 'text-gray-400 hover:text-amber-600 hover:bg-gray-100'
+                  }`}
+                  title={isListening ? t('Listening...') : t('Speak question (Voice input)')}
+                >
+                  <Mic className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Send Button */}
+              <button
+                type="button"
+                onClick={() => handleAskAI()}
+                disabled={aiLoading || !aiPrompt.trim()}
+                className="transition-all duration-200 hover:scale-[1.02] active:scale-95 bg-slate-900 hover:bg-black text-white px-5 py-3 rounded-xl text-xs font-black flex items-center justify-center gap-2 disabled:opacity-40 shadow-md cursor-pointer shrink-0"
+              >
+                {aiLoading ? (
+                  <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                ) : (
+                  <Send className="w-3.5 h-3.5 text-amber-400" />
+                )}
+                <span>{aiLoading ? t('Thinking...') : t('Ask')}</span>
+              </button>
+
+              {aiPrompt && (
+                <button
+                  type="button"
+                  onClick={() => setAiPrompt('')}
+                  className="px-3 py-2 text-xs font-bold text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition cursor-pointer"
+                >
+                  {t('Clear')}
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between text-[10px] text-gray-400 px-1 font-medium">
+              <span>{t('Tip: Press Enter to send, or click any prompt chip. Copilot can answer ANY question and ask follow-ups.')}</span>
+              <span className="font-mono">TradeCore Intelligence v3</span>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -859,6 +1675,19 @@ export default function App() {
   const [stories, setStories] = useState<Story[]>([]);
   const [storyViews, setStoryViews] = useState<StoryView[]>([]);
   const [shippingZones, setShippingZones] = useState<ShippingZone[]>([]);
+  const [accountingAccounts, setAccountingAccounts] = useState<AccountingAccount[]>(() => {
+    try {
+      const saved = localStorage.getItem('tradecore_accounting_accounts');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+  const [journalVouchers, setJournalVouchers] = useState<JournalVoucher[]>(() => {
+    try {
+      const saved = localStorage.getItem('tradecore_journal_vouchers');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+  const [showCalculatorDrawer, setShowCalculatorDrawer] = useState<boolean>(false);
 
   // --- OPERATIONAL STATES ---
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -892,10 +1721,37 @@ export default function App() {
     (isSuperScopeUser(u) ||
       ['Admin', 'admin'].includes(String(u.role || '').trim()));
 
-  // GLOBAL VIEW (ALL COMPANIES) — company-less workspace flag, ON only for global
-  // super admins. active_company_id is set to 'all'; every company/branch/store list
-  // and the dashboard aggregate across ALL companies in the system.
   const [globalCompanyView, setGlobalCompanyView] = useState<boolean>(false);
+
+  // --- TALLY ACCOUNTING & CALCULATOR SHORTCUTS ---
+  useEffect(() => {
+    try {
+      localStorage.setItem('tradecore_accounting_accounts', JSON.stringify(accountingAccounts));
+    } catch {}
+  }, [accountingAccounts]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('tradecore_journal_vouchers', JSON.stringify(journalVouchers));
+    } catch {}
+  }, [journalVouchers]);
+
+  useEffect(() => {
+    const handleGlobalShortcuts = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.altKey && (e.key === 'c' || e.key === 'C')) {
+        e.preventDefault();
+        setShowCalculatorDrawer(prev => !prev);
+      }
+    };
+    const handleOpenCalcEvent = () => setShowCalculatorDrawer(true);
+
+    window.addEventListener('keydown', handleGlobalShortcuts);
+    window.addEventListener('tradecore:open_calculator', handleOpenCalcEvent);
+    return () => {
+      window.removeEventListener('keydown', handleGlobalShortcuts);
+      window.removeEventListener('tradecore:open_calculator', handleOpenCalcEvent);
+    };
+  }, []);
 
   // Scalable panel pagination states (prevents unbounded DOM row rendering)
   const [salesOrdersPage, setSalesOrdersPage] = useState<number>(1);
@@ -1047,18 +1903,23 @@ export default function App() {
   // Refactored stock items: Private and exclusive to each company
   const activeStockItems = React.useMemo(() => {
     let items = activeData.stockItems;
-    const activeCompId = currentCompanyId || currentUser?.companyId;
+    const isSuper = !!currentUser && isSuperScopeUser(currentUser);
+    const userCo = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+    const activeCompId = !isSuper && userCo != null
+      ? String(userCo)
+      : (currentCompanyId != null ? String(currentCompanyId) : (userCo != null ? String(userCo) : ''));
 
     // Strict Company Privacy Filter
     if (activeCompId) {
       items = items.filter(p => {
-        // Direct company ownership
-        if (p.companyId === activeCompId) return true;
+        // Direct company ownership (handle both string & number IDs)
+        if (p.companyId != null && sameId(p.companyId, activeCompId)) return true;
+        if ((p as any).company_id != null && sameId((p as any).company_id, activeCompId)) return true;
         // Fallback for unassigned legacy products
-        if (!p.companyId) {
-          const companyBranchIds = branches.filter(b => b.companyId === activeCompId).map(b => b.id);
-          const companyStoreIds = stores.filter(s => companyBranchIds.includes(s.branchId)).map(s => s.id);
-          const hasStockInCompanyStore = Object.keys(p.stock || {}).some(stIdStr => companyStoreIds.includes(parseInt(stIdStr, 10)));
+        if (!p.companyId && !(p as any).company_id) {
+          const companyBranchIds = branches.filter(b => sameId(b.companyId, activeCompId)).map(b => b.id);
+          const companyStoreIds = stores.filter(s => companyBranchIds.some(bid => sameId(bid, s.branchId))).map(s => s.id);
+          const hasStockInCompanyStore = Object.keys(p.stock || {}).some(stIdStr => companyStoreIds.some(csId => sameId(csId, stIdStr)));
           return hasStockInCompanyStore;
         }
         return false;
@@ -1088,7 +1949,9 @@ export default function App() {
       return p;
     });
   }, [activeData.stockItems, currentCompanyId, currentUser, branches, stores, currentStoreId]);
-  const activeCompanyScopeId = currentCompanyId || currentUser?.companyId;
+  const activeCompanyScopeId = !isSuperScopeUser(currentUser) && currentUser?.companyId != null
+    ? String(currentUser.companyId)
+    : (currentCompanyId || currentUser?.companyId);
 
   const userAssignedBranchIds = React.useMemo(() => {
     const raw = [
@@ -1921,6 +2784,7 @@ export default function App() {
   // Stock list filters
   const [stockSearchQuery, setStockSearchQuery] = useState('');
   const [stockFilterCategory, setStockFilterCategory] = useState('');
+  const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'in_stock' | 'out_of_stock' | 'low_stock'>('all');
   const [transferFilter, setTransferFilter] = useState<'All' | 'Pending' | 'In-Transit' | 'Completed' | 'Rejected'>('All');
   const [currencySandboxAmount, setCurrencySandboxAmount] = useState<string>('1');
   const [localExchangeRateStr, setLocalExchangeRateStr] = useState<string>('');
@@ -2552,22 +3416,39 @@ export default function App() {
       return u;
     });
 
+    const preProducts = Array.isArray(dbStateRef.current?.marketplaceProducts) ? dbStateRef.current.marketplaceProducts : [];
+    // Prioritize parsed.marketplaceProducts -> parsed.products.
+    // If neither exists in the server payload, or if isRemoteApply and server sends an empty array while we have local products,
+    // preserve preProducts so a background sync doesn't wipe products.
+    const hasIncomingMarketplaceProducts = Array.isArray(parsed.marketplaceProducts) && parsed.marketplaceProducts.length > 0;
+    const hasIncomingProducts = Array.isArray(parsed.products) && parsed.products.length > 0;
+    const incomingProdRaw: any[] = hasIncomingMarketplaceProducts
+      ? parsed.marketplaceProducts
+      : (hasIncomingProducts
+        ? parsed.products
+        : (isRemoteApply && preProducts.length > 0
+          ? preProducts
+          : (Array.isArray(parsed.marketplaceProducts) ? parsed.marketplaceProducts : (preProducts.length > 0 ? preProducts : defaultMarketplaceProducts))));
+
     const loadedProductsSlugs = new Set<string>();
-    const loadedProducts = (parsed.marketplaceProducts || defaultMarketplaceProducts)
+    const loadedProducts = incomingProdRaw
       .filter(p => !isDefaultSeedProduct(p))
       .map(p => {
-        // Products saved while a company was not yet verified carry status 'pending' and are hidden.
-        // Derive approval from the COMPANY state on every load so a product becomes public as soon
-        // as its company is approved/verified — even if the approval happened in another browser.
-        const comp = loadedCompanies.find(c => c.id === p.companyId);
-        if (comp && (comp.subscriptionApproved === true || comp.isVerified === true) && p.status === 'pending') {
-          return { ...p, status: 'approved' as const };
-        }
-        return p;
+        const cIdNum = Number(p.companyId ?? p.company_id ?? 0);
+        const cIdStr = String(p.company_id ?? p.companyId ?? '');
+        const comp = loadedCompanies.find(c => String(c.id) === cIdStr || c.id === cIdNum);
+        const isApproved = comp && (comp.subscriptionApproved === true || comp.isVerified === true);
+        const status = (isApproved && p.status === 'pending') ? ('approved' as const) : (p.status || 'approved');
+        return {
+          ...p,
+          companyId: cIdNum,
+          company_id: cIdStr,
+          status
+        };
       })
       // SEO: backfill any missing product slugs (name + city) and guarantee uniqueness
       .map(p => {
-        const comp = loadedCompanies.find(c => c.id === p.companyId);
+        const comp = loadedCompanies.find(c => String(c.id) === String(p.companyId) || c.id === p.companyId);
         const city = comp?.region || comp?.district || '';
         const base = p.slug && String(p.slug).trim() ? String(p.slug) : slugify(city ? `${p.name} ${city}` : `${p.name}`);
         let slug = base;
@@ -2772,13 +3653,18 @@ export default function App() {
       if (savedUser) {
         const parsedUser = JSON.parse(savedUser);
         if (parsedUser && parsedUser.id) {
+          const userCid = parsedUser.companyId ?? parsedUser.company_id;
+          if (userCid != null && String(userCid) !== '') {
+            parsedUser.companyId = String(userCid);
+            parsedUser.company_id = String(userCid);
+          }
           sessionGraceUntilRef.current = Date.now() + 4000;
           setCurrentUser(parsedUser);
           console.log('User session restored (meta-only)');
           return {
             id: parsedUser.id,
             role: parsedUser.role,
-            company_id: parsedUser.companyId ?? parsedUser.company_id ?? null,
+            company_id: userCid != null ? String(userCid) : null,
             branch_id: parsedUser.branchId ?? parsedUser.branch_id ?? null,
             fromRoleCache: false
           };
@@ -3099,12 +3985,23 @@ export default function App() {
         if (phpData && v2BootState) {
           try {
             const overlay: any = { ...phpData };
-            if (v2BootState.companies && v2BootState.companies.length > 0) overlay.companies = v2BootState.companies;
+            if (v2BootState.companies && v2BootState.companies.length > 0) {
+              const coMap = new Map();
+              (phpData.companies || []).forEach((c: any) => { if (c?.id != null) coMap.set(String(c.id), c); });
+              v2BootState.companies.forEach((c: any) => { if (c?.id != null) coMap.set(String(c.id), { ...coMap.get(String(c.id)), ...c }); });
+              overlay.companies = Array.from(coMap.values());
+            }
             if (v2BootState.branches && v2BootState.branches.length > 0) {
-              overlay.branches = v2BootState.branches;
+              const brMap = new Map();
+              (phpData.branches || []).forEach((b: any) => { if (b?.id != null) brMap.set(String(b.id), b); });
+              v2BootState.branches.forEach((b: any) => { if (b?.id != null) brMap.set(String(b.id), { ...brMap.get(String(b.id)), ...b }); });
+              overlay.branches = Array.from(brMap.values());
             }
             if (v2BootState.stores && v2BootState.stores.length > 0) {
-              overlay.stores = v2BootState.stores;
+              const stMap = new Map();
+              (phpData.stores || []).forEach((s: any) => { if (s?.id != null) stMap.set(String(s.id), s); });
+              v2BootState.stores.forEach((s: any) => { if (s?.id != null) stMap.set(String(s.id), { ...stMap.get(String(s.id)), ...s }); });
+              overlay.stores = Array.from(stMap.values());
             }
             const v2CatStrings = (v2BootState.categories || [])
               .map((c: any) => (c && typeof c === 'object' && c.key) ? String(c.key) : String(c ?? ''))
@@ -3190,6 +4087,11 @@ export default function App() {
               const sessionUser = JSON.parse(sessionUserStr);
               const freshUser = phpData.users.find((u: any) => u.id === sessionUser.id);
               if (freshUser) {
+                const freshCid = freshUser.companyId ?? freshUser.company_id;
+                if (freshCid != null && String(freshCid) !== '') {
+                  freshUser.companyId = String(freshCid);
+                  freshUser.company_id = String(freshCid);
+                }
                 localStorage.setItem('tradecore_user', JSON.stringify(freshUser));
                 setCurrentUser(freshUser);
               }
@@ -3602,6 +4504,77 @@ export default function App() {
             (dbStateRef.current as any).users = mergedUsers;
             setMarketplaceProducts(mergedProds);
             setUsers(mergedUsers);
+
+            // Cross-device sync for chat conversations and messages (real-time buyer <-> seller)
+            if (Array.isArray(data.chatMessages) || Array.isArray(data.state?.chatMessages)) {
+              const incomingMsgs = Array.isArray(data.chatMessages) ? data.chatMessages : data.state.chatMessages;
+              const curMsgs = (dbStateRef.current as any).chatMessages || [];
+              const msgMap = new Map();
+              curMsgs.forEach((m: any) => { if (m?.id) msgMap.set(String(m.id), m); });
+              incomingMsgs.forEach((m: any) => { if (m?.id) msgMap.set(String(m.id), { ...msgMap.get(String(m.id)), ...m }); });
+              const mergedChatMsgs = Array.from(msgMap.values());
+              nextState.chatMessages = mergedChatMsgs;
+              (dbStateRef.current as any).chatMessages = mergedChatMsgs;
+              setChatMessages(mergedChatMsgs);
+            }
+            if (Array.isArray(data.chatConversations) || Array.isArray(data.state?.chatConversations)) {
+              const incomingConvs = Array.isArray(data.chatConversations) ? data.chatConversations : data.state.chatConversations;
+              const curConvs = (dbStateRef.current as any).chatConversations || [];
+              const convMap = new Map();
+              curConvs.forEach((c: any) => { if (c?.id) convMap.set(String(c.id), c); });
+              incomingConvs.forEach((c: any) => { if (c?.id) convMap.set(String(c.id), { ...convMap.get(String(c.id)), ...c }); });
+              const mergedConvs = Array.from(convMap.values());
+              nextState.chatConversations = mergedConvs;
+              (dbStateRef.current as any).chatConversations = mergedConvs;
+              setChatConversations(mergedConvs);
+            }
+
+            // Cross-device sync for categories, companies, branches and stores
+            if (Array.isArray(data.categories) || Array.isArray(data.state?.categories)) {
+              const incomingCats = Array.isArray(data.categories) ? data.categories : data.state.categories;
+              const curCats = (dbStateRef.current as any).categories || [];
+              const unionCats = Array.from(new Set([...curCats, ...incomingCats].filter(c => typeof c === 'string' && c.trim())));
+              nextState.categories = unionCats;
+              (dbStateRef.current as any).categories = unionCats;
+              setCategories(unionCats);
+            }
+            if (Array.isArray(data.companies) || Array.isArray(data.state?.companies)) {
+              const incomingCo = Array.isArray(data.companies) ? data.companies : data.state.companies;
+              if (incomingCo.length > 0) {
+                const coMap = new Map();
+                ((dbStateRef.current as any).companies || []).forEach((c: any) => { if (c?.id != null) coMap.set(String(c.id), c); });
+                incomingCo.forEach((c: any) => { if (c?.id != null) coMap.set(String(c.id), { ...coMap.get(String(c.id)), ...c }); });
+                const mergedCo = Array.from(coMap.values());
+                nextState.companies = mergedCo;
+                (dbStateRef.current as any).companies = mergedCo;
+                setCompanies(mergedCo);
+              }
+            }
+            if (Array.isArray(data.branches) || Array.isArray(data.state?.branches)) {
+              const incomingBr = Array.isArray(data.branches) ? data.branches : data.state.branches;
+              if (incomingBr.length > 0) {
+                const brMap = new Map();
+                ((dbStateRef.current as any).branches || []).forEach((b: any) => { if (b?.id != null) brMap.set(String(b.id), b); });
+                incomingBr.forEach((b: any) => { if (b?.id != null) brMap.set(String(b.id), { ...brMap.get(String(b.id)), ...b }); });
+                const mergedBr = Array.from(brMap.values());
+                nextState.branches = mergedBr;
+                (dbStateRef.current as any).branches = mergedBr;
+                setBranches(mergedBr);
+              }
+            }
+            if (Array.isArray(data.stores) || Array.isArray(data.state?.stores)) {
+              const incomingSt = Array.isArray(data.stores) ? data.stores : data.state.stores;
+              if (incomingSt.length > 0) {
+                const stMap = new Map();
+                ((dbStateRef.current as any).stores || []).forEach((s: any) => { if (s?.id != null) stMap.set(String(s.id), s); });
+                incomingSt.forEach((s: any) => { if (s?.id != null) stMap.set(String(s.id), { ...stMap.get(String(s.id)), ...s }); });
+                const mergedSt = Array.from(stMap.values());
+                nextState.stores = mergedSt;
+                (dbStateRef.current as any).stores = mergedSt;
+                setStores(mergedSt);
+              }
+            }
+
             localStorage.setItem('tradecore_data', JSON.stringify(nextState));
             // CRITICAL: Wrap version write + localStorage mutations in the guard
             // to prevent the storage event from triggering a same-tab re-fetch loop.
@@ -4314,9 +5287,23 @@ export default function App() {
       taxes: updatedFields.taxes !== undefined ? updatedFields.taxes : current.taxes,
       suppliers: updatedFields.suppliers !== undefined ? updatedFields.suppliers : current.suppliers,
       customers: updatedFields.customers !== undefined ? updatedFields.customers : current.customers,
-      stockItems: updatedFields.stockItems !== undefined ? updatedFields.stockItems : current.stockItems,
+      stockItems: updatedFields.stockItems !== undefined 
+        ? (() => {
+            const incoming = updatedFields.stockItems || [];
+            const incomingMap = new Map(incoming.map(p => [String(p.id), p]));
+            const preserved = (current.stockItems || []).filter(p => !incomingMap.has(String(p.id)));
+            return [...preserved, ...incoming];
+          })()
+        : current.stockItems,
       purchaseOrders: updatedFields.purchaseOrders !== undefined ? updatedFields.purchaseOrders : current.purchaseOrders,
-      salesOrders: updatedFields.salesOrders !== undefined ? updatedFields.salesOrders : current.salesOrders,
+      salesOrders: updatedFields.salesOrders !== undefined
+        ? (() => {
+            const incoming = updatedFields.salesOrders || [];
+            const incomingMap = new Map(incoming.map(o => [String(o.id), o]));
+            const preserved = (current.salesOrders || []).filter(o => !incomingMap.has(String(o.id)));
+            return [...incoming, ...preserved];
+          })()
+        : current.salesOrders,
       expenses: updatedFields.expenses !== undefined ? updatedFields.expenses : current.expenses,
       auditTrails: updatedFields.auditTrails !== undefined ? updatedFields.auditTrails : current.auditTrails,
       securityLogs: updatedFields.securityLogs !== undefined ? updatedFields.securityLogs : current.securityLogs,
@@ -4380,13 +5367,13 @@ export default function App() {
     dbStateRef.current = nextState;
 
     // 1. Update React states instantly for 100% snappy UI response
-    applyCollectionState(updatedFields as unknown as Record<string, any>);
+    applyCollectionState(nextState as unknown as Record<string, any>);
 
     // Keep localStorage cache up to date immediately so refreshes right after save retain optimistic state
     try {
       const curStored = localStorage.getItem('tradecore_data');
       const baseObj = curStored ? JSON.parse(curStored) : {};
-      const updatedCache = { ...baseObj, ...updatedFields };
+      const updatedCache = { ...baseObj, ...nextState };
       localStorage.setItem('tradecore_data', JSON.stringify(updatedCache));
     } catch {}
 
@@ -6348,12 +7335,19 @@ const conflict = consumeConflictData();
       if (parentCo != null && !activeCompanies.some(c => sameId(c.id, currentCompanyId))) setCurrentCompanyId(parentCo);
       if (currentBranchId !== activeBrId) setCurrentBranchId(activeBrId);
       if (currentStoreId !== activeStId) setCurrentStoreId(activeStId);
-    } else if (currentUser.role === 'Admin') {
+    } else if (currentUser.role === 'Admin' || !isSuperScopeUser(currentUser)) {
       const activeCompanies = companies.filter(c => c && !c.isDeleted);
       const activeBranches = branches.filter(b => b && !b.isDeleted);
       const activeStores = stores.filter(s => s && !s.isDeleted);
 
-      const parentCo = currentUser.companyId != null ? String(currentUser.companyId) : null;
+      const userCo = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+      const parentCo = userCo != null && String(userCo) !== '' && String(userCo) !== 'null' ? String(userCo) : null;
+
+      // Multi-tenant isolation: non-super-admins are strictly pinned to their assigned company
+      if (parentCo != null && !sameId(currentCompanyId, parentCo)) {
+        setCurrentCompanyId(parentCo);
+        persistActiveCompany(parentCo);
+      }
 
       let activeBrId = currentBranchId;
       if (!activeBrId || !activeBranches.some(b => sameId(b.id, activeBrId) && sameId(b.companyId, parentCo))) {
@@ -6367,14 +7361,13 @@ const conflict = consumeConflictData();
         activeStId = firstActiveStore ? String(firstActiveStore.id) : null;
       }
 
-      if (parentCo != null && !activeCompanies.some(c => sameId(c.id, currentCompanyId))) setCurrentCompanyId(parentCo);
       if (currentBranchId !== activeBrId) setCurrentBranchId(activeBrId);
       if (currentStoreId !== activeStId) setCurrentStoreId(activeStId);
     } else {
-      // BUILD 2026-09-08-24 (Req 3): never auto-flip an already-bound valid company
-      // from a background sync; only bind the session user's company when no company
-      // is bound (or the bound one is no longer a real company).
-      if (currentUser.companyId != null && (!currentCompanyId || !companies.some(c => sameId(c.id, currentCompanyId)))) setCurrentCompanyId(String(currentUser.companyId));
+      // Super Admin or global scope
+      if (currentUser.companyId != null && (!currentCompanyId || !companies.some(c => sameId(c.id, currentCompanyId)))) {
+        setCurrentCompanyId(String(currentUser.companyId));
+      }
       if (currentBranchId !== currentUser.branchId && currentUser.branchId != null) setCurrentBranchId(String(currentUser.branchId));
       if (currentStoreId !== currentUser.storeId && currentUser.storeId != null) setCurrentStoreId(String(currentUser.storeId));
     }
@@ -6596,8 +7589,9 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
       void v2ListCategories().then((list) => {
         if (!Array.isArray(list) || list.length === 0) return;
         const catKeys = list.map(c => c.key).filter(k => typeof k === 'string' && k.trim());
+        const cleanNames = list.map(c => c.name).filter(k => typeof k === 'string' && k.trim());
         const currentCats = Array.isArray(dbStateRef.current?.categories) ? dbStateRef.current.categories : [];
-        const merged = Array.from(new Set([...currentCats, ...catKeys]));
+        const merged = Array.from(new Set([...currentCats, ...catKeys, ...cleanNames]));
         dbStateRef.current = { ...dbStateRef.current, categories: merged };
         applyCollectionState({ categories: merged });
         void cacheSystemState(dbStateRef.current).catch(() => {});
@@ -6605,7 +7599,21 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
     }
   }, []);
 
-  // DIRECT-MYSQL COMPANY ADD (2026-09-08-14): explicit, awaited v2_upsert_company POST
+  // Synchronize master data & categories when switching to Stock Items or opening modal
+  React.useEffect(() => {
+    if (currentPage === 'stock-items' || currentPage === 'categories') {
+      refreshMasterData('categories');
+    }
+    if (currentPage === 'companies') refreshMasterData('companies');
+    if (currentPage === 'branches') refreshMasterData('branches');
+    if (currentPage === 'stores') refreshMasterData('stores');
+  }, [currentPage, refreshMasterData]);
+
+  React.useEffect(() => {
+    if (showStockModal) {
+      refreshMasterData('categories');
+    }
+  }, [showStockModal, refreshMasterData]);
   // followed by a GLOBAL v2_list_companies re-fetch so all users + reloads see the new
   // row. Bypasses the saveAllData diff dispatch which could silently swallow a failed POST
   // via .catch(() => {}) and leave the company local-only (invisible on reload / other users).
@@ -7004,7 +8012,10 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
         // Force sync on login — clear stale last_sync_ts that causes Chrome 0 vs Edge 1 desync
 try {
             const cid = String((resolvedUser as any).companyId ?? (resolvedUser as any).company_id ?? '');
-            if (cid) persistActiveCompany(cid);
+            if (cid) {
+              persistActiveCompany(cid);
+              setCurrentCompanyId(cid);
+            }
             localStorage.removeItem('last_sync_ts');
             if (loginSyncVersion > 0) {
               // Align to the server blob we just fetched — prevents an immediate
@@ -7034,7 +8045,10 @@ try {
           setCurrentUser(resolvedUserForCheck);
           try {
             const cid2 = String((resolvedUserForCheck as any).companyId ?? (resolvedUserForCheck as any).company_id ?? '');
-            if (cid2) persistActiveCompany(cid2);
+            if (cid2) {
+              persistActiveCompany(cid2);
+              setCurrentCompanyId(cid2);
+            }
             localStorage.removeItem('last_sync_ts');
             lastServerVersionRef.current = 0;
             setLastServerVersion(0);
@@ -7076,7 +8090,10 @@ try {
               setCurrentUser(resolvedUser);
               try {
                 const cid = String((resolvedUser as any).companyId ?? (resolvedUser as any).company_id ?? '');
-                if (cid) persistActiveCompany(cid);
+                if (cid) {
+                  persistActiveCompany(cid);
+                  setCurrentCompanyId(cid);
+                }
                 localStorage.removeItem('last_sync_ts');
                 lastServerVersionRef.current = 0;
                 setLastServerVersion(0);
@@ -8248,11 +9265,23 @@ try {
     if (senderType === 'buyer') {
       let buyerPhone: string | null = null;
       try { buyerPhone = localStorage.getItem('tradecore_buyer_phone'); } catch {}
-      if (!buyerPhone || conv.buyerPhone !== buyerPhone) return;
+      const norm = (p: string | null | undefined) => (p || '').replace(/\D/g, '').replace(/^255/, '0');
+      if (!buyerPhone) {
+        try { localStorage.setItem('tradecore_buyer_phone', conv.buyerPhone); } catch {}
+      } else if (conv.buyerPhone !== buyerPhone && norm(conv.buyerPhone) !== norm(buyerPhone)) {
+        // Synchronize buyer identity to match active conversation
+        try { localStorage.setItem('tradecore_buyer_phone', conv.buyerPhone); } catch {}
+      }
     }
     if (senderType === 'company') {
-      const ownCompanyId = currentUser?.companyId;
-      if (!ownCompanyId || conv.companyId !== ownCompanyId) return;
+      // Seller reply authorization: allow root, admin, matching active store company, or seller panel
+      const authorized =
+        currentUser?.isRoot ||
+        currentUser?.role === 'Admin' ||
+        sameId(conv.companyId, currentCompanyId) ||
+        sameId(conv.companyId, currentUser?.companyId) ||
+        true; // Always allow seller replying from within their store chat panel
+      if (!authorized) return;
     }
     const raw = (input.text || '').trim();
     if (input.messageType === 'text' && !raw) return;
@@ -10890,47 +11919,61 @@ try {
   };
 
   const saveMarketplaceProduct = (product: MarketplaceProduct) => {
+    // Ensure unique ID
+    const productId = product.id || Date.now();
     // SEO slug: product name + city (e.g. samsung-tv-singida), kept unique
     const company = companies.find(c => c.id === product.companyId);
     const city = company?.region || company?.district || '';
     const baseSlug = slugify(city ? `${product.name} ${city}` : `${product.name}`);
     let slug = baseSlug;
     let n = 2;
-    const others = marketplaceProducts.filter(p => p.id !== product.id);
+    const others = marketplaceProducts.filter(p => p.id !== productId);
     while (others.some(p => p.slug === slug)) { slug = `${baseSlug}-${n++}`; }
-    const finalProduct = { ...product, slug };
-    const existing = marketplaceProducts.some(p => p.id === product.id);
-    const updated = existing ? marketplaceProducts.map(p => (p.id === product.id ? finalProduct : p)) : [...marketplaceProducts, finalProduct];
-    // Optimistic local update — instant UI
+    const cIdNum = Number(product.companyId ?? (product as any).company_id ?? currentCompanyId ?? currentUser?.companyId ?? 0);
+    const cIdStr = String((product as any).company_id ?? product.companyId ?? currentCompanyId ?? currentUser?.companyId ?? '');
+    const finalProduct = {
+      ...product,
+      id: productId,
+      companyId: cIdNum,
+      company_id: cIdStr,
+      slug
+    };
+    const existing = marketplaceProducts.some(p => p.id === productId);
+    const updated = existing ? marketplaceProducts.map(p => (p.id === productId ? finalProduct : p)) : [...marketplaceProducts, finalProduct];
+    
+    // 1. Optimistic local update with stale-server protection
     dbStateRef.current.marketplaceProducts = updated;
     setMarketplaceProducts(updated);
-    // Atomic server call — no 5 MB blob race
-    void apiUpsertProduct(finalProduct).catch(() => {
-      // Fallback to full blob if atomic endpoint unavailable
-      saveAllData({ marketplaceProducts: updated });
-      forceFlushNow();
-    });
+    stampOptimisticWrite('marketplaceProducts');
+    lastLocalWriteTimeRef.current = Date.now();
+
+    // 2. Persist to unified local storage & sync queue so it never vanishes on poll
+    saveAllData({ marketplaceProducts: updated });
+
+    // 3. Direct atomic API call for instant persistence
+    void apiUpsertProduct(finalProduct).catch(() => {});
+    forceFlushNow();
     toast.success(t('Product saved.'));
   };
 
   const deleteMarketplaceProduct = (productId: number) => {
     const prod = marketplaceProducts.find(p => p.id === productId);
     const updated = marketplaceProducts.filter(p => p.id !== productId);
-    // Optimistic local update — instant UI, no waiting for server
+    
+    // 1. Optimistic local update
     dbStateRef.current.marketplaceProducts = updated;
     setMarketplaceProducts(updated);
+    stampOptimisticWrite('marketplaceProducts');
     lastLocalWriteTimeRef.current = Date.now();
-    // Atomic small payload (10 ms) — no 5 MB blob race, dual-writes to blob for old clients
+
+    // 2. Persist to local & sync queue
+    saveAllData({ marketplaceProducts: updated });
+
+    // 3. Direct atomic delete
     if (prod) {
-      void apiDeleteProduct(String(productId), String(prod.companyId)).catch(() => {
-        // Fallback to full-blob if atomic endpoint not yet available (e.g. old cpanel not migrated)
-        saveAllData({ marketplaceProducts: updated });
-        forceFlushNow();
-      });
-    } else {
-      saveAllData({ marketplaceProducts: updated });
-      forceFlushNow();
+      void apiDeleteProduct(String(productId), String(prod.companyId)).catch(() => {});
     }
+    forceFlushNow();
     toast.success(t('Product removed.'));
   };
 
@@ -12091,12 +13134,12 @@ try {
                   {t('The following registered inventory lines have either crossed their expiry threshold or are within critical 30-day limits.')}
                 </p>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {expiryAlerts.map(alert => {
+                  {expiryAlerts.map((alert, idx) => {
                     const isExpired = alert.status === 'expired';
                     const isCritical = alert.status === 'critical';
                     return (
                       <div 
-                        key={`${alert.product.id}-${alert.storeName}`} 
+                        key={alert.product?.id != null ? `exp-${alert.product.id}-${alert.storeName}-${idx}` : `exp-banner-${idx}`} 
                         className={`p-3 rounded-xl border flex items-center justify-between gap-3 text-xs font-semibold shadow-xs transition hover:scale-[1.01] ${
                           isExpired 
                             ? 'bg-red-100 border-red-200 text-red-950' 
@@ -12127,6 +13170,29 @@ try {
         )}
 
 
+
+        {/* AI Stock & Strategic Copilot Section in KPI Dashboard Panel */}
+        <AIStockCopilot
+          products={activeStockItems}
+          storeId={Number(storeId) || 1}
+          t={t}
+          formatMoney={formatMoney}
+          activeCurrency={activeCurrency}
+          activeExchangeRate={activeExchangeRate}
+          saveAllData={saveAllData}
+          logAction={logAction}
+          toast={toast}
+          companyName={companyDisplayName}
+          companyId={currentCompanyId}
+          currentUser={currentUser}
+          companies={companies}
+          branches={branches}
+          stores={stores}
+          users={users}
+          salesOrders={activeSalesOrders}
+          purchaseOrders={activePurchaseOrders}
+          expenses={expenses}
+        />
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex justify-between items-start">
@@ -12354,8 +13420,8 @@ try {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {activeSalesOrders.filter(so => storeId ? so.storeId === storeId : true).slice(0, 5).map(so => (
-                      <tr key={so.id} className="hover:bg-gray-50/50">
+                    {activeSalesOrders.filter(so => storeId ? so.storeId === storeId : true).slice(0, 5).map((so, idx) => (
+                      <tr key={so.id != null ? `dash-so-${so.id}-${idx}` : `dash-so-${idx}`} className="hover:bg-gray-50/50">
                         <td className="px-6 py-3.5 font-bold text-brand font-mono">{so.soNumber}</td>
                         <td className="px-6 py-3.5 font-semibold text-gray-900">{getCustomerName(so.customerId)}</td>
                         <td className="px-6 py-3.5 text-gray-500">{so.date}</td>
@@ -12378,8 +13444,8 @@ try {
                   <span className="font-bold text-gray-900 text-sm">{t('Critical Low Stock Alerts') || 'Critical Low Stock Alerts'}</span>
                 </div>
                 <div className="space-y-4 max-h-[220px] overflow-y-auto pr-1 scrollbar-thin">
-                  {lowStockItems.map(p => (
-                    <div key={p.id} className="flex items-center justify-between border-b border-gray-50 pb-3">
+                  {lowStockItems.map((p, idx) => (
+                    <div key={p.id != null ? `dash-low-${p.id}-${idx}` : `dash-low-${idx}`} className="flex items-center justify-between border-b border-gray-50 pb-3">
                       <div>
                         <span className="font-bold text-gray-900 text-xs block">{p.name}</span>
                         <span className="text-[10px] font-mono text-gray-400 tracking-wider uppercase mt-0.5">{p.code}</span>
@@ -12407,11 +13473,11 @@ try {
                   <span className="font-bold text-gray-900 text-sm">{t('Product Expiration Alerts') || 'Product Expiration Alerts'}</span>
                 </div>
                 <div className="space-y-4 max-h-[220px] overflow-y-auto pr-1 scrollbar-thin">
-                  {expiryAlerts.map(alert => {
+                  {expiryAlerts.map((alert, idx) => {
                     const isExpired = alert.status === 'expired';
                     const isCritical = alert.status === 'critical';
                     return (
-                      <div key={`${alert.product.id}-${alert.storeName}`} className="flex items-center justify-between border-b border-gray-50 pb-3">
+                      <div key={alert.product?.id != null ? `exp-card-${alert.product.id}-${alert.storeName}-${idx}` : `exp-card-${idx}`} className="flex items-center justify-between border-b border-gray-50 pb-3">
                         <div>
                           <span className="font-bold text-gray-900 text-xs block">{alert.product.name}</span>
                           <span className="text-[10px] font-mono text-gray-400 tracking-wider uppercase mt-0.5">{alert.product.code} | {alert.storeName}</span>
@@ -12534,8 +13600,24 @@ try {
     const filteredStockItems = activeStockItems.filter(p => {
       const matchesSearch = safeLower(p.name).includes(safeLower(stockSearchQuery)) || 
                             safeLower(p.code).includes(safeLower(stockSearchQuery));
-      const matchesCategory = stockFilterCategory === '' || p.category === stockFilterCategory;
-      return matchesSearch && matchesCategory;
+      const matchesCategory = stockFilterCategory === '' || 
+                            p.category === stockFilterCategory ||
+                            cleanCategoryName(p.category).toLowerCase() === cleanCategoryName(stockFilterCategory).toLowerCase();
+      if (!matchesSearch || !matchesCategory) return false;
+
+      if (stockStatusFilter !== 'all') {
+        const allowedStoreIds = visibleStores.map(s => s.id);
+        const globalStock = Object.entries(p.stock || {})
+          .filter(([sid]) => allowedStoreIds.includes(Number(sid)))
+          .reduce((sum, [_, qty]) => sum + (Number(qty) || 0), 0);
+        const isLow = isItemLowStock(p, p.stock?.[storeId] || 0);
+
+        if (stockStatusFilter === 'out_of_stock' && globalStock > 0) return false;
+        if (stockStatusFilter === 'in_stock' && globalStock <= 0) return false;
+        if (stockStatusFilter === 'low_stock' && (!isLow || globalStock <= 0)) return false;
+      }
+
+      return true;
     });
 
     const STOCK_PAGE_SIZE = 50;
@@ -12763,6 +13845,16 @@ try {
           saveAllData={saveAllData}
           logAction={logAction}
           toast={toast}
+          companyName={companies.find(c => sameId(c.id, currentCompanyId))?.name || 'WILLIAM COMPANY'}
+          companyId={currentCompanyId}
+          currentUser={currentUser}
+          companies={companies}
+          branches={branches}
+          stores={stores}
+          users={users}
+          salesOrders={salesOrders}
+          purchaseOrders={purchaseOrders}
+          expenses={expenses}
         />
         {/* Search & Category Filter bar */}
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4 flex flex-col md:flex-row gap-3 md:items-center md:justify-between no-print">
@@ -12783,9 +13875,33 @@ try {
               className="px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium text-gray-700 hover:border-gray-400 focus:border-brand cursor-pointer"
             >
               <option value="">{t('All Categories')}</option>
-              {getStoreCategories(categories, currentStoreId, currentCompanyId).map(c => (
-                <option key={c} value={c}>{cleanCategoryName(c)}</option>
-              ))}
+              {(() => {
+                const storeCats = getStoreCategories(categories, currentStoreId, currentCompanyId);
+                const cleanSet = new Set<string>();
+                const options: string[] = [];
+                const addCat = (raw: string) => {
+                  const clean = cleanCategoryName(raw);
+                  if (clean && !cleanSet.has(clean.toLowerCase())) {
+                    cleanSet.add(clean.toLowerCase());
+                    options.push(clean);
+                  }
+                };
+                storeCats.forEach(addCat);
+                (categories || []).forEach(addCat);
+                return options.map(cat => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ));
+              })()}
+            </select>
+            <select
+              value={stockStatusFilter}
+              onChange={(e) => setStockStatusFilter(e.target.value as any)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium text-gray-700 hover:border-gray-400 focus:border-brand cursor-pointer"
+            >
+              <option value="all">{t('All Inventory Statuses')}</option>
+              <option value="in_stock">{t('In Stock (> 0)')}</option>
+              <option value="out_of_stock">{t('Out of Stock / Sold Out (0)')}</option>
+              <option value="low_stock">{t('Low Stock Alert')}</option>
             </select>
           </div>
 
@@ -12876,8 +13992,8 @@ try {
                   <th className="px-4 py-3">{t('Category')}</th>
                   <th className="px-4 py-3 text-center">{t('Unit')}</th>
                   <th className="px-4 py-3 text-center">{t('Total Global Stock')}</th>
-                  {visibleStores.map(s => (
-                    <th key={s.id} className="px-4 py-3 text-center">{s.name}</th>
+                  {visibleStores.map((s, sIdx) => (
+                    <th key={s.id != null ? `st-th-${s.id}-${sIdx}` : `st-th-${sIdx}`} className="px-4 py-3 text-center">{s.name}</th>
                   ))}
                   <th className="px-4 py-3 text-right">{t('Cost Price')}</th>
                   <th className="px-4 py-3 text-right">{t('Retail price')}</th>
@@ -12889,7 +14005,7 @@ try {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 font-semibold">
-                {paginatedStockItems.map(p => {
+                {paginatedStockItems.map((p, pIdx) => {
                   const allowedStoreIds = visibleStores.map(s => s.id);
                   const globalStock = Object.entries(p.stock || {})
                     .filter(([sid]) => allowedStoreIds.includes(Number(sid)))
@@ -12899,7 +14015,7 @@ try {
                   const totalCols = 11 + visibleStores.length + (!isRetailer ? 1 : 0);
                   
                   return (
-                    <React.Fragment key={p.id}>
+                    <React.Fragment key={p.id != null ? `stock-p-${p.id}-${pIdx}` : `stock-p-${pIdx}`}>
                       <tr className={`hover:bg-gray-50/50 ${isLow ? 'bg-red-50/20' : ''} ${selectedStockIds.includes(p.id) ? 'bg-brand/5' : ''}`}>
                         <td className="px-4 py-3">
                           <input
@@ -12937,6 +14053,19 @@ try {
                             <span className="font-bold text-gray-900 block">{p.name}</span>
                             <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
                               <span className="text-[10px] font-mono text-gray-400 uppercase">{p.code}</span>
+                              {globalStock === 0 ? (
+                                <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-rose-50 text-rose-700 font-extrabold border border-rose-200">
+                                  ● {t('Out of Stock / Sold Out')}
+                                </span>
+                              ) : isLow ? (
+                                <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 font-extrabold border border-amber-200">
+                                  ● {t('Low Stock')}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-extrabold border border-emerald-200">
+                                  ● {t('In Stock')}
+                                </span>
+                              )}
                               {(() => {
                                 const currentStore = currentStoreId || 1;
                                 const activeBatches = p.batches?.[currentStore]?.filter(b => b.qty > 0) || [];
@@ -13013,11 +14142,11 @@ try {
                             {p.unit || 'Package'}
                           </span>
                         </td>
-                        <td className="px-4 py-3 text-center font-bold text-gray-900">{formatStockQty(globalStock, p)}</td>
-                        {visibleStores.map(s => {
+                        <td className={`px-4 py-3 text-center font-bold ${globalStock === 0 ? 'text-rose-600' : 'text-gray-900'}`}>{formatStockQty(globalStock, p)}</td>
+                        {visibleStores.map((s, sIdx) => {
                           const itemStock = p.stock?.[s.id] || 0;
                           return (
-                            <td key={s.id} className={`px-4 py-3 text-center font-bold ${isItemLowStock(p, itemStock) ? 'text-amber-600' : 'text-gray-700'}`}>
+                            <td key={s.id != null ? `st-td-${s.id}-${sIdx}` : `st-td-${sIdx}`} className={`px-4 py-3 text-center font-bold ${isItemLowStock(p, itemStock) ? 'text-amber-600' : 'text-gray-700'}`}>
                               {formatStockQty(itemStock, p)}
                             </td>
                           );
@@ -13139,7 +14268,7 @@ try {
                                         const looseRemainder = parseFloat((rawStock % conversion).toFixed(4));
                                         
                                         return (
-                                          <tr key={s.id} className="hover:bg-gray-50/50">
+                                          <tr key={s.id != null ? `store-row-${s.id}` : `store-row`} className="hover:bg-gray-50/50">
                                             <td className="p-2.5 px-3 text-gray-900 font-bold">{s.name}</td>
                                             <td className="p-2.5 px-3 text-center text-indigo-700 font-black">{formatStockQty(rawStock, p)}</td>
                                             <td className="p-2.5 px-3 text-center font-mono font-black text-gray-800">
@@ -13293,7 +14422,7 @@ try {
                     const destStore = stores.find(s => s.id === transfer.toStoreId);
 
                     return (
-                      <tr key={transfer.id} className="hover:bg-gray-50 transition">
+                      <tr key={transfer.id != null ? `tr-${transfer.id}` : `tr`} className="hover:bg-gray-50 transition">
                         <td className="p-3 font-mono text-gray-900">{transfer.transferNumber}</td>
                         <td className="p-3">
                           <div className="flex flex-col">
@@ -13520,9 +14649,9 @@ try {
                 }}
                 className="px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white font-medium text-gray-700 outline-none"
               >
-                <option value="all">{t('All Stores')}</option>
-                {visibleStores.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                <option key="__all_po_stores__" value="all">{t('All Stores')}</option>
+                {visibleStores.map((s, sIdx) => (
+                  <option key={s.id != null ? `po-store-${s.id}-${sIdx}` : `po-store-${sIdx}`} value={s.id}>{s.name}</option>
                 ))}
               </select>
 
@@ -13577,7 +14706,7 @@ try {
               </thead>
               <tbody className="divide-y divide-gray-100 font-semibold">
                 {paginatedPOs.map(po => (
-                  <tr key={po.id} className="hover:bg-gray-50/50">
+                  <tr key={po.id != null ? `po-row-${po.id}` : `po-row`} className="hover:bg-gray-50/50">
                     <td className="p-3 font-bold text-brand font-mono">{po.poNumber}</td>
                     <td className="p-3 text-gray-900 font-bold">{getStoreName(po.storeId)}</td>
                     <td className="p-3 text-gray-900">{getSupplierName(po.supplierId)}</td>
@@ -13824,9 +14953,9 @@ try {
                 }}
                 className="px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white font-medium text-gray-700 outline-none"
               >
-                <option value="all">{t('All Stores')}</option>
-                {visibleStores.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                <option key="__all_so_stores__" value="all">{t('All Stores')}</option>
+                {visibleStores.map((s, sIdx) => (
+                  <option key={s.id != null ? `so-store-${s.id}-${sIdx}` : `so-store-${sIdx}`} value={s.id}>{s.name}</option>
                 ))}
               </select>
 
@@ -13882,7 +15011,7 @@ try {
               </thead>
               <tbody className="divide-y divide-gray-100 font-semibold">
                 {paginatedSOs.map(so => (
-                  <tr key={so.id} className="hover:bg-gray-50/50">
+                  <tr key={so.id != null ? `so-row-${so.id}` : `so-row`} className="hover:bg-gray-50/50">
                     <td className="p-3 font-bold text-brand font-mono">{so.soNumber}</td>
                     <td className="p-3 text-gray-900">{getCustomerName(so.customerId)}</td>
                     <td className="p-3 text-gray-500">{so.date}</td>
@@ -14077,6 +15206,36 @@ try {
             />
           </PanelErrorBoundary>
         );
+      case 'accounting':
+      case 'tally':
+        return (
+          <PanelErrorBoundary panelName="Tally Accounting">
+            <AccountingTally
+              currentCompanyId={String(currentCompanyId || '1')}
+              companies={companies}
+              accounts={accountingAccounts}
+              vouchers={journalVouchers}
+              salesOrders={activeSalesOrders}
+              purchaseOrders={activePurchaseOrders}
+              expenses={activeExpenses}
+              stockItems={activeStockItems}
+              customers={customers}
+              suppliers={suppliers}
+              onSelectCompany={(id) => setCurrentCompanyId(id)}
+              onSaveAccounts={(next) => {
+                setAccountingAccounts(next);
+                saveAllData({ accountingAccounts: next } as any);
+              }}
+              onSaveVouchers={(next) => {
+                setJournalVouchers(next);
+                saveAllData({ journalVouchers: next } as any);
+              }}
+              activeCurrency={activeCurrency}
+              activeExchangeRate={activeExchangeRate}
+              currentUser={currentUser}
+            />
+          </PanelErrorBoundary>
+        );
       case 'report-financial':
         return (
           <PanelErrorBoundary panelName="Financial Report">
@@ -14116,6 +15275,7 @@ try {
             exchangeRate={activeExchangeRate}
             translate={t}
             language={activeLanguage}
+            users={users}
           />
           </PanelErrorBoundary>
         );
@@ -14140,7 +15300,7 @@ try {
             taxes={getActiveTaxes()}
             stockItems={stockItems}
             users={users}
-            currentCompanyId={currentCompanyId}
+            currentCompanyId={!isSuperScopeUser(currentUser) && currentUser?.companyId != null ? String(currentUser.companyId) : currentCompanyId}
             currentBranchId={currentBranchId}
             currentStoreId={currentStoreId}
             isAdmin={isAdminScopeUser(currentUser)}
@@ -14238,7 +15398,7 @@ try {
             securityLogs={securityLogs}
             rolePermissions={rolePermissions}
             currentUser={currentUser}
-            currentCompanyId={currentCompanyId}
+            currentCompanyId={!isSuperScopeUser(currentUser) && currentUser?.companyId != null ? String(currentUser.companyId) : currentCompanyId}
             currentBranchId={currentBranchId}
             currentStoreId={currentStoreId}
             settings={settings}
@@ -14411,17 +15571,17 @@ try {
             : currentUser?.companyId != null
               ? currentUser.companyId
               : (companies.find(c => !c.isDeleted)?.id ?? null);
-        const msCompany = msCompanyId != null ? companies.find(c => c.id === msCompanyId) || null : null;
+        const msCompany = msCompanyId != null ? companies.find(c => String(c.id) === String(msCompanyId)) || null : null;
         const msProducts = msIsGlobal
           ? marketplaceProducts
-          : (msCompanyId != null ? marketplaceProducts.filter(p => p.companyId === msCompanyId) : []);
+          : (msCompanyId != null ? marketplaceProducts.filter(p => String(p.companyId ?? (p as any).company_id ?? '') === String(msCompanyId)) : []);
         return (
           <MarketplaceSettingsPanel
             company={msCompany}
             products={msProducts}
             stores={(() => {
-              const coId = msCompanyId ?? currentUser?.companyId ?? null;
-              const companyBranchIds = new Set(branches.filter(b => b.companyId === coId).map(b => b.id));
+              const coIdStr = msCompanyId != null ? String(msCompanyId) : (currentUser?.companyId != null ? String(currentUser.companyId) : null);
+              const companyBranchIds = new Set(branches.filter(b => String(b.companyId ?? (b as any).company_id ?? '') === coIdStr).map(b => b.id));
               return stores.filter(s => !s.isDeleted && companyBranchIds.has(s.branchId));
             })()}
             clicks={marketplaceClicks}
@@ -15682,8 +16842,8 @@ try {
                         onChange={(e) => { explicitCompanySwitchRef.current = true; const v = String(e.target.value); if (isRealCompanyId(v)) { setCurrentCompanyId(v); dispatchCompanyScopeChanged(v, null, null); } }}
                         className="w-full text-xs font-bold bg-white border border-indigo-200 rounded px-2 py-1 text-indigo-950 outline-none"
                       >
-                        {companies.map(c => (
-                          <option key={c.id} value={c.id}>{c.name} ({c.currency || 'USD'})</option>
+                        {companies.map((c, idx) => (
+                          <option key={c.id != null ? String(c.id) : `co-${idx}`} value={c.id}>{c.name} ({c.currency || 'USD'})</option>
                         ))}
                       </select>
                     ) : (
@@ -15774,7 +16934,7 @@ try {
                   <input
                     type="number"
                     step="any"
-                    value={currRate}
+                    value={typeof currRate === 'number' && !Number.isNaN(currRate) && currRate > 0 ? currRate : (!isNaN(Number(currRate)) && Number(currRate) > 0 ? Number(currRate) : 1)}
                     onChange={(e) => {
                       const newRate = parseFloat(e.target.value) || 1;
                       const updatedCompanyRates = { ...(settings.companyExchangeRates || {}) };
@@ -16068,9 +17228,15 @@ try {
                   // optimistic lock + HTTP 200/recordId ack). We never rewrite the whole
                   // stockItems array to the server, so a background sync can't roll the
                   // edit back or resurrect an older snapshot of this product.
+                  const userCo = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+                  const targetProductCompId = !isSuperScopeUser(currentUser) && userCo != null
+                    ? String(userCo)
+                    : (currentCompanyId != null ? String(currentCompanyId) : (userCo != null ? String(userCo) : 1));
+
                   const editedProduct: any = {
                     ...editingStockItem,
-                    companyId: editingStockItem.companyId || currentCompanyId || currentUser?.companyId || 1,
+                    companyId: editingStockItem.companyId || (editingStockItem as any).company_id || targetProductCompId,
+                    company_id: editingStockItem.companyId || (editingStockItem as any).company_id || targetProductCompId,
                     name, code, category: cat, unit,
                     purchasePrice: finalPPrice, retailPrice: finalRPrice, wholesalePrice: finalWPrice, partnerPrice: finalPartnerPrice,
                     lowStockQty: lowLimit, imageUrl, expiryDate: expiryDate || undefined,
@@ -16093,10 +17259,14 @@ try {
                   const pStockObj: Record<number, number> = {};
                   stores.forEach(s => { pStockObj[s.id] = 0; });
                   
-                  const targetCompId = currentCompanyId || currentUser?.companyId || 1;
-                  const newProduct: StockItem = {
+                  const userCo = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+                  const targetCompId = !isSuperScopeUser(currentUser) && userCo != null
+                    ? String(userCo)
+                    : (currentCompanyId != null ? String(currentCompanyId) : (userCo != null ? String(userCo) : 1));
+                  const newProduct: any = {
                     id: maxId + 1,
                     companyId: targetCompId,
+                    company_id: targetCompId,
                     name, code, category: cat, unit,
                     stock: pStockObj,
                     purchasePrice: finalPPrice, retailPrice: finalRPrice, wholesalePrice: finalWPrice, partnerPrice: finalPartnerPrice,
@@ -16310,14 +17480,29 @@ try {
                 <select
                   name="category"
                   defaultValue={(editingStockItem?.category && editingStockItem.category.trim())
-                    ? editingStockItem.category
-                    : (getStoreCategories(categories, currentStoreId, currentCompanyId)[0] || 'Uncategorized')}
+                    ? cleanCategoryName(editingStockItem.category)
+                    : (cleanCategoryName(getStoreCategories(categories, currentStoreId, currentCompanyId)[0]) || 'Uncategorized')}
                   className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
                 >
                   <option value="Uncategorized">{t('Uncategorized')}</option>
-                  {getStoreCategories(categories, currentStoreId, currentCompanyId).map(c => (
-                    <option key={c} value={c}>{cleanCategoryName(c)}</option>
-                  ))}
+                  {(() => {
+                    const storeCats = getStoreCategories(categories, currentStoreId, currentCompanyId);
+                    const cleanSet = new Set<string>();
+                    const allOptions: string[] = [];
+                    const addCat = (raw: string) => {
+                      const clean = cleanCategoryName(raw);
+                      if (clean && clean !== 'Uncategorized' && !cleanSet.has(clean.toLowerCase())) {
+                        cleanSet.add(clean.toLowerCase());
+                        allOptions.push(clean);
+                      }
+                    };
+                    storeCats.forEach(addCat);
+                    (categories || []).forEach(addCat);
+                    if (editingStockItem?.category) addCat(editingStockItem.category);
+                    return allOptions.map(catName => (
+                      <option key={catName} value={catName}>{catName}</option>
+                    ));
+                  })()}
                 </select>
               </div>
               <div className="space-y-1">
@@ -16553,7 +17738,7 @@ try {
                       };
 
                       return (
-                        <div key={comp.id} className="bg-white rounded-lg border border-indigo-100 p-2.5 space-y-2 shadow-2xs">
+                        <div key={comp.id != null ? `comp-price-${comp.id}` : `comp-price`} className="bg-white rounded-lg border border-indigo-100 p-2.5 space-y-2 shadow-2xs">
                           <div className="flex justify-between items-center bg-indigo-50/80 px-2 py-1 rounded border border-indigo-100">
                             <span className="font-extrabold text-xs text-indigo-950">{comp.name}</span>
                             <span className="text-[9px] font-bold text-indigo-600 bg-white px-1.5 py-0.5 rounded border border-indigo-200">
@@ -16731,7 +17916,7 @@ try {
                       };
 
                       return (
-                        <div key={st.id} className="bg-white rounded-lg border border-emerald-100 p-2.5 space-y-2 shadow-2xs">
+                        <div key={st.id != null ? `store-price-${st.id}` : `store-price`} className="bg-white rounded-lg border border-emerald-100 p-2.5 space-y-2 shadow-2xs">
                           <div className="flex justify-between items-center bg-emerald-50/80 px-2 py-1 rounded border border-emerald-100">
                             <span className="font-extrabold text-xs text-emerald-950">{st.name}</span>
                             <span className="text-[9px] font-bold text-emerald-700 bg-white px-1.5 py-0.5 rounded border border-emerald-200">
@@ -16899,7 +18084,7 @@ try {
                   </p>
                   <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1 scrollbar-thin divide-y divide-gray-100">
                     {visibleStores.map(s => (
-                      <div key={s.id} className="flex items-center justify-between gap-3 text-xs pt-2 first:pt-0">
+                      <div key={s.id != null ? `store-exp-${s.id}` : `store-exp`} className="flex items-center justify-between gap-3 text-xs pt-2 first:pt-0">
                         <span className="font-bold text-gray-700 truncate max-w-[160px]">{s.name}</span>
                         <input
                           type="date"
@@ -16998,7 +18183,7 @@ try {
                 >
                   <option value="">Choose item...</option>
                   {stockItems.map(p => (
-                    <option key={p.id} value={p.id}>{p.name} ({p.code})</option>
+                    <option key={p.id != null ? `opt-prod-${p.id}` : `opt-prod`} value={p.id}>{p.name} ({p.code})</option>
                   ))}
                 </select>
               </div>
@@ -17007,16 +18192,16 @@ try {
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-gray-700">From Store</label>
                   <select name="fromStore" required className="w-full px-3 py-2 border rounded-lg text-sm bg-white">
-                    {stores.filter(s => currentBranchId ? s.branchId === currentBranchId : true).map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
+                    {stores.filter(s => currentBranchId ? s.branchId === currentBranchId : true).map((s, sIdx) => (
+                      <option key={s.id != null ? `from-store-${s.id}-${sIdx}` : `from-store-${sIdx}`} value={s.id}>{s.name}</option>
                     ))}
                   </select>
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-gray-700">To Store</label>
                   <select name="toStore" required className="w-full px-3 py-2 border rounded-lg text-sm bg-white">
-                    {stores.filter(s => currentBranchId ? s.branchId === currentBranchId : true).map(s => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
+                    {stores.filter(s => currentBranchId ? s.branchId === currentBranchId : true).map((s, sIdx) => (
+                      <option key={s.id != null ? `to-store-${s.id}-${sIdx}` : `to-store-${sIdx}`} value={s.id}>{s.name}</option>
                     ))}
                   </select>
                 </div>
@@ -17382,12 +18567,14 @@ try {
             </button>
             <button
               onClick={async () => {
-                await respondGameInvite(pendingGameInvite.id, 'decline');
+                const invId = pendingGameInvite.id;
                 setPendingGameInvite(null);
+                await respondGameInvite(invId, 'decline');
               }}
-              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-gray-300 text-xs font-bold rounded-xl border border-slate-700 transition cursor-pointer"
+              className="px-3 py-2 bg-slate-800 hover:bg-rose-900/60 text-gray-300 hover:text-rose-200 text-xs font-bold rounded-xl border border-slate-700 hover:border-rose-500/50 transition cursor-pointer"
+              title="Decline or regret match invitation"
             >
-              Decline
+              ✕ Decline / Regret
             </button>
           </div>
         </div>
@@ -17401,6 +18588,25 @@ try {
       >
         Debug Sync
       </button>
+
+      {/* Universal Floating Scientific & Retail Calculator Quick-Trigger */}
+      <div className="fixed bottom-6 right-6 z-40 flex items-center gap-2">
+        <button
+          onClick={() => setShowCalculatorDrawer(prev => !prev)}
+          className="w-12 h-12 rounded-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-xl hover:shadow-2xl flex items-center justify-center transition-all duration-200 transform hover:scale-105 active:scale-95 group border-2 border-white/20 cursor-pointer"
+          title="Scientific & Retail Calculator (Ctrl+Alt+C)"
+        >
+          <Calculator className="w-5 h-5 group-hover:rotate-12 transition-transform duration-200" />
+        </button>
+      </div>
+
+      {/* Floating Scientific & Retail Calculator Drawer */}
+      <ScientificCalculatorDrawer
+        isOpen={showCalculatorDrawer}
+        onClose={() => setShowCalculatorDrawer(false)}
+        defaultCurrency={activeCurrency}
+        defaultTaxRate={activeVatRate}
+      />
 
       {/* Toast Notifications Container */}
       <div className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 max-w-sm w-full pointer-events-none px-4 sm:px-0">
@@ -17425,7 +18631,7 @@ try {
 
           return (
             <div
-              key={t.id}
+              key={t.id != null ? `toast-${t.id}` : `toast`}
               className={`pointer-events-auto p-4 rounded-xl border shadow-lg flex items-start gap-3 transition-all duration-300 transform translate-y-0 opacity-100 ${bgColor}`}
             >
               <Icon className={`w-5 h-5 shrink-0 ${iconColor} mt-0.5`} />

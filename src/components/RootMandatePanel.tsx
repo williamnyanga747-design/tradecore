@@ -760,8 +760,8 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
           </div>
         </div>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {categories.map(cat => (
-            <div key={cat} className="bg-white rounded-xl border border-gray-100 shadow-sm p-3 flex items-center justify-between gap-2">
+          {categories.map((cat, cIdx) => (
+            <div key={cat ? `rm-cat-${cat}-${cIdx}` : `rm-cat-${cIdx}`} className="bg-white rounded-xl border border-gray-100 shadow-sm p-3 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <div className="w-7 h-7 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0"><FolderTree className="w-4 h-4" /></div>
                 <span className="font-bold text-gray-900 text-xs truncate">{cleanCategoryName(cat)}</span>
@@ -2426,8 +2426,8 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
           </div>
           <div className="flex items-center gap-2">
             <select value={reviewCompanyFilter} onChange={e => setReviewCompanyFilter(Number(e.target.value))} className="px-3 py-2 border border-gray-200 rounded-lg text-[11px] font-bold text-gray-700 outline-none cursor-pointer bg-white">
-              <option value={0}>{t('All companies')}</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <option key="__all_reviews_co__" value={0}>{t('All companies')}</option>
+              {companies.map((c, idx) => <option key={c.id != null ? String(c.id) : `co-${idx}`} value={c.id}>{c.name}</option>)}
             </select>
             {pendingCount > 0 && (
               <button
@@ -2524,8 +2524,8 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
               <p className="text-[11px] text-gray-500 font-medium mt-0.5">{withCoords.length} / {companies.length} {t('stores have a map pin')}</p>
             </div>
             <select value={mapCompanyFilter} onChange={e => setMapCompanyFilter(Number(e.target.value))} className="px-3 py-2 border border-gray-200 rounded-lg text-[11px] font-bold text-gray-700 outline-none cursor-pointer bg-white">
-              <option value={0}>{t('All stores')}</option>
-              {withCoords.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <option key="__all_map_stores__" value={0}>{t('All stores')}</option>
+              {withCoords.map((c, idx) => <option key={c.id != null ? String(c.id) : `co-map-${idx}`} value={c.id}>{c.name}</option>)}
             </select>
           </div>
           {withCoords.length === 0 ? (
@@ -2548,8 +2548,8 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
         <div className="bg-white border border-gray-100 rounded-xl p-5">
           <h4 className="text-xs font-black text-gray-900 mb-3">{t('Stores with map pins')}</h4>
           <div className="grid md:grid-cols-2 gap-2">
-            {withCoords.map(c => (
-              <div key={c.id} className="flex items-center gap-3 rounded-xl border border-gray-100 p-3">
+            {withCoords.map((c, idx) => (
+              <div key={c.id != null ? String(c.id) : `coord-${idx}`} className="flex items-center gap-3 rounded-xl border border-gray-100 p-3">
                 <div className="p-2 rounded-lg bg-amber-50 text-amber-600"><MapPin className="w-4 h-4" /></div>
                 <div className="flex-1 min-w-0">
                   <div className="text-[11px] font-black text-gray-900 truncate flex items-center gap-1.5">
@@ -2619,8 +2619,8 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               <select value={analyticsCompanyId} onChange={e => setAnalyticsCompanyId(Number(e.target.value))} className="px-3 py-2 border border-gray-200 rounded-lg text-[11px] font-bold text-gray-700 outline-none cursor-pointer bg-white">
-                <option value={0}>{t('All companies')}</option>
-                {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                <option key="__all_analytics_co__" value={0}>{t('All companies')}</option>
+                {companies.map((c, idx) => <option key={c.id != null ? String(c.id) : `co-an-${idx}`} value={c.id}>{c.name}</option>)}
               </select>
               <div className="flex gap-1 bg-gray-100 rounded-lg p-1">
                 {([7, 14, 30] as const).map(r => (

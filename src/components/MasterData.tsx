@@ -95,18 +95,42 @@ export default function MasterData({
       .filter((id, idx, arr) => id !== '' && id !== 'none' && arr.indexOf(id) === idx);
   }, [currentUser]);
 
+  const userCompanyId = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+  const effectiveCompanyId = React.useMemo(() => {
+    if (!isSuperAdmin && userCompanyId != null && String(userCompanyId) !== '' && String(userCompanyId) !== 'null' && String(userCompanyId) !== 'all') {
+      return String(userCompanyId);
+    }
+    if (currentCompanyId != null && String(currentCompanyId) !== '' && String(currentCompanyId) !== 'all') {
+      return String(currentCompanyId);
+    }
+    if (userCompanyId != null && String(userCompanyId) !== '' && String(userCompanyId) !== 'null' && String(userCompanyId) !== 'all') {
+      return String(userCompanyId);
+    }
+    const stored = localStorage.getItem('active_company_id');
+    if (stored && stored !== 'all' && companies.some(c => sameId(c.id, stored))) {
+      return stored;
+    }
+    const firstActive = companies.find(c => !c.isDeleted);
+    return firstActive?.id != null ? String(firstActive.id) : '1';
+  }, [isSuperAdmin, userCompanyId, currentCompanyId, companies]);
+
+  const storeCompanyId = (st: any): string => {
+    if (!st) return '';
+    const own = st.company_id ?? st.companyId;
+    if (own != null && String(own) !== '' && String(own) !== 'none') return String(own);
+    const br = branches.find(b => b && sameId(b.id, st.branchId));
+    return br ? String((br as any).company_id ?? br.companyId ?? '') : '';
+  };
+
   const activeCompanyStores = React.useMemo(() => {
-    const coId = currentCompanyId || currentUser?.companyId;
+    const coId = effectiveCompanyId;
     if (!coId) return stores.filter(s => !s.isDeleted);
     return stores.filter(s => {
       if (s.isDeleted) return false;
-      if (s.companyId && sameId(s.companyId, coId)) return true;
-      if (s.branchId) {
-        return branches.some(b => sameId(b.id, s.branchId) && sameId(b.companyId, coId));
-      }
-      return false;
+      if (isSuperAdmin) return true;
+      return sameId(storeCompanyId(s), coId);
     });
-  }, [stores, branches, currentCompanyId, currentUser]);
+  }, [stores, branches, effectiveCompanyId, isSuperAdmin]);
 
   const [statementModal, setStatementModal] = useState<{
     isOpen: boolean;
@@ -185,6 +209,10 @@ export default function MasterData({
 
   // --- DELETE HANDLERS ---
   const handleDeleteCompany = (id: number) => {
+    if (!isSuperAdmin) {
+      toast.error(t('Access Denied: Only Super Admins can delete a company.'));
+      return;
+    }
     const compName = companies.find(c => sameId(c.id, id))?.name || `ID ${id}`;
     setConfirmModal({
       isOpen: true,
@@ -214,7 +242,12 @@ export default function MasterData({
   };
 
   const handleDeleteBranch = (id: number) => {
-    const brName = branches.find(b => sameId(b.id, id))?.name || `ID ${id}`;
+    const targetBranch = branches.find(b => sameId(b.id, id));
+    if (!isSuperAdmin && targetBranch && !sameId(targetBranch.companyId, effectiveCompanyId)) {
+      toast.error(t('Access Denied: You cannot delete branches belonging to another company.'));
+      return;
+    }
+    const brName = targetBranch?.name || `ID ${id}`;
     setConfirmModal({
       isOpen: true,
       title: t('Delete Branch'),
@@ -243,7 +276,13 @@ export default function MasterData({
   };
 
   const handleDeleteStore = (id: number) => {
-    const stName = stores.find(s => sameId(s.id, id))?.name || `ID ${id}`;
+    const targetStore = stores.find(s => sameId(s.id, id));
+    const storeCo = storeCompanyId(targetStore);
+    if (!isSuperAdmin && targetStore && storeCo && !sameId(storeCo, effectiveCompanyId)) {
+      toast.error(t('Access Denied: You cannot delete stores belonging to another company.'));
+      return;
+    }
+    const stName = targetStore?.name || `ID ${id}`;
     setConfirmModal({
       isOpen: true,
       title: t('Delete Store'),
@@ -559,13 +598,13 @@ export default function MasterData({
         }
       }
     } else if (type === 'branch') {
-      // BUILD 2026-09-08-18/19: ids are STRINGS — never parseInt a company id (NaNs the
-      // scope). Keep the raw string from the form or fall back to the active scope at
-      // submission time (getActiveCompanyScope prefers the live currentCompanyId, then
-      // localStorage active_company_id, then the acting user's company).
-      const parsedCoId = (data.companyId !== undefined && data.companyId !== null && data.companyId !== '' && String(data.companyId) !== 'NaN' && String(data.companyId) !== '0')
-        ? String(data.companyId)
-        : (currentCompanyId != null ? String(currentCompanyId) : getActiveCompanyScope(currentCompanyId, currentUser));
+      const userCo = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+      const targetCoId = !isSuperAdmin && userCo != null && String(userCo) !== '' && String(userCo) !== 'null'
+        ? String(userCo)
+        : (data.companyId !== undefined && data.companyId !== null && data.companyId !== '' && String(data.companyId) !== 'NaN' && String(data.companyId) !== '0'
+          ? String(data.companyId)
+          : effectiveCompanyId);
+      const parsedCoId = String(targetCoId);
       const cleanData = { ...data, companyId: parsedCoId, company_id: parsedCoId };
       if (data.id) {
         const updated = branches.map(b => sameId(b.id, data.id) ? cleanData : b);
@@ -584,18 +623,21 @@ export default function MasterData({
       const lat = parseFloat(data.latitude);
       const lng = parseFloat(data.longitude);
       const isMarketplaceVisible = data.isMarketplaceVisible !== false;
+      const userCo = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+      const targetStoreCoId = !isSuperAdmin && userCo != null && String(userCo) !== '' && String(userCo) !== 'null'
+        ? String(userCo)
+        : (sv(data.company_id ?? data.companyId) || (() => {
+            const ownerBranch = branches.find(b => sameId(b.id, parsedBranchId));
+            return sv(ownerBranch?.companyId) || effectiveCompanyId;
+          })());
       const cleanData = {
         ...data,
         location: data.location || data.addressText || '',
         landmark: data.landmark || '',
         addressText: data.addressText || data.landmark || data.location || '',
         branchId: parsedBranchId,
-        // BUILD 2026-09-08-19 (Fix 1): carry the owning company on the record itself so
-        // a later edit (even from global view) never re-homes the store to another scope.
-        company_id: sv(data.company_id ?? data.companyId) || (() => {
-          const ownerBranch = branches.find(b => sameId(b.id, parsedBranchId));
-          return sv(ownerBranch?.companyId) || getActiveCompanyScope(currentCompanyId, currentUser);
-        })(),
+        company_id: targetStoreCoId,
+        companyId: targetStoreCoId,
         latitude: Number.isFinite(lat) ? lat : undefined,
         longitude: Number.isFinite(lng) ? lng : undefined,
         googleMapsUrl: typeof data.googleMapsUrl === 'string' && data.googleMapsUrl.trim() ? data.googleMapsUrl.trim() : undefined,
@@ -688,9 +730,10 @@ export default function MasterData({
       } catch (err) {
         console.warn('[MasterData] v2UpsertCategory direct call error:', err);
       }
-      // Persist immediately + synchronize with backend
+      // Persist immediately + synchronize with backend (both scoped key and clean name for seamless stock dropdowns)
+      const mergedNextCats = Array.from(new Set([...safeCats, newCatName, cleanName]));
       await saveAllData({
-        categories: [...safeCats, newCatName]
+        categories: mergedNextCats
       });
       logAction('Create Category', `Created Category: ${cleanName}${targetStoreId ? ` for Store #${targetStoreId}` : ''}`);
       toast.success(t('Category created successfully!'));
@@ -743,12 +786,14 @@ export default function MasterData({
               >
                 {t('No TIN')} ({companies.filter(c => !c.isDeleted && !c.tinNumber).length})
               </button>
-              <button
-                onClick={() => setEditingItem({ type: 'company', data: { name: '' } })}
-                className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
-              >
-                <Plus className="w-3.5 h-3.5" /> {t('Add Company')}
-              </button>
+              {isSuperAdmin && (
+                <button
+                  onClick={() => setEditingItem({ type: 'company', data: { name: '' } })}
+                  className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
+                >
+                  <Plus className="w-3.5 h-3.5" /> {t('Add Company')}
+                </button>
+              )}
             </div>
           </div>
           <div className="overflow-x-auto">
@@ -764,7 +809,10 @@ export default function MasterData({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {companies.filter(c => !c.isDeleted && (!showOnlyNoTin || !c.tinNumber)).map(c => {
+                {(isSuperAdmin
+                  ? companies.filter(c => !c.isDeleted && (!showOnlyNoTin || !c.tinNumber))
+                  : companies.filter(c => !c.isDeleted && sameId(c.id, effectiveCompanyId))
+                ).map(c => {
                   const admins = users
                     .filter(u => u.role === 'Admin' && sameId(u.companyId, c.id))
                     .map(u => u.name)
@@ -827,14 +875,16 @@ export default function MasterData({
                             <Pencil className="w-3.5 h-3.5" />
                             {t('Edit')}
                           </button>
-                          <button
-                            onClick={() => handleDeleteCompany(c.id)}
-                            className="p-1 px-2 text-[10px] font-bold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
-                            title={t('Delete')}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            {t('Delete')}
-                          </button>
+                          {isSuperAdmin && (
+                            <button
+                              onClick={() => handleDeleteCompany(c.id)}
+                              className="p-1 px-2 text-[10px] font-bold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
+                              title={t('Delete')}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              {t('Delete')}
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -851,7 +901,8 @@ export default function MasterData({
       const branchData = (isSuperAdmin
         ? branches
         : branches.filter(b => {
-            if (!sameId(b.companyId, currentCompanyId)) return false;
+            if (!b || b.isDeleted) return false;
+            if (!sameId(b.companyId, effectiveCompanyId)) return false;
             if (userAssignedBranchIds.length > 0) {
               return userAssignedBranchIds.some(bid => sameId(bid, b.id));
             }
@@ -867,7 +918,7 @@ export default function MasterData({
               {t('Branches')}
             </h3>
             <button
-              onClick={() => setEditingItem({ type: 'branch', data: { name: '', companyId: currentCompanyId || 1 } })}
+              onClick={() => setEditingItem({ type: 'branch', data: { name: '', companyId: effectiveCompanyId, company_id: effectiveCompanyId } })}
               className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
             >
               <Plus className="w-3.5 h-3.5" /> {t('Add Branch')}
@@ -895,7 +946,13 @@ export default function MasterData({
                       <td className="px-6 py-4 text-right">
                         <div className="flex justify-end gap-1.5">
                           <button
-                            onClick={() => setEditingItem({ type: 'branch', data: b })}
+                            onClick={() => {
+                              if (!isSuperAdmin && !sameId(b.companyId, effectiveCompanyId)) {
+                                toast.error(t('Access Denied: You cannot edit branches of another company.'));
+                                return;
+                              }
+                              setEditingItem({ type: 'branch', data: b });
+                            }}
                             className="p-1 px-2 text-[10px] font-bold rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition inline-flex items-center gap-1"
                             title={t('Edit')}
                           >
@@ -923,32 +980,12 @@ export default function MasterData({
       );
 
     case 'stores':
-      // BUILD 2026-09-08-24 (Req 4 — SCOPE ALIGNMENT): the Store Management table must
-      // match the TOP-BAR company scope. The top bar (header dropdown) resolves the active
-      // company from persisted localStorage first, then the session user. The old filter
-      // compared branch.companyId against raw currentCompanyId — when the two sources
-      // disaggregate (a background role-scope effect re-flipped the state value), the table
-      // rendered empty while the top bar still showed the persisted active store.
-      const activeCompanyId = String(
-        localStorage.getItem('active_company_id') ||
-        localStorage.getItem('company_id') ||
-        (currentUser as any)?.company_id ||
-        (currentUser as any)?.companyId ||
-        currentCompanyId ||
-        ''
-      );
-      const storeCompanyId = (st: any): string => {
-        if (!st) return '';
-        const own = st.company_id ?? st.companyId;
-        if (own != null && String(own) !== '' && String(own) !== 'none') return String(own);
-        const br = branches.find(b => b && sameId(b.id, st.branchId));
-        return br ? String((br as any).company_id ?? br.companyId ?? '') : '';
-      };
+      const activeCompanyId = effectiveCompanyId;
       const allowedBranches = branches
         .filter(b => {
           if (!b || b.isDeleted) return false;
           if (isSuperAdmin) return true;
-          const matchCo = String((b as any).company_id ?? b.companyId ?? '') === activeCompanyId;
+          const matchCo = sameId(b.companyId, activeCompanyId);
           if (!matchCo) return false;
           if (userAssignedBranchIds.length > 0) {
             return userAssignedBranchIds.some(bid => sameId(bid, b.id));
@@ -960,7 +997,7 @@ export default function MasterData({
         // Defensive guard (Req 5): a null/malformed store row must never crash the filter.
         if (!s || s.isDeleted) return false;
         if (isSuperAdmin) return true;
-        if (storeCompanyId(s) !== activeCompanyId) return false;
+        if (!sameId(storeCompanyId(s), activeCompanyId)) return false;
         if (userAssignedBranchIds.length > 0 && s.branchId) {
           return userAssignedBranchIds.some(bid => sameId(bid, s.branchId));
         }
@@ -976,7 +1013,22 @@ export default function MasterData({
             </h3>
             {isAdmin && (
               <button
-                onClick={() => setEditingItem({ type: 'store', data: { name: '', branchId: currentBranchId || (allowedBranches[0] || 1), location: '', phone: '', latitude: '' as any, longitude: '' as any, googleMapsUrl: '', isMarketplaceVisible: true, operatingHours: '' } })}
+                onClick={() => setEditingItem({ 
+                  type: 'store', 
+                  data: { 
+                    name: '', 
+                    branchId: allowedBranches.length > 0 ? allowedBranches[0] : (currentBranchId || 1), 
+                    companyId: activeCompanyId,
+                    company_id: activeCompanyId,
+                    location: '', 
+                    phone: '', 
+                    latitude: '' as any, 
+                    longitude: '' as any, 
+                    googleMapsUrl: '', 
+                    isMarketplaceVisible: true, 
+                    operatingHours: '' 
+                  } 
+                })}
                 className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
               >
                 <Plus className="w-3.5 h-3.5" /> {t('Add Store')}
@@ -1025,7 +1077,14 @@ export default function MasterData({
                             {isAdmin && (
                               <>
                                 <button
-                                  onClick={() => setEditingItem({ type: 'store', data: s })}
+                                  onClick={() => {
+                                    const storeCo = storeCompanyId(s);
+                                    if (!isSuperAdmin && storeCo && !sameId(storeCo, activeCompanyId)) {
+                                      toast.error(t('Access Denied: You cannot edit stores of another company.'));
+                                      return;
+                                    }
+                                    setEditingItem({ type: 'store', data: s });
+                                  }}
                                   className="p-1 px-2 text-[10px] font-bold rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition inline-flex items-center gap-1"
                                   title={t('Edit')}
                                 >
@@ -1033,7 +1092,14 @@ export default function MasterData({
                                   {t('Edit')}
                                 </button>
                                 <button
-                                  onClick={() => handleDeleteStore(s.id)}
+                                  onClick={() => {
+                                    const storeCo = storeCompanyId(s);
+                                    if (!isSuperAdmin && storeCo && !sameId(storeCo, activeCompanyId)) {
+                                      toast.error(t('Access Denied: You cannot delete stores of another company.'));
+                                      return;
+                                    }
+                                    handleDeleteStore(s.id);
+                                  }}
                                   className="p-1 px-2 text-[10px] font-bold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
                                   title={t('Delete')}
                                 >
@@ -1122,7 +1188,7 @@ export default function MasterData({
               <button
                 onClick={() => setEditingItem({
                   type: 'customer',
-                  data: { name: '', type: 'Retail', phone: '', email: '', creditLimitDisplay: '0', balanceDisplay: '0' }
+                  data: { name: '', type: 'Retail', phone: '', email: '', creditLimitDisplay: '0', balanceDisplay: '0', companyId: effectiveCompanyId, company_id: effectiveCompanyId }
                 })}
                 className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
               >
@@ -1144,7 +1210,7 @@ export default function MasterData({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {customers.filter(c => !c.storeId || c.storeId === currentStoreId).map(c => (
+                {customers.filter(c => (!c.storeId || c.storeId === currentStoreId) && (isSuperAdmin || sameId((c as any).companyId ?? (c as any).company_id, effectiveCompanyId))).map(c => (
                   <tr key={c.id} className="hover:bg-gray-50/50">
                     <td className="px-6 py-4 font-bold text-gray-900">{c.name}</td>
                     <td className="px-6 py-4">
@@ -1242,7 +1308,7 @@ export default function MasterData({
             <h3 className="font-bold text-gray-900 text-sm">{t('Suppliers')}</h3>
             {isAdmin && (
               <button
-                onClick={() => setEditingItem({ type: 'supplier', data: { name: '', contact: '', phone: '', email: '' } })}
+                onClick={() => setEditingItem({ type: 'supplier', data: { name: '', contact: '', phone: '', email: '', companyId: effectiveCompanyId, company_id: effectiveCompanyId } })}
                 className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
               >
                 <Plus className="w-3.5 h-3.5" /> {t('Add Supplier')}
@@ -1261,7 +1327,7 @@ export default function MasterData({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {suppliers.filter(s => !s.storeId || s.storeId === currentStoreId).map(s => (
+                {suppliers.filter(s => (!s.storeId || s.storeId === currentStoreId) && (isSuperAdmin || sameId((s as any).companyId ?? (s as any).company_id, effectiveCompanyId))).map(s => (
                   <tr key={s.id} className="hover:bg-gray-50/50">
                     <td className="px-6 py-4 font-bold text-gray-900">{s.name}</td>
                     <td className="px-6 py-4 text-gray-600 font-bold">{s.contact}</td>
@@ -2083,7 +2149,7 @@ export default function MasterData({
                             <input
                               type="number"
                               step="any"
-                              value={rateInputVal !== undefined && !Number.isNaN(rateInputVal) ? String(rateInputVal) : '1'}
+                              value={rateInputVal !== undefined && rateInputVal !== '' && !isNaN(Number(rateInputVal)) ? String(rateInputVal) : '1'}
                               onChange={(e) => setLocalCompanyRates({ ...localCompanyRates, [c.id]: e.target.value })}
                               className="w-28 px-2 py-1 border border-gray-300 rounded-lg text-xs font-black outline-none focus:border-brand"
                               placeholder="e.g. 2500"
@@ -2172,7 +2238,7 @@ export default function MasterData({
                             <input
                               type="number"
                               step="any"
-                              value={rateInputVal !== undefined && !Number.isNaN(rateInputVal) ? String(rateInputVal) : ''}
+                              value={rateInputVal !== undefined && rateInputVal !== '' && !isNaN(Number(rateInputVal)) ? String(rateInputVal) : ''}
                               onChange={(e) => setLocalUserRates({ ...localUserRates, [u.username]: e.target.value })}
                               className="w-28 px-2 py-1 border border-gray-300 rounded-lg text-xs font-black outline-none focus:border-brand"
                               placeholder={t('Inherit')}
@@ -2566,19 +2632,30 @@ export default function MasterData({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
                     />
                   </div>
-                  {isSuperAdmin && (
+                  {isSuperAdmin ? (
                     <div>
                       <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Company Parent')} *</label>
                       <select
                         required
-                        value={data.companyId || ''}
+                        value={data.companyId || effectiveCompanyId}
                         onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, companyId: e.target.value } })}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand bg-white font-semibold"
                       >
-                        {companies.map(c => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
+                        {companies.map((c, idx) => (
+                          <option key={c.id != null ? String(c.id) : `comp-${idx}`} value={c.id}>{c.name}</option>
                         ))}
                       </select>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Company Parent')}</label>
+                      <input
+                        type="text"
+                        disabled
+                        readOnly
+                        value={companies.find(c => sameId(c.id, effectiveCompanyId))?.name || t('Your Company')}
+                        className="w-full px-3 py-2 border border-gray-200 bg-gray-50 text-gray-600 rounded-lg text-sm font-semibold cursor-not-allowed"
+                      />
                     </div>
                   )}
                 </>
@@ -2605,7 +2682,7 @@ export default function MasterData({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand bg-white font-semibold"
                     >
                       {branches
-                        .filter(b => isSuperAdmin || sameId(b.companyId, currentCompanyId))
+                        .filter(b => !b.isDeleted && (isSuperAdmin || sameId(b.companyId, effectiveCompanyId)))
                         .map(b => (
                           <option key={b.id} value={b.id}>{b.name}</option>
                         ))}
@@ -2746,7 +2823,7 @@ export default function MasterData({
                     <input
                       type="number"
                       step="any"
-                      value={data.creditLimitDisplay || '0'}
+                      value={data.creditLimitDisplay !== undefined && !Number.isNaN(Number(data.creditLimitDisplay)) ? String(data.creditLimitDisplay) : '0'}
                       onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, creditLimitDisplay: e.target.value } })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
                     />
@@ -2758,7 +2835,7 @@ export default function MasterData({
                     <input
                       type="number"
                       step="any"
-                      value={data.balanceDisplay || '0'}
+                      value={data.balanceDisplay !== undefined && !Number.isNaN(Number(data.balanceDisplay)) ? String(data.balanceDisplay) : '0'}
                       onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, balanceDisplay: e.target.value } })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
                     />
@@ -2884,7 +2961,7 @@ export default function MasterData({
                       type="number"
                       step="any"
                       required
-                      value={data.rate || '0'}
+                      value={data.rate !== undefined && !Number.isNaN(Number(data.rate)) ? String(data.rate) : '0'}
                       onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, rate: e.target.value } })}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
                     />

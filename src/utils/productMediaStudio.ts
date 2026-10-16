@@ -40,33 +40,33 @@ export interface VideoPresetConfig {
 export const VIDEO_PRESETS: Record<VideoPresetType, VideoPresetConfig> = {
   ecommerce_360: {
     id: 'ecommerce_360',
-    name: '360° E-Commerce Turntable (1:1)',
-    description: 'Slow 360° horizontal spin on pure white #FFFFFF, tracking soft ground shadow, 5% push-in camera zoom, 10s loopable. 4K 30fps, no text, no other objects, keeps label readable.',
+    name: '360° E-Commerce Turntable — 1 Minute Slow Motion (1:1)',
+    description: 'Slow 1-minute (60s) smooth 360° horizontal spin on pure white #FFFFFF, gentle tracking ground shadow, subtle push-in camera zoom. Clean studio motion, keeps product and label crisp and readable.',
     aspectRatio: '1:1',
     width: 720,
     height: 720,
-    durationSeconds: 10,
-    fps: 30
+    durationSeconds: 60,
+    fps: 24
   },
   packaging_24: {
     id: 'packaging_24',
-    name: 'Seamless Packaging Spin (24 Frames)',
-    description: 'Seamless 360° spin animation for soap packaging, bottles & boxes on white background. Consistent lighting, 24 frames, soft shadow that moves with rotation, zero flicker.',
+    name: 'Seamless Packaging Showcase — 1 Minute (1:1)',
+    description: '1-minute (60s) slow packaging showcase for bottles, boxes and containers. Consistent studio lighting, soft moving shadow, zero flicker, slow majestic rotation.',
     aspectRatio: '1:1',
     width: 640,
     height: 640,
-    durationSeconds: 6,
+    durationSeconds: 60,
     fps: 24
   },
   tiktok_916: {
     id: 'tiktok_916',
-    name: 'TikTok & Reels Vertical Promo (9:16)',
-    description: '8s TikTok vertical video 9:16. Product pops in center with bubble explosion, slow 360 rotation, floating bubbles background, upbeat music sync.',
+    name: 'TikTok & Reels Vertical Showcase — 1 Minute (9:16)',
+    description: '1-minute (60s) vertical promo 9:16. Gentle slow motion rotation, smooth ambient floating bubbles, slow audio waveform pulse, optimized for WhatsApp Status, TikTok & Reels.',
     aspectRatio: '9:16',
     width: 720,
     height: 1280,
-    durationSeconds: 8,
-    fps: 30
+    durationSeconds: 60,
+    fps: 24
   }
 };
 
@@ -346,25 +346,26 @@ export async function generateProductSpinVideo(
 
   recorder.start();
 
-  // Pre-calculate bubbles for TikTok preset
+  // Pre-calculate bubbles for TikTok preset (slow ambient floating)
   const bubbles: Array<{ x: number; y: number; size: number; speed: number; opacity: number; color: string }> = [];
   if (presetType === 'tiktok_916') {
-    for (let i = 0; i < 45; i++) {
+    for (let i = 0; i < 35; i++) {
       bubbles.push({
         x: Math.random() * width,
         y: Math.random() * height,
-        size: 8 + Math.random() * 28,
-        speed: 1.2 + Math.random() * 2.8,
-        opacity: 0.15 + Math.random() * 0.45,
+        size: 8 + Math.random() * 22,
+        speed: 0.3 + Math.random() * 0.5,
+        opacity: 0.12 + Math.random() * 0.35,
         color: ['#06b6d4', '#3b82f6', '#ec4899', '#a855f7', '#10b981'][Math.floor(Math.random() * 5)]
       });
     }
   }
 
-  // Frame rendering loop
+  // Frame rendering loop — slow motion, cinematic pace
   for (let frame = 0; frame < totalFrames; frame++) {
     const progress = frame / totalFrames;
-    const angleRad = progress * Math.PI * 2; // Full 360 degree rotation
+    // Slow 2 full smooth rotations over the entire 60-second (1 minute) duration (30s per turn)
+    const angleRad = progress * Math.PI * 4;
 
     // 1. Background
     if (presetType === 'tiktok_916') {

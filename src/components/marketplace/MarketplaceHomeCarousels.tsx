@@ -243,9 +243,9 @@ function ProductMarquee({ theme, t, products, companyById, onOpenProduct, onView
             const company = companyById.get(p.companyId);
             return (
               <button key={`${p.id}-${i}`} onClick={() => onOpenProduct(p)} className="w-[185px] shrink-0 text-left group cursor-pointer">
-                <div className={`bg-gray-50 dark:bg-gray-800/60 rounded-xl overflow-hidden group-hover:shadow-lg transition p-2`}>
+                <div className={`bg-gray-50 dark:bg-gray-800/60 rounded-xl overflow-hidden transform transition-all duration-300 ease-out group-hover:-translate-y-1.5 group-hover:scale-[1.03] group-hover:shadow-xl p-2`}>
                   <div className="h-32 overflow-hidden rounded-lg">
-                    <ProductImage product={p} className="w-full h-full object-cover" />
+                    <ProductImage product={p} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105" />
                   </div>
                   <div className="p-2">
                     <p className={`font-bold text-xs truncate ${th.strongText}`}>{p.name}</p>

@@ -24,27 +24,29 @@ error_reporting(E_ERROR | E_PARSE);
 @ini_set('upload_max_filesize', '20M');
 
 // 1. Set headers BEFORE anything else
-header('Content-Type: application/json; charset=utf-8');
-header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-header('Pragma: no-cache');
-header('Expires: 0');
-header('X-Content-Type-Options: nosniff');
-
-// 2. CORS — restrict to allowed origins only
-$allowedOrigins = [
-    'https://tanzaniatradecore.co.tz',
-    'http://localhost:5173',  // Vite dev server
-    'http://localhost:3000',  // Local dev
-];
-$requestOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
-if (in_array($requestOrigin, $allowedOrigins)) {
-    header('Access-Control-Allow-Origin: ' . $requestOrigin);
+if (!empty($_GET['action']) && $_GET['action'] === 'stream_updates') {
+    header('Content-Type: text/event-stream');
+    header('Cache-Control: no-cache, no-transform');
+    header('Connection: keep-alive');
+    header('X-Accel-Buffering: no');
+} else {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+    header('X-Content-Type-Options: nosniff');
 }
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS, HEAD');
-header('Access-Control-Allow-Headers: Content-Type, Accept, X-API-Key, X-Requested-With, Authorization');
+
+// 2. CORS — allow iframe and all cross-origin requests
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS, HEAD');
+header('Access-Control-Allow-Headers: Content-Type, Accept, X-API-Key, X-Requested-With, Authorization, X-Operator, X-Operator-Id, X-Operator-Role');
 header('Access-Control-Max-Age: 86400');
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { http_response_code(204); exit(); }
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit(0);
+}
 
 /**
  * Normalize blob data: if the blob was saved with the old wrapper envelope

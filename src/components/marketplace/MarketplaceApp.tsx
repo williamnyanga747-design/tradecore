@@ -749,6 +749,10 @@ export default function MarketplaceApp({
             t={t}
             onBack={() => go('/marketplace')}
             onAddToCart={addToCart}
+            onCheckout={(prod) => {
+              addToCart(prod);
+              go('/marketplace/checkout');
+            }}
             onViewCompany={openCompany}
             onOrderWhatsApp={() => onTrackProductClick?.(product.id, 'whatsapp')}
             reviews={reviews || []}

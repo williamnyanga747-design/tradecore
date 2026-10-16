@@ -1431,3 +1431,55 @@ export interface StoryView {
   viewedAt: string;
 }
 
+// --- TALLY ACCOUNTING SYSTEM ---
+export type AccountCategory =
+  | 'Current Assets'
+  | 'Fixed Assets'
+  | 'Current Liabilities'
+  | 'Long-term Liabilities'
+  | 'Equity'
+  | 'Direct Incomes'
+  | 'Indirect Incomes'
+  | 'Direct Expenses'
+  | 'Indirect Expenses';
+
+export type AccountType = 'Asset' | 'Liability' | 'Equity' | 'Income' | 'Expense';
+
+export interface AccountingAccount {
+  id: string;
+  companyId: string;
+  code: string;
+  name: string;
+  type: AccountType;
+  category: AccountCategory;
+  openingBalance: number;
+  currentBalance: number;
+  description?: string;
+  createdAt: string;
+}
+
+export type VoucherType = 'Journal' | 'Payment' | 'Receipt' | 'Contra' | 'Sales' | 'Purchase';
+
+export interface JournalVoucherEntry {
+  id: string;
+  accountId: string;
+  accountName: string;
+  type: 'Debit' | 'Credit';
+  amount: number;
+  notes?: string;
+}
+
+export interface JournalVoucher {
+  id: string;
+  voucherNo: string;
+  companyId: string;
+  date: string;
+  type: VoucherType;
+  narration: string;
+  entries: JournalVoucherEntry[];
+  totalDebit: number;
+  totalCredit: number;
+  createdAt: string;
+  createdBy: string;
+}
+

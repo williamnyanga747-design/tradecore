@@ -584,7 +584,7 @@ export default function PurchaseOrderModal({
                             </button>
                             <input
                               type="number"
-                              value={p.qty}
+                              value={Number.isFinite(p.qty) ? p.qty : 0}
                               onChange={(e) => handleUpdateQty(p.productId, unitType, parseInt(e.target.value) || 0)}
                               className="w-full text-center text-xs font-bold font-mono outline-none py-1 bg-transparent"
                             />
@@ -602,10 +602,16 @@ export default function PurchaseOrderModal({
                           <input
                             type="number"
                             step="any"
-                            value={activeCurrency === 'TZS' ? Math.round(p.cost * activeExchangeRate) : p.cost}
+                            value={(() => {
+                              const safeCost = typeof p.cost === 'number' && !Number.isNaN(p.cost) ? p.cost : 0;
+                              const safeRate = typeof activeExchangeRate === 'number' && !Number.isNaN(activeExchangeRate) && activeExchangeRate > 0 ? activeExchangeRate : 1;
+                              const calculated = activeCurrency === 'TZS' ? Math.round(safeCost * safeRate) : safeCost;
+                              return Number.isFinite(calculated) ? calculated : 0;
+                            })()}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value) || 0;
-                              const normalizedVal = activeCurrency === 'TZS' ? val / activeExchangeRate : val;
+                              const rate = typeof activeExchangeRate === 'number' && !Number.isNaN(activeExchangeRate) && activeExchangeRate > 0 ? activeExchangeRate : 1;
+                              const normalizedVal = activeCurrency === 'TZS' ? val / rate : val;
                               handleUpdateCost(p.productId, unitType, normalizedVal);
                             }}
                             className="w-full border rounded-lg px-2 py-1 text-xs font-bold font-mono text-gray-900 outline-none focus:border-brand"
@@ -617,7 +623,12 @@ export default function PurchaseOrderModal({
                           <input
                             type="number"
                             step="any"
-                            value={activeCurrency === 'TZS' ? Math.round((p.discount || 0) * (!isNaN(Number(activeExchangeRate)) && Number(activeExchangeRate) > 0 ? Number(activeExchangeRate) : 1)) : (p.discount || 0)}
+                            value={(() => {
+                              const safeDisc = typeof p.discount === 'number' && !Number.isNaN(p.discount) ? p.discount : 0;
+                              const safeRate = typeof activeExchangeRate === 'number' && !Number.isNaN(activeExchangeRate) && activeExchangeRate > 0 ? activeExchangeRate : 1;
+                              const calculated = activeCurrency === 'TZS' ? Math.round(safeDisc * safeRate) : safeDisc;
+                              return Number.isFinite(calculated) ? calculated : 0;
+                            })()}
                             onChange={(e) => {
                               const val = parseFloat(e.target.value) || 0;
                               const rate = (!isNaN(Number(activeExchangeRate)) && Number(activeExchangeRate) > 0 ? Number(activeExchangeRate) : 1);

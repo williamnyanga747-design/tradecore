@@ -261,9 +261,9 @@ export default function Expenses({
             onChange={(e) => setFilterCategory(e.target.value)}
             className="px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium text-gray-700"
           >
-            <option value="">All Categories</option>
-            {categories.map(c => (
-              <option key={c} value={c}>{c}</option>
+            <option key="__all_categories__" value="">All Categories</option>
+            {categories.map((c, cIdx) => (
+              <option key={`exp-cat-${c}-${cIdx}`} value={c}>{c}</option>
             ))}
           </select>
           <select
@@ -271,9 +271,9 @@ export default function Expenses({
             onChange={(e) => setFilterStoreId(e.target.value)}
             className="px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium text-gray-700"
           >
-            <option value="all">{translate('All Stores & HQ')}</option>
-            {activeStores.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
+            <option key="__all_stores__" value="all">{translate('All Stores & HQ')}</option>
+            {activeStores.map((s, sIdx) => (
+              <option key={s.id != null ? `exp-store-${s.id}-${sIdx}` : `exp-store-${sIdx}`} value={s.id}>{s.name}</option>
             ))}
           </select>
         </div>
@@ -332,8 +332,8 @@ export default function Expenses({
                   onChange={(e) => setCategory(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium"
                 >
-                  {categories.map(c => (
-                    <option key={c} value={c}>{c}</option>
+                  {categories.map((c, cIdx) => (
+                    <option key={`exp-form-cat-${c}-${cIdx}`} value={c}>{c}</option>
                   ))}
                 </select>
               </div>
@@ -445,8 +445,8 @@ export default function Expenses({
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {paginatedExpenses.map(exp => (
-                <tr key={exp.id} className="hover:bg-gray-50 transition-colors">
+              {paginatedExpenses.map((exp, expIdx) => (
+                <tr key={exp.id != null ? `exp-row-${exp.id}-${expIdx}` : `exp-row-${expIdx}`} className="hover:bg-gray-50 transition-colors">
                   <td className="px-5 py-3 font-bold text-brand font-mono">{exp.expenseNumber}</td>
                   <td className="px-5 py-3 text-gray-500 whitespace-nowrap">{exp.date}</td>
                   <td className="px-5 py-3">

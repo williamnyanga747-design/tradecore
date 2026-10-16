@@ -84,7 +84,7 @@ function SidebarInner({
   // menu so core panels never unmount. This is a pure safety net — App.tsx's
   // allowedPages already guarantees a non-empty authoritative list.
   const DEFAULT_OPERATIONAL_PAGES = [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
+    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
     'companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'exchange-rate',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
@@ -354,6 +354,20 @@ function SidebarInner({
           >
             <FileText className="w-[18px] h-[18px] flex-shrink-0" />
             {!isCollapsed && <span>{t('Receipts')}</span>}
+          </button>
+        )}
+
+        {/* Tally Double-Entry Accounting System */}
+        {(isAllowed('accounting') || isAllowed('tally') || isAdmin) && (
+          <button
+            onClick={() => onNavigate('accounting')}
+            className={`w-full flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2'} rounded-md transition text-left ${
+              currentPage === 'accounting' || currentPage === 'tally' ? 'bg-indigo-600 text-white font-bold shadow-xs' : 'text-indigo-200 hover:bg-white/10 font-semibold'
+            }`}
+            title={isCollapsed ? t('Accounting (Tally)') : undefined}
+          >
+            <Scale className="w-[18px] h-[18px] flex-shrink-0 text-indigo-400" />
+            {!isCollapsed && <span>{t('Accounting (Tally)')}</span>}
           </button>
         )}
 

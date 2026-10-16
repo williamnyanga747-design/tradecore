@@ -381,7 +381,7 @@ export default function ProductMediaStudioModal({
                 </div>
 
                 <p className="text-[11px] text-slate-500 text-center mt-3 max-w-md">
-                  High-definition 30fps canvas-rendered video. Smooth horizontal rotation, soft tracking ground shadow, and centered camera framing.
+                  High-definition 1-minute (60s) canvas-rendered video. Slow, majestic smooth horizontal rotation, soft tracking ground shadow, and centered camera framing.
                 </p>
               </div>
 

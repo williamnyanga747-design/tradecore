@@ -506,8 +506,8 @@ export default function Reports({
                       acc[curr.category] = (acc[curr.category] || 0) + curr.amount;
                       return acc;
                     }, {} as Record<string, number>)
-                  ).map(([cat, amount]) => (
-                    <div key={cat} className="flex justify-between p-2.5 text-xs font-semibold hover:bg-gray-50/50">
+                  ).map(([cat, amount], cIdx) => (
+                    <div key={`rep-cat-${cat}-${cIdx}`} className="flex justify-between p-2.5 text-xs font-semibold hover:bg-gray-50/50">
                       <span className="text-gray-700">{cat}</span>
                       <span className="font-bold text-gray-900">{fmt(amount)}</span>
                     </div>
@@ -519,8 +519,8 @@ export default function Reports({
               <div>
                 <h5 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2.5">Detailed Expense Log</h5>
                 <div className="border border-gray-100 rounded-lg overflow-hidden divide-y max-h-[220px] overflow-y-auto">
-                  {monthExpenses.map(exp => (
-                    <div key={exp.id} className="p-2.5 hover:bg-gray-50/50 text-xs flex justify-between items-center">
+                  {monthExpenses.map((exp, eIdx) => (
+                    <div key={exp.id != null ? `rep-exp-${exp.id}-${eIdx}` : `rep-exp-${eIdx}`} className="p-2.5 hover:bg-gray-50/50 text-xs flex justify-between items-center">
                       <div>
                         <span className="font-bold text-gray-800 block">{exp.description}</span>
                         <span className="text-[9px] text-gray-400 font-mono">{exp.date} &bull; {exp.paymentMethod}</span>
@@ -620,8 +620,8 @@ export default function Reports({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 font-medium text-gray-700">
-            {out.map(c => (
-              <tr key={c.id} className="hover:bg-gray-50/50">
+            {out.map((c, cIdx) => (
+              <tr key={c.id != null ? `rep-c-${c.id}-${cIdx}` : `rep-c-${cIdx}`} className="hover:bg-gray-50/50">
                 <td className="p-3 font-bold text-gray-900">{c.name}</td>
                 <td className="p-3">
                   <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${c.type === 'Wholesale' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
@@ -665,8 +665,8 @@ export default function Reports({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 font-medium text-gray-700">
-            {out.map(po => (
-              <tr key={po.id} className="hover:bg-gray-50/50">
+            {out.map((po, poIdx) => (
+              <tr key={po.id != null ? `rep-po-${po.id}-${poIdx}` : `rep-po-${poIdx}`} className="hover:bg-gray-50/50">
                 <td className="p-3 font-bold text-brand">{po.poNumber}</td>
                 <td className="p-3 font-bold text-gray-900">{getSupplierName(po.supplierId)}</td>
                 <td className="p-3 text-gray-600 font-medium">
@@ -713,12 +713,12 @@ export default function Reports({
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 font-medium text-gray-700">
-            {lowStockItems.map(p => {
+            {lowStockItems.map((p, pIdx) => {
               const qty = getItemQty(p);
               const mainQty = p.useSubUnitPricing ? qty / (p.subUnitConversion || 1) : qty;
               const value = mainQty * p.purchasePrice;
               return (
-                <tr key={p.id} className="hover:bg-red-50/30">
+                <tr key={p.id != null ? `rep-low-${p.id}-${pIdx}` : `rep-low-${pIdx}`} className="hover:bg-red-50/30">
                   <td className="p-3 font-bold text-gray-900">{p.name}</td>
                   <td className="p-3 font-mono font-bold text-gray-500">{p.code}</td>
                   <td className="p-3">
@@ -968,9 +968,9 @@ export default function Reports({
               onChange={(e) => setSelectedShiftStoreId(e.target.value)}
               className="w-full px-2.5 py-1.5 bg-white border rounded-lg text-xs font-semibold outline-none text-gray-800"
             >
-              <option value="all">All Stores / Depots</option>
-              {companyStores.map(st => (
-                <option key={st.id} value={st.id}>{st.name}</option>
+              <option key="__all_shift_stores__" value="all">All Stores / Depots</option>
+              {companyStores.map((st, stIdx) => (
+                <option key={st.id != null ? `rep-shift-st-${st.id}-${stIdx}` : `rep-shift-st-${stIdx}`} value={st.id}>{st.name}</option>
               ))}
             </select>
           </div>
@@ -982,9 +982,9 @@ export default function Reports({
               onChange={(e) => setSelectedShiftStatus(e.target.value)}
               className="w-full px-2.5 py-1.5 bg-white border rounded-lg text-xs font-semibold outline-none text-gray-800"
             >
-              <option value="all">All Sessions</option>
-              <option value="Open">Active (Open)</option>
-              <option value="Closed">Reconciled (Closed)</option>
+              <option key="__all_shift_sessions__" value="all">All Sessions</option>
+              <option key="__shift_open__" value="Open">Active (Open)</option>
+              <option key="__shift_closed__" value="Closed">Reconciled (Closed)</option>
             </select>
           </div>
         </div>
@@ -1007,13 +1007,13 @@ export default function Reports({
               </tr>
             </thead>
             <tbody className="divide-y text-xs font-semibold text-gray-700 font-sans">
-              {filteredShifts.map((s) => {
+              {filteredShifts.map((s, sIdx) => {
                 const storeObj = stores.find(st => st.id === s.storeId);
                 const theoreticalTotal = s.openingFloat + (s.expectedCashSales || 0);
                 const isExpanded = expandedShiftId === s.id;
 
                 return (
-                  <React.Fragment key={s.id}>
+                  <React.Fragment key={s.id != null ? `rep-shift-frag-${s.id}-${sIdx}` : `rep-shift-frag-${sIdx}`}>
                     <tr className="hover:bg-slate-50/50 transition duration-150">
                       <td className="py-3.5 px-4 font-mono font-bold text-gray-900">#SH-{String(s.id).padStart(4, '0')}</td>
                       <td className="py-3.5 px-4">{storeObj?.name || `Store #${s.storeId}`}</td>
@@ -1088,8 +1088,8 @@ export default function Reports({
                                   </tr>
                                 </thead>
                                 <tbody className="text-xs font-semibold text-gray-700 divide-y">
-                                  {salesOrders.filter(so => s.salesOrderIds?.includes(so.id)).map((so) => (
-                                    <tr key={so.id} className="hover:bg-slate-50">
+                                  {salesOrders.filter(so => s.salesOrderIds?.includes(so.id)).map((so, soIdx) => (
+                                    <tr key={so.id != null ? `rep-shift-so-${so.id}-${soIdx}` : `rep-shift-so-${soIdx}`} className="hover:bg-slate-50">
                                       <td className="py-2 px-3 font-mono font-bold text-gray-900">{so.soNumber}</td>
                                       <td className="py-2 px-3">{so.date}</td>
                                       <td className="py-2 px-3">
@@ -1252,9 +1252,9 @@ export default function Reports({
                 onChange={(e) => setVelocityStoreId(e.target.value)}
                 className="w-full text-xs bg-white border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-1 focus:ring-brand focus:border-brand font-bold text-gray-700"
               >
-                <option value="all">{t('All Warehouses & Stores')}</option>
-                {companyStores.map(s => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                <option key="__all_wh_stores__" value="all">{t('All Warehouses & Stores')}</option>
+                {companyStores.map((s, sIdx) => (
+                  <option key={s.id != null ? `rep-wh-st-${s.id}-${sIdx}` : `rep-wh-st-${sIdx}`} value={s.id}>{s.name}</option>
                 ))}
               </select>
             </div>
@@ -1267,9 +1267,9 @@ export default function Reports({
                 onChange={(e) => setVelocityCategory(e.target.value)}
                 className="w-full text-xs bg-white border border-gray-300 rounded-lg px-3 py-1.5 focus:ring-1 focus:ring-brand focus:border-brand font-bold text-gray-700"
               >
-                <option value="all">{t('All Categories')}</option>
-                {categories.map(c => (
-                  <option key={c} value={c}>{c}</option>
+                <option key="__all_rep_categories__" value="all">{t('All Categories')}</option>
+                {categories.map((c, cIdx) => (
+                  <option key={`rep-cat-opt-${c}-${cIdx}`} value={c}>{c}</option>
                 ))}
               </select>
             </div>
@@ -1370,7 +1370,7 @@ export default function Reports({
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 font-semibold text-gray-700">
-                {displayProducts.map(p => {
+                {displayProducts.map((p, pIdx) => {
                   const stats = velocityMap[p.id] || {
                     bulkCount: 0,
                     subCount: 0,
@@ -1413,7 +1413,7 @@ export default function Reports({
                   }
 
                   return (
-                    <tr key={p.id} className="hover:bg-gray-50/40">
+                    <tr key={p.id != null ? `rep-vel-p-${p.id}-${pIdx}` : `rep-vel-p-${pIdx}`} className="hover:bg-gray-50/40">
                       {/* Product details */}
                       <td className="px-4 py-3">
                         <div className="flex flex-col">

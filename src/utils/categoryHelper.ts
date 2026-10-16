@@ -131,7 +131,8 @@ export function getCompanyCategories(
 
 /**
  * Strict store category retriever:
- * Ensures Store A categories NEVER appear in Store B.
+ * Ensures Store A categories NEVER appear in Store B, but cleanly falls back so
+ * newly added categories are immediately visible and never vanish.
  */
 export function getStoreCategories(
   categories: string[],
@@ -139,14 +140,18 @@ export function getStoreCategories(
   companyId?: string | number | null
 ): string[] {
   if (!categories || categories.length === 0) return [];
-  const targetSt = sv(storeId);
-  const rawCo = sv(companyId);
+  const normStore = (s?: string | number | null) => sv(s).replace(/^st_/, '').trim();
+  const normCo = (c?: string | number | null) => sv(c).replace(/^co_/, '').trim();
+
+  const targetSt = normStore(storeId);
+  const rawCo = normCo(companyId);
   const isGlobal = !rawCo || rawCo === 'all';
   const targetCo = isGlobal ? null : rawCo;
 
   if (!targetSt) {
     // If no specific store is selected, return company-scoped categories
-    return getCompanyCategories(categories, targetCo);
+    const companyCats = getCompanyCategories(categories, targetCo);
+    if (companyCats.length > 0) return companyCats;
   }
 
   const results: string[] = [];
@@ -156,12 +161,14 @@ export function getStoreCategories(
   for (const c of categories) {
     if (!c || typeof c !== 'string' || !c.trim()) continue;
     const parsed = parseCategoryScope(c);
+    const parsedCo = normCo(parsed.companyId);
+    const parsedSt = normStore(parsed.storeId);
 
-    if (targetCo && parsed.companyId && parsed.companyId !== targetCo) {
+    if (targetCo && parsedCo && parsedCo !== targetCo) {
       continue;
     }
 
-    if (parsed.storeId && parsed.storeId === targetSt) {
+    if (parsedSt && targetSt && parsedSt === targetSt) {
       const clean = parsed.name.toLowerCase();
       if (!seenNames.has(clean)) {
         seenNames.add(clean);
@@ -174,18 +181,33 @@ export function getStoreCategories(
   for (const c of categories) {
     if (!c || typeof c !== 'string' || !c.trim()) continue;
     const parsed = parseCategoryScope(c);
+    const parsedCo = normCo(parsed.companyId);
+    const parsedSt = normStore(parsed.storeId);
 
-    if (targetCo && parsed.companyId && parsed.companyId !== targetCo) {
+    if (targetCo && parsedCo && parsedCo !== targetCo) {
       continue;
     }
 
-    if (!parsed.storeId) {
-      if (!targetCo || parsed.companyId === targetCo || (!parsed.companyId && targetCo === '1')) {
+    if (!parsedSt) {
+      if (!targetCo || parsedCo === targetCo || (!parsedCo && targetCo === '1')) {
         const clean = parsed.name.toLowerCase();
         if (!seenNames.has(clean)) {
           seenNames.add(clean);
           results.push(c);
         }
+      }
+    }
+  }
+
+  // 3. Fallback: If nothing was matched for this store yet, include general non-restricted categories
+  if (results.length === 0) {
+    for (const c of categories) {
+      if (!c || typeof c !== 'string' || !c.trim()) continue;
+      const parsed = parseCategoryScope(c);
+      const clean = parsed.name.toLowerCase();
+      if (!seenNames.has(clean)) {
+        seenNames.add(clean);
+        results.push(c);
       }
     }
   }

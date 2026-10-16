@@ -91,6 +91,15 @@ export function getPhpConfig(): PhpConfig {
     }
   } catch (e) {}
 
+  // Sanitize: If running in an iframe or on HTTPS, clear stale localhost/HTTP URLs to prevent Mixed Content & Failed to fetch errors
+  if (typeof window !== 'undefined') {
+    const isHttps = window.location.protocol === 'https:';
+    if (savedApiUrl && (savedApiUrl.includes('localhost') || savedApiUrl.includes('127.0.0.1') || (isHttps && savedApiUrl.startsWith('http://')))) {
+      savedApiUrl = '';
+      try { localStorage.removeItem('tradecore_php_api_url'); } catch {}
+    }
+  }
+
   const apiUrl = savedApiUrl || _discoveredApiUrl || (import.meta as any).env?.VITE_PHP_API_URL || DEFAULT_API_URL;
   const wsUrl = savedWsUrl || (import.meta as any).env?.VITE_PHP_WS_URL || '';
 
@@ -168,9 +177,17 @@ export async function discoverApiUrl(): Promise<string | null> {
   // 1) Already discovered this session — return immediately (no probing).
   if (_discoveredApiUrl) return _discoveredApiUrl;
 
-  // 2) A previous session saved a working URL — trust the cache, skip the probe
-  //    loop entirely so we NEVER burn 9×timeout on every load.
-  const savedApiUrl = (() => { try { return localStorage.getItem('tradecore_php_api_url') || ''; } catch { return ''; } })();
+  // 2) A previous session saved a working URL — trust the cache if valid
+  const savedApiUrl = (() => {
+    try {
+      const u = localStorage.getItem('tradecore_php_api_url') || '';
+      if (typeof window !== 'undefined' && window.location.protocol === 'https:' && (u.includes('localhost') || u.startsWith('http://'))) {
+        localStorage.removeItem('tradecore_php_api_url');
+        return '';
+      }
+      return u;
+    } catch { return ''; }
+  })();
   if (savedApiUrl) {
     _discoveredApiUrl = savedApiUrl;
     return savedApiUrl;
@@ -182,8 +199,12 @@ export async function discoverApiUrl(): Promise<string | null> {
 
   _discoveryPromise = (async (): Promise<string | null> => {
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
     const absoluteCandidates = origin ? API_CANDIDATES.map(p => origin + p) : [];
-    const candidates = [...API_CANDIDATES, ...absoluteCandidates];
+    let candidates = [...API_CANDIDATES, ...absoluteCandidates];
+    if (isHttps) {
+      candidates = candidates.filter(u => !u.includes('localhost') && !u.startsWith('http://'));
+    }
 
     for (const url of candidates) {
       const controller = new AbortController();
@@ -435,70 +456,144 @@ export async function saveSystemDataToPhp(
     }
     Object.assign(headers, getOperatorHeaders());
 
-    const payload: any = {
-      action: 'save_state',
-      // DELTA-ONLY: only the collections the caller actually changed, never a full-state dump.
-      delta: data,
-      lastUpdated: new Date().toISOString()
-    };
-    if (changedKeys && changedKeys.length) payload.changedKeys = changedKeys;
-    // Send lastSeenVersion for server-side conflict detection (409 if stale)
-    if (typeof baseVersion === 'number') payload.lastSeenVersion = baseVersion;
-    if (typeof baseVersion === 'number' && baseVersion > 0) data._clientBaseVersion = baseVersion;
+    const effectiveKeys = (changedKeys && changedKeys.length > 0)
+      ? changedKeys
+      : Object.keys(data || {}).filter(k => k !== 'lastUpdated' && k !== '_clientBaseVersion' && k !== 'auditTrails');
 
-    const bodyStr = JSON.stringify(payload);
-    const bodyBytes = new Blob([bodyStr]).size;
-    console.log(`[PHP API] Saving state — payload ${bodyBytes < 1048576 ? (bodyBytes / 1024).toFixed(1) + 'KB' : (bodyBytes / 1024 / 1024).toFixed(1) + 'MB'}, timeout ${timeoutMs}ms`);
+    // Helper to send a single request
+    const postPayload = async (subPayload: any): Promise<{ ok: boolean; status: number; text: string; is409?: boolean }> => {
+      const bodyStr = JSON.stringify(subPayload);
+      const res = await fetchWithTimeout(apiUrl, {
+        method: 'POST',
+        headers,
+        body: bodyStr
+      }, timeoutMs, { ignoreOuterSignal: true });
 
-    const response = await fetchWithTimeout(apiUrl, {
-      method: 'POST',
-      headers,
-      body: bodyStr
-    }, timeoutMs, { ignoreOuterSignal: true });
-
-    if (!response.ok) {
-      // 409 Conflict: server version is ahead — caller should re-fetch and rebase
-      if (response.status === 409) {
+      if (res.status === 409) {
         try {
-          const conflictResult = JSON.parse(await response.text());
-          console.warn('[PHP API] 409 Conflict — server version', conflictResult.serverVersion, 'ahead of client');
-          // Apply the fresh server data from the conflict response
+          const conflictResult = JSON.parse(await res.text());
           if (typeof conflictResult?.serverData === 'object' && conflictResult.serverData !== null) {
-            // Store conflict data for the caller to pick up
             (_conflictData as any)._pending = conflictResult.serverData;
             (_conflictData as any)._serverVersion = conflictResult.serverVersion;
           }
           if (conflictResult.serverVersion) _lastServerVersion = Number(conflictResult.serverVersion);
         } catch {}
-        return false;
+        return { ok: false, status: 409, text: 'Conflict', is409: true };
       }
-      const errText = await response.text().catch(() => '(unreadable)');
-      console.error(`[PHP API] Save failed with HTTP ${response.status}: ${errText.substring(0, 200)}`);
+
+      const text = await res.text().catch(() => '');
+      if (res.ok) {
+        try {
+          const result = JSON.parse(text);
+          if (result) {
+            const v = Number(result.version ?? result.serverVersion ?? result.server_ts ?? result._version ?? 0);
+            if (!Number.isNaN(v) && v > 0) _lastServerVersion = Math.max(_lastServerVersion, v);
+          }
+          return { ok: !!(result && (result.success || result.status === 'ok')), status: res.status, text };
+        } catch {
+          return { ok: false, status: res.status, text };
+        }
+      }
+      return { ok: false, status: res.status, text };
+    };
+
+    // Helper to split and chunk data when single payload is too large or encounters 413
+    const executeChunkedSave = async (keysToProcess: string[]): Promise<boolean> => {
+      console.log(`[PHP API] Executing chunked save across ${keysToProcess.length} collection(s) to avoid 413 HTTP payload limits...`);
+      let allOk = true;
+
+      for (const k of keysToProcess) {
+        const val = data[k];
+        if (val === undefined) continue;
+
+        // If collection is an array and exceeds 300KB, slice into smaller batches
+        if (Array.isArray(val) && val.length > 25) {
+          const valBytes = new Blob([JSON.stringify({ [k]: val })]).size;
+          if (valBytes > 300 * 1024) {
+            const batchCount = Math.ceil(valBytes / (200 * 1024));
+            const batchSize = Math.max(10, Math.ceil(val.length / batchCount));
+            console.log(`[PHP API] Chunking array '${k}' (${(valBytes / 1024).toFixed(1)}KB) into ${batchCount} batches of ~${batchSize} items`);
+            for (let i = 0; i < val.length; i += batchSize) {
+              const slice = val.slice(i, i + batchSize);
+              const chunkPayload: any = {
+                action: 'save_state',
+                delta: { [k]: slice, lastUpdated: new Date().toISOString() },
+                changedKeys: [k]
+              };
+              if (typeof baseVersion === 'number') chunkPayload.lastSeenVersion = baseVersion;
+              const chunkRes = await postPayload(chunkPayload);
+              if (!chunkRes.ok) {
+                console.warn(`[PHP API] Chunk save failed for '${k}' batch ${i / batchSize + 1}:`, chunkRes.text.substring(0, 100));
+                allOk = false;
+                break;
+              }
+            }
+            continue;
+          }
+        }
+
+        // Standard single collection chunk
+        const singlePayload: any = {
+          action: 'save_state',
+          delta: { [k]: val, lastUpdated: new Date().toISOString() },
+          changedKeys: [k]
+        };
+        if (typeof baseVersion === 'number') singlePayload.lastSeenVersion = baseVersion;
+        const res = await postPayload(singlePayload);
+        if (!res.ok) {
+          console.warn(`[PHP API] Chunk save failed for collection '${k}':`, res.text.substring(0, 100));
+          allOk = false;
+          break;
+        }
+      }
+
+      if (allOk) {
+        console.log(`[PHP API] Chunked save completed successfully (${keysToProcess.length} collections synchronized)`);
+      }
+      return allOk;
+    };
+
+    const payload: any = {
+      action: 'save_state',
+      delta: data,
+      lastUpdated: new Date().toISOString()
+    };
+    if (changedKeys && changedKeys.length) payload.changedKeys = changedKeys;
+    if (typeof baseVersion === 'number') payload.lastSeenVersion = baseVersion;
+    if (typeof baseVersion === 'number' && baseVersion > 0) data._clientBaseVersion = baseVersion;
+
+    const bodyStr = JSON.stringify(payload);
+    const bodyBytes = new Blob([bodyStr]).size;
+
+    // PROACTIVE CHUNKING GUARD: If total payload exceeds 450KB and has multiple collections,
+    // chunk immediately to ensure it never triggers HTTP 413 from Cloud Run, GFE, or reverse proxies.
+    const CHUNK_THRESHOLD = 450 * 1024;
+    if (bodyBytes > CHUNK_THRESHOLD && effectiveKeys.length > 1) {
+      console.log(`[PHP API] Payload size ${(bodyBytes / 1024).toFixed(1)}KB exceeds ${CHUNK_THRESHOLD / 1024}KB threshold — proactively chunking across ${effectiveKeys.length} collections`);
+      return await executeChunkedSave(effectiveKeys);
+    }
+
+    console.log(`[PHP API] Saving state — payload ${bodyBytes < 1048576 ? (bodyBytes / 1024).toFixed(1) + 'KB' : (bodyBytes / 1024 / 1024).toFixed(1) + 'MB'}, timeout ${timeoutMs}ms`);
+
+    const directRes = await postPayload(payload);
+    if (directRes.ok) {
+      console.log('[PHP API] Flush OK — server version:', _lastServerVersion || 'recorded');
+      return true;
+    }
+
+    // 413 Request Entity Too Large Auto-Recovery
+    if (directRes.status === 413) {
+      console.warn(`[PHP API] Save received HTTP 413 (Request Entity Too Large). Automatically splitting and retrying in smaller batches...`);
+      return await executeChunkedSave(effectiveKeys);
+    }
+
+    if (directRes.is409) {
+      console.warn('[PHP API] 409 Conflict — server version ahead of client, will rebase');
       return false;
     }
 
-    const text = await response.text();
-    try {
-      const result = JSON.parse(text);
-      // CLIENT-VERSION LOCK SOURCE (2026-09-07-03): accept the server's monotonic
-      // version from ANY success channel (version / serverVersion / server_ts /
-      // _version) and adopt it MONOTONICALLY (Math.max) so the Flush OK success
-      // handler in flushToPhp can lock clientVersion reliably before any queued pass
-      // re-reads it — eliminating the stale-version double-flush 409.
-      if (result) {
-        const v = Number(result.version ?? result.serverVersion ?? result.server_ts ?? result._version ?? 0);
-        if (!Number.isNaN(v) && v > 0) _lastServerVersion = Math.max(_lastServerVersion, v);
-      }
-      if (result && (result.success || result.status === 'ok')) {
-        console.log('[PHP API] Flush OK — server version:', result.version ?? result.server_ts ?? 'unknown');
-      } else {
-        console.warn('[PHP API] Save returned success=false:', JSON.stringify(result).substring(0, 200));
-      }
-      return !!(result && (result.success || result.status === 'ok'));
-    } catch (parseErr) {
-      console.warn('[PHP API] Save response is not valid JSON:', text.substring(0, 300));
-      return false;
-    }
+    console.error(`[PHP API] Save failed with HTTP ${directRes.status}: ${directRes.text.substring(0, 200)}`);
+    return false;
   } catch (error) {
     console.error('[PHP API] Error saving data to PHP backend:', error);
     return false;
@@ -610,6 +705,8 @@ export async function getAuditLogsFromPhp(opts: { limit?: number; action?: strin
     else { const f = await discoverApiUrl(); if (f) apiUrl = f; }
   }
   if (!apiUrl) return [];
+  // Ensure absolute path so it never resolves relative to SPA subroutes like /marketplace
+  if (!apiUrl.startsWith('http') && !apiUrl.startsWith('/')) apiUrl = `/${apiUrl}`;
   try {
     const q: string[] = [`action=get_audit_logs`];
     if (opts.limit) q.push(`limit=${opts.limit}`);
@@ -620,16 +717,19 @@ export async function getAuditLogsFromPhp(opts: { limit?: number; action?: strin
     Object.assign(headers, getOperatorHeaders());
     const response = await fetchWithTimeout(`${apiUrl}?${q.join('&')}`, { method: 'GET', headers }, opts.timeoutMs ?? 15000);
     if (!response.ok) return [];
-    const result = await response.json();
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      // Non-JSON response (e.g. HTML from SPA fallback), silently ignore
+      return [];
+    }
+    const result = await response.json().catch(() => null);
     if (result && result.success && Array.isArray(result.logs)) {
       return result.logs as AuditLogRow[];
     }
     return [];
-  } catch (error) {
+  } catch (error: any) {
     // Issue 2: rapid company switches abort in-flight audit-log fetches before they
-    // resolve (the AbortController inside fetchWithTimeout, or an outer signal from the
-    // caller). "AbortError / The user aborted a request" is NOT a real failure — it is a
-    // cancelled poll, so swallow it silently: no error notifications, no dirty console.
+    // resolve. AbortError / SyntaxError / NetworkError are swallowed silently.
     let isAbortError = false;
     try {
       const errName = (error && typeof error === 'object' && (error as any).name) || '';
@@ -638,7 +738,11 @@ export async function getAuditLogsFromPhp(opts: { limit?: number; action?: strin
         (error && typeof error === 'object' && !!(error as any)?.signal?.aborted);
     } catch { isAbortError = false; }
     if (isAbortError) return [];
-    console.warn('[PHP API] getAuditLogsFromPhp error:', error);
+    const isNetworkErr = error?.name === 'TypeError' || error?.message?.includes('Failed to fetch');
+    const isSyntaxErr = error?.name === 'SyntaxError' || error?.message?.includes('Unexpected token') || error?.message?.includes('is not valid JSON');
+    if (!isNetworkErr && !isSyntaxErr) {
+      console.warn('[PHP API] getAuditLogsFromPhp error:', error?.message || error);
+    }
     return [];
   }
 }
@@ -680,8 +784,11 @@ export async function fetchGlobalSnapshotBody(): Promise<any | null> {
     const v = Number(data._version ?? data.version ?? result.version ?? result.server_ts ?? 0);
     if (!Number.isNaN(v) && v > 0) _lastServerVersion = Math.max(_lastServerVersion, v);
     return data;
-  } catch (error) {
-    console.warn('[PHP API] fetchCompanySnapshot (global) error — falling back to blob fetch:', error);
+  } catch (error: any) {
+    const isNetworkErr = error?.name === 'TypeError' || error?.message?.includes('Failed to fetch') || error?.name === 'AbortError';
+    if (!isNetworkErr) {
+      console.warn('[PHP API] fetchCompanySnapshot (global) warning:', error?.message || error);
+    }
     return null;
   }
 }
@@ -722,9 +829,12 @@ export async function fetchCompanySnapshot(companyId: string | number): Promise<
     const v = Number(data._version ?? data.version ?? result.version ?? result.server_ts ?? 0);
     if (!Number.isNaN(v) && v > 0) _lastServerVersion = Math.max(_lastServerVersion, v);
     return data;
-  } catch (error) {
-    // Snapshot is a read; an abort/timeout here just means "fall back to blob fetch".
-    console.warn('[PHP API] fetchCompanySnapshot error (falling back to blob fetch):', error);
+  } catch (error: any) {
+    // Snapshot is a read; an abort/timeout/offline here falls back to blob fetch
+    const isNetworkErr = error?.name === 'TypeError' || error?.message?.includes('Failed to fetch') || error?.name === 'AbortError';
+    if (!isNetworkErr) {
+      console.warn('[PHP API] fetchCompanySnapshot warning:', error?.message || error);
+    }
     return null;
   }
 }
@@ -867,15 +977,25 @@ export function connectPhpRealtimeSync(onUpdateCallback: (data: any) => void): (
 
   // 2. Fallback to PHP Server-Sent Events (SSE) with auto-reconnect
   if (apiUrl && typeof EventSource !== 'undefined') {
+    let sseConsecutiveErrors = 0;
     const connectSSE = () => {
       if (disposed) return;
       try {
-        if (activeEventSource) activeEventSource.close();
-        const sseUrl = `${apiUrl}?action=stream_updates`;
+        if (activeEventSource) {
+          try { activeEventSource.close(); } catch {}
+          activeEventSource = null;
+        }
+        const base = apiUrl.startsWith('http') || apiUrl.startsWith('/') ? apiUrl : `/${apiUrl}`;
+        const sseUrl = `${base}?action=stream_updates`;
         const sse = new EventSource(sseUrl);
         activeEventSource = sse;
 
+        sse.onopen = () => {
+          sseConsecutiveErrors = 0;
+        };
+
         sse.onmessage = (event) => {
+          sseConsecutiveErrors = 0;
           try {
             const message = JSON.parse(event.data);
             if (message) {
@@ -891,17 +1011,20 @@ export function connectPhpRealtimeSync(onUpdateCallback: (data: any) => void): (
         };
 
         sse.onerror = () => {
-          sse.close();
+          try { sse.close(); } catch {}
           activeEventSource = null;
-          // CRITICAL: Auto-reconnect SSE after 3s (PHP SSE streams for ~6s then stops)
+          sseConsecutiveErrors++;
+          // Auto-reconnect SSE with progressive backoff:
+          // Normal re-sync after ~5s, but if server does not support SSE or returns HTML,
+          // back off to 30s so the console is not spammed with 1,000+ errors.
           if (!disposed) {
-            reconnectTimer = setTimeout(connectSSE, 3000);
+            const delay = sseConsecutiveErrors >= 2 ? 30000 : 5000;
+            reconnectTimer = setTimeout(connectSSE, delay);
           }
         };
       } catch (e) {
-        console.warn('[PHP Realtime SSE] SSE unavailable:', e);
         if (!disposed) {
-          reconnectTimer = setTimeout(connectSSE, 5000);
+          reconnectTimer = setTimeout(connectSSE, 30000);
         }
       }
     };

@@ -57,6 +57,7 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
   const [activeInvite, setActiveInvite] = useState<GameInvitation | null>(null);
   const [inviteStatus, setInviteStatus] = useState<'idle' | 'sending' | 'pending' | 'accepted' | 'declined' | 'cancelled' | 'error'>('idle');
   const [statusMessage, setStatusMessage] = useState<string>('');
+  const inviteAbortRef = useRef<boolean>(false);
 
   // Available opponents: strictly real active users, excluding demo users and the current player
   const availableOpponents: User[] = React.useMemo(() => {
@@ -780,6 +781,7 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
   };
 
   const inviteUser = async (user: User) => {
+    inviteAbortRef.current = false;
     initAudio();
     sounds.hit();
     setInvitedUser(user);
@@ -803,6 +805,14 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
         roomId: room,
         timerMinutes: timerOption
       });
+
+      // If user regretted or clicked Cancel while invitation was in-flight
+      if (inviteAbortRef.current) {
+        if (res.success && res.invitation) {
+          void cancelGameInvite(res.invitation.id).catch(() => {});
+        }
+        return;
+      }
 
       if (res.success && res.invitation) {
         setActiveInvite(res.invitation);
@@ -828,7 +838,7 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
             setStatusMessage(`${user.name} declined the match.`);
           } else if (updatedInvite.status === 'cancelled') {
             setInviteStatus('cancelled');
-            setStatusMessage('Invitation was cancelled.');
+            setStatusMessage('Invitation was cancelled / regretted.');
           }
         });
       } else {
@@ -836,6 +846,7 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
         setStatusMessage(res.error || 'Failed to send game challenge.');
       }
     } catch (err: any) {
+      if (inviteAbortRef.current) return;
       setInviteStatus('error');
       setStatusMessage(err?.message || 'Network error sending invitation.');
     }
@@ -871,25 +882,32 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
 
   const handleDeclineIncomingInvite = async (inviteId: string) => {
     try {
-      await respondGameInvite(inviteId, 'decline');
+      // Instant dismissal from UI
       setIncomingInvites(prev => prev.filter(i => i.id !== inviteId));
+      await respondGameInvite(inviteId, 'decline');
     } catch (e) {
       console.error(e);
     }
   };
 
   const handleCancelOutgoingInvite = async () => {
-    if (activeInvite) {
-      await cancelGameInvite(activeInvite.id);
-    }
+    inviteAbortRef.current = true;
+    const inviteIdToCancel = activeInvite?.id;
+
+    // Instant local UI reset so user is never stuck waiting
+    setInviteStatus('idle');
+    setInvitedUser(null);
+    setActiveInvite(null);
+    setStatusMessage('');
+
     if (sentInviteUnsubRef.current) {
       sentInviteUnsubRef.current();
       sentInviteUnsubRef.current = null;
     }
-    setInvitedUser(null);
-    setActiveInvite(null);
-    setInviteStatus('idle');
-    setStatusMessage('');
+
+    if (inviteIdToCancel) {
+      void cancelGameInvite(inviteIdToCancel).catch(() => {});
+    }
   };
 
   const formatTime = (seconds: number) => {
@@ -983,10 +1001,12 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
                   <span>🚀</span> ACCEPT CHALLENGE
                 </button>
                 <button
+                  type="button"
                   onClick={() => handleDeclineIncomingInvite(incomingInvites[0].id)}
-                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-gray-300 hover:text-white font-bold text-xs rounded-xl border border-slate-700 transition cursor-pointer"
+                  className="px-3.5 py-2 bg-slate-800 hover:bg-rose-900/60 text-gray-300 hover:text-rose-200 font-bold text-xs rounded-xl border border-slate-700 hover:border-rose-500/50 transition cursor-pointer flex items-center gap-1.5"
+                  title="Decline / Regret invitation"
                 >
-                  ✕ Decline
+                  <span>✕</span> Decline / Regret (Ghairi)
                 </button>
               </div>
             </div>
@@ -1154,17 +1174,27 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
                         </div>
                       </div>
 
-                      <button
-                        disabled={!user.online}
-                        onClick={() => inviteUser(user)}
-                        className={`px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer shadow ${
-                          user.online
-                            ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 active:scale-95'
-                            : 'bg-slate-800 text-gray-500 cursor-not-allowed'
-                        }`}
-                      >
-                        {user.online ? 'INVITE' : 'Offline'}
-                      </button>
+                      {invitedUser && String(invitedUser.id) === String(user.id) ? (
+                        <button
+                          type="button"
+                          onClick={handleCancelOutgoingInvite}
+                          className="px-3.5 py-1.5 rounded-xl text-xs font-black bg-rose-600 hover:bg-rose-500 text-white transition cursor-pointer shadow active:scale-95 flex items-center gap-1"
+                        >
+                          <span>🚫</span> Regret
+                        </button>
+                      ) : (
+                        <button
+                          disabled={!user.online}
+                          onClick={() => inviteUser(user)}
+                          className={`px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer shadow ${
+                            user.online
+                              ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 active:scale-95'
+                              : 'bg-slate-800 text-gray-500 cursor-not-allowed'
+                          }`}
+                        >
+                          {user.online ? 'INVITE' : 'Offline'}
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1204,15 +1234,18 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
                   )}
                 </div>
 
-                {inviteStatus === 'pending' && (
+                {(inviteStatus === 'pending' || inviteStatus === 'sending') && (
                   <div className="space-y-4">
-                    <div className="w-9 h-9 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                    <div className="w-10 h-10 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto"></div>
                     <div>
                       <button
+                        type="button"
                         onClick={handleCancelOutgoingInvite}
-                        className="px-4 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/40 rounded-xl text-xs font-bold transition cursor-pointer"
+                        className="px-5 py-2.5 bg-red-600/30 hover:bg-red-600/50 text-red-200 hover:text-white border-2 border-red-500/70 hover:border-red-400 rounded-xl text-xs font-black transition cursor-pointer shadow-lg active:scale-95 flex items-center justify-center gap-2 mx-auto"
+                        title="Cancel or regret this invitation immediately"
                       >
-                        Cancel Invitation
+                        <span className="text-base">🚫</span>
+                        <span>Cancel / Regret Invitation (Ghairi Mwaliko)</span>
                       </button>
                     </div>
                   </div>
@@ -1221,10 +1254,12 @@ export default function AirHockeyPro({ onClose, users, currentUser }: AirHockeyP
                 {(inviteStatus === 'declined' || inviteStatus === 'error' || inviteStatus === 'cancelled') && (
                   <div className="pt-2">
                     <button
+                      type="button"
                       onClick={handleCancelOutgoingInvite}
-                      className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl border border-slate-700 transition cursor-pointer"
+                      className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs rounded-xl border border-slate-700 transition cursor-pointer flex items-center justify-center gap-1.5 mx-auto"
                     >
-                      ← Choose Another Competitor
+                      <span>←</span>
+                      <span>Choose Another Competitor</span>
                     </button>
                   </div>
                 )}

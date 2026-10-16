@@ -64,6 +64,15 @@ export default function ManageUsers({
     !!r && ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(r).trim());
   const isSuperScopeCtx = (u: any): boolean =>
     !!u && (u.username === 'root_mandate' || u.username === 'superadmin' || isSuperRole(u?.role));
+
+  // Multi-tenant company scope: regular Admins and staff are strictly isolated to their own company
+  const userCoId = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+  const effectiveCompanyId = !isSuperAdmin && userCoId != null && String(userCoId) !== '' && String(userCoId) !== 'null'
+    ? String(userCoId)
+    : (currentCompanyId != null && String(currentCompanyId) !== '' && String(currentCompanyId) !== 'all'
+        ? String(currentCompanyId)
+        : (userCoId != null ? String(userCoId) : null));
+
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [selectedStaffId, setSelectedStaffId] = useState<number | null>(null);
   const [selectedStaffPages, setSelectedStaffPages] = useState<string[]>([]);
@@ -159,7 +168,7 @@ export default function ManageUsers({
   // Hide Super Admins and other companies from regular Admins
   if (!isSuperAdmin) {
     usersToRender = usersToRender.filter(
-      u => u.role !== 'Super Admin' && sameId(u.companyId, currentCompanyId)
+      u => u.role !== 'Super Admin' && sameId(u.companyId, effectiveCompanyId)
     );
   }
 
@@ -169,7 +178,7 @@ export default function ManageUsers({
     staffToRender = staffToRender.filter(u => u.username !== 'root_mandate' && u.username !== 'superadmin');
   }
   if (!isSuperAdmin) {
-    staffToRender = staffToRender.filter(u => sameId(u.companyId, currentCompanyId));
+    staffToRender = staffToRender.filter(u => sameId(u.companyId, effectiveCompanyId));
   }
 
   // Categories of modules for cleaner representation
@@ -368,14 +377,14 @@ export default function ManageUsers({
     const data = { ...editingUser };
     // BUILD 2026-09-08-18: company ids are STRINGS — parseInt converts a UUID to NaN
     // and every downstream filter silently targets 'NaN'. Keep the raw string scope.
-    data.companyId = isSuperAdmin
-      ? (data.companyId !== undefined && data.companyId !== null && data.companyId !== '' && String(data.companyId) !== 'NaN'
+    const userCo = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
+    const targetComp = isSuperAdmin
+      ? (data.companyId !== undefined && data.companyId !== null && data.companyId !== '' && String(data.companyId) !== 'NaN' && String(data.companyId) !== 'All' && String(data.companyId) !== 'Global'
           ? String(data.companyId)
           : null)
-      : (currentCompanyId != null ? String(currentCompanyId) : data.companyId);
-    if (isSuperAdmin && !isGlobalSuperAdmin) {
-      data.companyId = currentCompanyId != null ? String(currentCompanyId) : data.companyId;
-    }
+      : (userCo != null && String(userCo) !== '' ? String(userCo) : (effectiveCompanyId || (currentCompanyId != null ? String(currentCompanyId) : null)));
+    data.companyId = targetComp;
+    (data as any).company_id = targetComp;
 
     // Restricted Super Admins may ADD new users, but cannot edit existing accounts (block/delete only for existing).
     if (isRestrictedSuperAdmin && data.id) {
@@ -414,6 +423,10 @@ export default function ManageUsers({
     }
 
     if ((data as any).role !== 'Super Admin') {
+      if (!isSuperAdmin) {
+        data.companyId = targetComp || effectiveCompanyId;
+        (data as any).company_id = targetComp || effectiveCompanyId;
+      }
       if (!data.companyId) {
         toast.error(t('Company is required for this account.'));
         return;
@@ -574,7 +587,7 @@ export default function ManageUsers({
                 role: 'Retailer',
                 name: '',
                 email: '',
-                companyId: currentCompanyId != null ? String(currentCompanyId) : null,
+                companyId: effectiveCompanyId,
                 branchId: null,
                 storeId: null,
                 firstLogin: true,
@@ -1416,7 +1429,9 @@ export default function ManageUsers({
     let roleOpts = ['Admin', 'Store Admin', 'Branch Administrator', 'Retailer', 'Wholesaler'];
     if (isSuperAdmin) roleOpts = ['Super Admin', 'Admin', 'Store Admin', 'Branch Administrator', 'Retailer', 'Wholesaler'];
 
-    const activeCompanyId = isSuperAdmin ? (editingUser.companyId || currentCompanyId || '1') : currentCompanyId;
+    const activeCompanyId = isSuperAdmin
+      ? (editingUser.companyId || effectiveCompanyId || (userCoId ? String(userCoId) : '1'))
+      : (effectiveCompanyId || (userCoId ? String(userCoId) : '1'));
 
     const filteredBranches = branches.filter(b => sameId(b.companyId, activeCompanyId) && !b.isDeleted);
     const branchIds = filteredBranches.map(b => b.id);
@@ -1529,7 +1544,7 @@ export default function ManageUsers({
                 </select>
               </div>
 
-              {isSuperAdmin && (
+              {isSuperAdmin ? (
                 <div>
                   <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Allocated Company')}</label>
                   <select
@@ -1542,6 +1557,17 @@ export default function ManageUsers({
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Allocated Company')}</label>
+                  <input
+                    type="text"
+                    disabled
+                    readOnly
+                    value={companies.find(c => sameId(c.id, effectiveCompanyId))?.name || t('Your Company')}
+                    className="w-full px-3 py-2 border border-gray-200 bg-gray-50 text-gray-600 rounded-lg text-sm font-semibold cursor-not-allowed"
+                  />
                 </div>
               )}
 

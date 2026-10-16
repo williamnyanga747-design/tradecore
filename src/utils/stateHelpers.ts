@@ -77,7 +77,16 @@ export function normalizeDbCollections<T extends Record<string, any>>(state: T |
   const out: Record<string, any> = { ...src };
   for (const key of COLLECTION_KEYS) {
     if (key in src) {
-      out[key] = safeArray((src as any)[key]);
+      let arr = safeArray((src as any)[key]);
+      if (key === 'companies') {
+        arr = arr
+          .filter((c: any) => c && (c.id != null || c.company_id != null))
+          .map((c: any, idx: number) => {
+            const id = c.id != null ? c.id : (c.company_id || `co_${idx + 1}`);
+            return { ...c, id, company_id: id };
+          });
+      }
+      out[key] = arr;
     }
   }
   return out as T;

@@ -7,6 +7,7 @@ import { expandSearchQuery, productMatchesTerms, translatePhrase } from '../../u
 import { getPhpConfig } from '../../utils/api';
 import { TANZANIA_REGIONS } from '../../utils/regions';
 import { useVoiceSearch } from '../../utils/voiceSearch';
+import VoiceMicButton from './VoiceMicButton';
 
 interface Props {
   theme: PublicTheme;
@@ -135,13 +136,17 @@ export default function MarketplaceSearchPage({
               className={th.input + ' pl-9'}
             />
           </div>
-          <button
-            onClick={voice.supported ? voice.start : undefined}
-            title={t('Tafta kwa sauti')}
-            className={`px-3 py-2.5 text-[11px] font-black rounded-xl border ${th.cardBorder} ${voice.listening ? 'bg-red-100 text-red-600 animate-pulse' : th.textMuted} hover:brightness-110 cursor-pointer inline-flex items-center gap-1.5 disabled:opacity-40`}
-          >
-            <Mic className="w-3.5 h-3.5" /> {voice.listening ? t('Sikiliza…') : t('Sauti')}
-          </button>
+          <VoiceMicButton
+            theme={theme}
+            t={t}
+            onVoiceResult={(text, q) => {
+              if (onVoiceSearch) onVoiceSearch(text, q);
+              else {
+                setQuery(q);
+                setSubmitted(q);
+              }
+            }}
+          />
           <button
             onClick={submit}
             className={`px-4 py-2.5 text-[11px] font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer inline-flex items-center gap-1.5`}

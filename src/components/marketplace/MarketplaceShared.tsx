@@ -158,11 +158,11 @@ export function ProductCard({
   const milk = theme === 'milk';
   const out = (product.stockQuantity || 0) < 1;
   return (
-    <div className={`${th.card} ${th.cardBorder} rounded-2xl overflow-hidden flex flex-col hover:-translate-y-1 transition duration-200 group`}>
+    <div className={`${th.card} ${th.cardBorder} rounded-2xl overflow-hidden flex flex-col transform transition-all duration-300 ease-out hover:-translate-y-1.5 hover:scale-[1.025] hover:shadow-2xl hover:shadow-black/10 group`}>
       <div onClick={onOpen} className={`relative ${compact ? 'h-28' : 'h-40'} overflow-hidden cursor-pointer`}>
-        <ProductImage product={product} />
+        <ProductImage product={product} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105" />
         {out && (
-          <div className="absolute top-2 right-2 bg-red-600 text-white text-[9px] font-black uppercase px-2 py-1 rounded-full">{t('Sold Out')}</div>
+          <div className="absolute top-2 right-2 bg-red-600 text-white text-[9px] font-black uppercase px-2 py-1 rounded-full shadow-sm">{t('Sold Out')}</div>
         )}
         {product.video && (
           <div className={`absolute top-2 left-2 w-7 h-7 rounded-full flex items-center justify-center ${milk ? 'bg-white/95 text-purple-600 shadow' : 'bg-black/60 text-purple-300 backdrop-blur'}`} title={t('Video available')}>
@@ -189,7 +189,7 @@ export function ProductCard({
           <button
             onClick={onAddToCart}
             disabled={out}
-            className={`flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-black rounded-lg transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${milk ? 'bg-amber-500 text-white' : 'bg-brand text-[#1f2937]'} hover:brightness-110`}
+            className={`flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-black rounded-lg transition-all duration-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${milk ? 'bg-amber-500 text-white shadow-sm hover:shadow-md' : 'bg-brand text-[#1f2937] shadow-sm hover:shadow-md'} hover:brightness-110 active:scale-95`}
             title={t('Add to cart')}
           >
             <Plus className="w-3.5 h-3.5" /> {t('Add')}

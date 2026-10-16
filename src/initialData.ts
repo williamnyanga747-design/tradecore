@@ -262,7 +262,7 @@ export const defaultSettings: Settings = {
 
 export const defaultRolePermissions: Record<string, string[]> = {
   'Super Admin': [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
+    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
     'companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'data-recovery', 'exchange-rate',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
@@ -271,7 +271,7 @@ export const defaultRolePermissions: Record<string, string[]> = {
     'marketplace-orders', 'marketplace-settings'
   ],
   'Admin': [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
+    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
     'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'data-recovery', 'exchange-rate',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',

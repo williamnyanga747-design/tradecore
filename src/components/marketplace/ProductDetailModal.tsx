@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Play, Video, ShoppingCart, MapPin, Store as StoreIcon, Package, Phone, MessageCircle, Star, Check, HandCoins, Users, CalendarClock, X, Zap } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Play, Video, ShoppingCart, MapPin, Store as StoreIcon, Package, Phone, MessageCircle, Star, Check, HandCoins, Users, CalendarClock, X, Zap, CreditCard } from 'lucide-react';
 import { Company, MarketplaceProduct, Review, MarketplaceCustomer, GroupDeal, InstallmentPlan, Store } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TZS, TFunc, VerifiedBadge, Stars, RatingBreakdown } from './MarketplaceShared';
@@ -16,6 +16,7 @@ interface Props {
   t: TFunc;
   onBack: () => void;
   onAddToCart: (product: MarketplaceProduct) => void;
+  onCheckout?: (product: MarketplaceProduct) => void;
   onViewCompany?: (slug: string) => void;
   onOrderWhatsApp?: () => void;
   reviews?: Review[];
@@ -60,7 +61,7 @@ export function productGallery(product: MarketplaceProduct): Array<{ type: 'vide
 }
 
 export default function ProductDetailPage({
-  product, company, stores, theme, t, onBack, onAddToCart, onViewCompany, onOrderWhatsApp,
+  product, company, stores, theme, t, onBack, onAddToCart, onCheckout, onViewCompany, onOrderWhatsApp,
   reviews, onSubmitReview, onTrackProductView, session,
   groupDeals, installmentPlans, onSubmitOffer, onOpenGroupDeal, onStartInstallment,
   flashPrice, flashEndsAt, onAskSeller, onNavigateOffers
@@ -359,37 +360,54 @@ export default function ProductDetailPage({
               <p className={`text-xs ${th.textMuted} font-medium mt-4 leading-relaxed`}>{product.description}</p>
             )}
 
-            {whatsappNumber && (
+            {/* Primary Action Buttons: Check Out Now & Add to Cart */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-5">
               <button
-                onClick={whatsappOrder}
-                className="mt-5 w-full flex items-center justify-center gap-2 bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-full transition cursor-pointer shadow-lg shadow-green-500/25"
+                onClick={() => onCheckout ? onCheckout(product) : onAddToCart(product)}
+                disabled={out}
+                className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-xs sm:text-sm font-black rounded-2xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${th.btnPrimary} ${th.btnPrimaryText} hover:brightness-110 shadow-lg shadow-amber-500/20 active:scale-95`}
               >
-                <MessageCircle className="w-5 h-5" /> {t('Order via WhatsApp')}
+                <CreditCard className="w-4.5 h-4.5" />
+                <span>{t('Check Out Now')}</span>
               </button>
-            )}
-
-            {/* --- MEGA BUILD F2: Uliza Muuzaji — start an in-app chat about this product --- */}
-            {onAskSeller && (
-              <button
-                onClick={onAskSeller}
-                className={`mt-3 w-full flex items-center justify-center gap-2 py-3 px-6 text-sm font-black rounded-full border transition cursor-pointer hover:brightness-110 ${th.cardBorder} ${th.btnSecondary} ${th.btnSecondaryText}`}
-              >
-                <MessageCircle className="w-4 h-4" /> {t('Uliza Muuzaji')}
-              </button>
-            )}
-
-            {company?.planType === 'direct' ? (
-              <div className={`mt-3 text-center text-[11px] font-bold px-4 py-2.5 rounded-xl border ${th.cardBorder} ${th.textMuted}`}>
-                {t('Direct billing store — pay the seller directly via M-Pesa. No platform checkout for this store.')}
-              </div>
-            ) : (
               <button
                 onClick={() => onAddToCart(product)}
                 disabled={out}
-                className={`mt-3 w-full flex items-center justify-center gap-2 px-5 py-3 text-sm font-black rounded-full transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border ${whatsappNumber ? th.cardBorder : ''} ${whatsappNumber ? 'bg-transparent ' + th.strongText : th.btnPrimary + ' ' + th.btnPrimaryText}`}
+                className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-xs sm:text-sm font-black rounded-2xl transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border ${th.cardBorder} ${th.btnSecondary} ${th.btnSecondaryText} hover:brightness-105 active:scale-95`}
               >
-                <ShoppingCart className="w-4 h-4" /> {t('Add to Cart')}
+                <ShoppingCart className="w-4.5 h-4.5" />
+                <span>{t('Add to Cart')}</span>
               </button>
+            </div>
+
+            {/* Communication & Direct Channels: WhatsApp Order & Ask Seller */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-2.5">
+              {whatsappNumber && (
+                <button
+                  onClick={whatsappOrder}
+                  className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black py-2.5 px-4 rounded-2xl transition cursor-pointer shadow-md shadow-emerald-600/20 active:scale-95 text-xs font-bold"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  <span>{t('Order via WhatsApp')}</span>
+                </button>
+              )}
+
+              {onAskSeller && (
+                <button
+                  onClick={onAskSeller}
+                  className={`w-full flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-black rounded-2xl border transition cursor-pointer hover:brightness-110 active:scale-95 ${th.cardBorder} ${th.btnSecondary} ${th.btnSecondaryText}`}
+                >
+                  <MessageCircle className="w-4 h-4 text-brand" />
+                  <span>{t('Uliza Muuzaji')} (Chat)</span>
+                </button>
+              )}
+            </div>
+
+            {/* Direct billing store notice if applicable */}
+            {company?.planType === 'direct' && (
+              <div className={`mt-2.5 text-center text-[10px] font-semibold px-3 py-1.5 rounded-xl border ${th.cardBorder} ${th.textMuted}`}>
+                {t('Direct billing store — pay the seller directly via M-Pesa or complete checkout safely.')}
+              </div>
             )}
           </div>
         </div>

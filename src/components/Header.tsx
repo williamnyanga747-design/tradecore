@@ -243,14 +243,14 @@ export default function Header({
               className="bg-transparent text-white text-xs px-2 py-1 outline-none border-none cursor-pointer font-medium shrink-0"
             >
               {inGlobalView ? (
-                <option value={0} className="text-gray-900 bg-white font-bold">{t('Global View (All Companies)')}</option>
+                <option key="__hdr_global_view__" value={0} className="text-gray-900 bg-white font-bold">{t('Global View (All Companies)')}</option>
               ) : (
                 <>
                   {isSuperAdmin && (
-                    <option value={0} className="text-gray-900 bg-white font-bold">{t('Global View (All Companies)')}</option>
+                    <option key="__hdr_super_global__" value={0} className="text-gray-900 bg-white font-bold">{t('Global View (All Companies)')}</option>
                   )}
-                  {availableCompanies.map(c => (
-                    <option key={c.id} value={c.id} className="text-gray-900 bg-white font-medium">{c.name}</option>
+                  {availableCompanies.map((c, cIdx) => (
+                    <option key={c.id != null ? `hdr-co-${c.id}-${cIdx}` : `hdr-co-${cIdx}`} value={c.id} className="text-gray-900 bg-white font-medium">{c.name}</option>
                   ))}
                 </>
               )}
@@ -264,8 +264,8 @@ export default function Header({
               onChange={(e) => onContextChange('branch', e.target.value)}
               className="bg-transparent text-white text-xs px-2 py-1 outline-none border-none cursor-pointer font-medium shrink-0"
             >
-              {availableBranches.map(b => (
-                <option key={b.id} value={b.id} className="text-gray-900 bg-white font-medium">{b.name}</option>
+              {availableBranches.map((b, bIdx) => (
+                <option key={b.id != null ? `hdr-br-${b.id}-${bIdx}` : `hdr-br-${bIdx}`} value={b.id} className="text-gray-900 bg-white font-medium">{b.name}</option>
               ))}
             </select>
           )}
@@ -273,9 +273,9 @@ export default function Header({
           {/* Store Context Select Pills Container (Always shown with mobile horizontal scroll) */}
           <div className="flex items-center gap-1.5 overflow-x-auto whitespace-nowrap scrollbar-thin max-w-full shrink-0 py-0.5">
             <StoreIcon className="w-3.5 h-3.5 text-emerald-300 shrink-0 ml-1" />
-            {availableStores.map(s => (
+            {availableStores.map((s, sIdx) => (
               <button
-                key={s.id}
+                key={s.id != null ? `hdr-st-${s.id}-${sIdx}` : `hdr-st-${sIdx}`}
                 type="button"
                 onClick={() => onContextChange('store', s.id)}
                 className={`px-2 py-0.5 rounded text-[11px] font-bold transition shrink-0 whitespace-nowrap ${

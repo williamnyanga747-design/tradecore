@@ -145,6 +145,7 @@ export async function cancelGameInvite(inviteId: string): Promise<boolean> {
     const data = await res.json();
     if (data.success) {
       broadcastEvent('invite_cancelled', { id: inviteId });
+      broadcastEvent('invite_response', { id: inviteId, status: 'cancelled' });
       return true;
     }
     return false;
