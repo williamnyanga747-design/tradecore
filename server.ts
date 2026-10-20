@@ -1701,30 +1701,24 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
           changed: false,
           server_ts: inMemoryStateVersion,
           version: inMemoryStateVersion,
-          _version: inMemoryStateVersion,
-          products: [],
-          marketplaceProducts: [],
-          users: [],
-          sales: [],
-          marketplaceOrders: [],
-          chatMessages: [],
-          chatConversations: []
+          _version: inMemoryStateVersion
         });
       }
 
-      resData.marketplaceProducts = incProducts;
-      resData.products = incProducts;
+      resData.marketplaceProducts = filteredProducts;
+      resData.products = filteredProducts;
       return res.json({
         success: true,
         changed: true,
         server_ts: inMemoryStateVersion,
         version: inMemoryStateVersion,
         _version: inMemoryStateVersion,
-        products: incProducts,
-        marketplaceProducts: incProducts,
-        users: incUsers,
-        sales: incSales,
-        marketplaceOrders: incOrders,
+        products: filteredProducts,
+        marketplaceProducts: filteredProducts,
+        incrementalProducts: incProducts,
+        users: filteredUsers,
+        sales: filteredSales,
+        marketplaceOrders: filteredOrders,
         chatMessages: resData.chatMessages,
         chatConversations: resData.chatConversations,
         companies: resData.companies,
@@ -2196,7 +2190,7 @@ app.post("/api/copilot-analysis", async (req, res) => {
     const targetLang = language === 'sw' ? 'Swahili (Kiswahili)' : 'English';
     const companyName = companyInfo?.name || 'Active Company';
 
-    const modelsToTry = ["gemini-3.8-flash", "gemini-3.8-flash-lite"];
+    const modelsToTry = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
 
     const systemInstruction = `You are the Lead Executive AI Enterprise Copilot for the specified company (${companyName}).
 Your mandate is to DIRECTLY AND SPECIFICALLY ANSWER the user's specific prompt/question first ("${prompt || 'General Review'}").
@@ -2617,10 +2611,9 @@ Start with [REASONING] tags and end with [QUESTIONS_FOR_USER] tags.`;
 
       // Tested high-availability models with automatic fallback & backoff
       const modelsToTry = [
-        "gemini-flash-lite-latest",
-        "gemini-3.1-flash-lite",
-        "gemini-3.5-flash-lite",
-        "gemini-3.8-flash"
+        "gemini-3.8-flash",
+        "gemini-flash-latest",
+        "gemini-3.1-flash-lite"
       ];
 
       for (const modelName of modelsToTry) {

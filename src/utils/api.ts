@@ -336,6 +336,14 @@ export async function fetchSystemDataFromPhp(timeoutMs: number = 10000): Promise
     const text = await response.text();
     try {
       const result = JSON.parse(text);
+      // If server explicitly reports no changes occurred, do not parse as an empty state snapshot
+      if (result && result.changed === false) {
+        if (result.version) {
+          const v = Number(result.version);
+          if (!Number.isNaN(v) && v > 0) _lastServerVersion = Math.max(_lastServerVersion, v);
+        }
+        return null;
+      }
       // Capture server version for cross-device poll (monotonic, no timestamp collisions)
       if (result && typeof result.version !== 'undefined') {
         const v = Number(result.version);

@@ -5,6 +5,7 @@ import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TZS, TFunc } from './MarketplaceShared';
 import { timeAgo } from '../../utils/megaHelpers';
 import { safeLower } from '../../utils/stateHelpers';
+import { sameId } from '../../utils/idUtils';
 
 interface Props {
   theme: PublicTheme;
@@ -47,10 +48,23 @@ export default function MegaChat({
     return () => window.clearInterval(id);
   }, []);
 
+  const storedPhone = typeof window !== 'undefined' ? localStorage.getItem('tradecore_buyer_phone') || '' : '';
+  const effectiveBuyerPhone = buyerIdentity?.phone || storedPhone;
+
   const myConversations = useMemo(() => {
     let list = conversations;
-    if (mode === 'buyer') list = list.filter(c => c.buyerPhone === buyerIdentity?.phone);
-    else list = list.filter(c => c.companyId === companyId);
+    if (mode === 'buyer') {
+      const bDigits = effectiveBuyerPhone.replace(/\D/g, '');
+      const last9 = bDigits.slice(-9);
+      list = list.filter(c => {
+        if (initialConversationId && c.id === initialConversationId) return true;
+        if (!effectiveBuyerPhone) return true; // show all active or created if no phone set
+        const cDigits = (c.buyerPhone || '').replace(/\D/g, '');
+        return (last9 && cDigits.slice(-9) === last9) || c.buyerPhone === effectiveBuyerPhone;
+      });
+    } else {
+      list = list.filter(c => sameId(c.companyId, companyId));
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(c => {
@@ -62,12 +76,14 @@ export default function MegaChat({
       });
     }
     return [...list].sort((a, b) => (b.lastMessageAt || '').localeCompare(a.lastMessageAt || ''));
-  }, [conversations, mode, buyerIdentity?.phone, companyId, search, companies]);
+  }, [conversations, mode, effectiveBuyerPhone, companyId, search, companies, initialConversationId]);
 
-  const active = myConversations.find(c => c.id === activeId) || null;
+  const active = myConversations.find(c => c.id === activeId) ||
+    (initialConversationId ? conversations.find(c => c.id === initialConversationId) : null) ||
+    myConversations[0] || null;
   const activeMessages = useMemo(
-    () => messages.filter(m => m.conversationId === activeId).sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    [messages, activeId]
+    () => active ? messages.filter(m => m.conversationId === active.id).sort((a, b) => a.createdAt.localeCompare(b.createdAt)) : [],
+    [messages, active?.id]
   );
 
   useEffect(() => {

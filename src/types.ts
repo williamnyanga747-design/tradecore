@@ -977,6 +977,12 @@ export interface Offer {
   companyId: number;
   customerName: string;
   customerPhone: string;
+  customerRegion?: string;
+  customerDistrict?: string;
+  customerWard?: string;
+  customerStreet?: string;
+  transactionId?: string;
+  receiptImage?: string;
   originalPrice: number;
   offeredPrice: number;
   counterPrice?: number;
@@ -988,6 +994,7 @@ export interface Offer {
   acceptedExpiresAt?: string; // payment lock +2h after accept
   paymentReference?: string; // collection reference for offer checkout
   orderId?: number | null; // created order once paid
+  paidAt?: string;
   createdAt: string;
 }
 
@@ -1026,6 +1033,12 @@ export interface GroupDealParticipant {
   groupDealId: number;
   customerName: string;
   customerPhone: string;
+  customerRegion?: string;
+  customerDistrict?: string;
+  customerWard?: string;
+  customerStreet?: string;
+  transactionId?: string;
+  receiptImage?: string;
   status: GroupParticipantStatus;
   amountPaid?: number;
   reference?: string; // GROUP-{dealId}-{phone}
@@ -1138,6 +1151,12 @@ export interface InstallmentOrder {
   installmentPlanId: number;
   customerName: string;
   customerPhone: string;
+  customerRegion?: string;
+  customerDistrict?: string;
+  customerWard?: string;
+  customerStreet?: string;
+  transactionId?: string;
+  receiptImage?: string;
   totalPrice: number;
   downPayment: number;
   remaining: number;
@@ -1162,6 +1181,8 @@ export interface InstallmentPayment {
   type: InstallmentPaymentType;
   status: InstallmentPaymentStatus;
   reference?: string; // LP-{orderId}-D / LP-{orderId}-I{n}
+  transactionId?: string;
+  receiptImage?: string;
   collectionId?: number | null;
   dueDate?: string;
   paidAt?: string;

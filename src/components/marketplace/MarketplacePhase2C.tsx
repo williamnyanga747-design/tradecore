@@ -1,8 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef } from 'react';
 import {
   ChevronLeft, HandCoins, Users, CalendarClock, Radio, Heart, MessageCircle, Send,
   MapPin, Navigation, Truck, Smartphone, CheckCircle2, Loader2, ShieldCheck, Clock,
-  Gift, Star, Play, Bot, Copy, ExternalLink, ShoppingCart
+  Gift, Star, Play, Bot, Copy, ExternalLink, ShoppingCart, Upload, Image, X, Plus
 } from 'lucide-react';
 import {
   Company, MarketplaceProduct, Offer, GroupDeal, GroupDealParticipant,
@@ -22,21 +22,37 @@ export interface FeatureHandlers {
     originalPrice: number; offeredPrice: number;
   }) => { ok: boolean; error?: string };
   onInitiateOfferPayment: (offerId: number, address: {
+    customerName?: string; customerPhone?: string;
     customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
+    transactionId?: string; receiptImage?: string;
   }, network?: CollectionNetwork) => { ok: boolean; reference?: string; error?: string };
-  onJoinGroupDeal: (dealId: number, input: { customerName: string; customerPhone: string }) => {
+  onCreateGroupDeal?: (input: {
+    productId: number; companyId: number; groupPrice: number; minBuyers: number; durationHours?: number;
+    customerName?: string; customerPhone?: string; customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
+    transactionId?: string; receiptImage?: string; network?: CollectionNetwork;
+  }) => { ok: boolean; dealId?: number; shareCode?: string; error?: string };
+  onJoinGroupDeal: (dealId: number, input: {
+    customerName: string; customerPhone: string;
+    customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
+    transactionId?: string; receiptImage?: string;
+  }) => {
     ok: boolean; reference?: string; error?: string; alreadyPaid?: boolean;
   };
   onInitiateGroupPayment: (dealId: number, address: {
     customerName?: string; customerPhone?: string;
     customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
+    transactionId?: string; receiptImage?: string;
   }, network?: CollectionNetwork) => { ok: boolean; reference?: string; error?: string };
   onCreateInstallmentOrder: (input: {
-    productId: number; companyId: number; installmentPlanId: number;
+    productId: number; companyId: number; installmentPlanId?: number;
     customerName: string; customerPhone: string;
+    customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
+    transactionId?: string; receiptImage?: string; network?: CollectionNetwork;
+    downPaymentPercent?: number; installmentsCount?: number; installmentPercentExtra?: number;
   }) => { ok: boolean; trackingCode?: string; error?: string };
   onInitiateInstallmentPayment: (installmentOrderId: number, type: 'down' | 'installment', address: {
     customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
+    transactionId?: string; receiptImage?: string;
   }, network?: CollectionNetwork) => { ok: boolean; reference?: string; error?: string };
   onAddLiveComment: (streamId: number, input: {
     customerName: string; customerPhone?: string; message: string; type?: 'comment' | 'want'; productId?: number;
@@ -73,7 +89,7 @@ interface Props {
   handlers: FeatureHandlers;
 }
 
-const NETWORK_META: Record<string, { label: string; color: string }> = {
+export const NETWORK_META: Record<string, { label: string; color: string }> = {
   mpesa: { label: 'M-Pesa', color: 'bg-green-500/20 text-green-400' },
   tigopesa: { label: 'Tigo Pesa', color: 'bg-blue-500/20 text-blue-400' },
   airtelmoney: { label: 'Airtel Money', color: 'bg-red-500/20 text-red-400' },
@@ -107,8 +123,8 @@ function NotFound(props: { th: ReturnType<typeof getPublicTheme>; t: FeatureT; o
   );
 }
 
-/** Shared mini-checkout modal used by offer / group deal / installment payments. */
-function PaymentModal(props: {
+/** Shared comprehensive checkout modal used by Offer / Group Deal / Installment payments. */
+export function PaymentModal(props: {
   th: ReturnType<typeof getPublicTheme>;
   t: FeatureT;
   milk: boolean;
@@ -123,109 +139,245 @@ function PaymentModal(props: {
     customerName: string; customerPhone: string;
     customerRegion: string; customerDistrict: string; customerWard: string; customerStreet: string;
     network: CollectionNetwork;
+    transactionId?: string;
+    receiptImage?: string;
   }) => { ok: boolean; reference?: string; error?: string };
 }) {
   const { th, t, milk } = props;
-  const activeNetworks = props.networks.filter(n => n.isActive !== false);
-  const [name, setName] = useState(props.prefillName);
-  const [phone, setPhone] = useState(props.prefillPhone);
+  const activeNetworks = (props.networks || []).filter(n => n.isActive !== false);
+  const [name, setName] = useState(props.prefillName || '');
+  const [phone, setPhone] = useState(props.prefillPhone || '');
   const [region, setRegion] = useState('');
   const [district, setDistrict] = useState('');
   const [ward, setWard] = useState('');
   const [street, setStreet] = useState('');
   const [network, setNetwork] = useState<CollectionNetwork>(activeNetworks[0]?.network || 'mpesa');
+  const [transactionId, setTransactionId] = useState('');
+  const [receiptImage, setReceiptImage] = useState<string | undefined>();
   const [error, setError] = useState('');
   const [result, setResult] = useState<{ ok: boolean; reference?: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
   const selected = activeNetworks.find(n => n.network === network);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      setError(t('Picha ya risiti isizidi 5MB.'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setReceiptImage(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const pay = () => {
     setError('');
-    if (!name.trim()) return setError(t('Jina linahitajika.'));
-    if (!/^(\+?255|0)[67]\d{8}$/.test(phone.trim().replace(/\s/g, ''))) return setError(t('Namba ya simu si sahihi. Tumia format ya Tanzania (+255 or 0...).'));
+    if (!name.trim()) return setError(t('Jina kamili linahitajika.'));
+    if (!/^(\+?255|0)[67]\d{8}$/.test(phone.trim().replace(/\s/g, ''))) {
+      return setError(t('Namba ya simu si sahihi. Tumia format ya Tanzania (+255 au 07XX...).'));
+    }
+    if (!region) return setError(t('Tafadhali chagua mkoa wako kwa ajili ya usafirishaji.'));
     setBusy(true);
     const res = props.onPay({
-      customerName: name.trim(), customerPhone: phone.trim(),
-      customerRegion: region, customerDistrict: district, customerWard: ward, customerStreet: street,
-      network
+      customerName: name.trim(),
+      customerPhone: phone.trim(),
+      customerRegion: region,
+      customerDistrict: district.trim(),
+      customerWard: ward.trim(),
+      customerStreet: street.trim(),
+      network,
+      transactionId: transactionId.trim() || undefined,
+      receiptImage
     });
     setBusy(false);
-    if (!res.ok || !res.reference) return setError(res.error || t('Something went wrong.'));
+    if (!res.ok || !res.reference) return setError(res.error || t('Kumetokea hitilafu. Tafadhali jaribu tena.'));
     setResult({ ok: true, reference: res.reference });
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => props.onClose()}>
-      <div className={`${th.card} ${th.cardBorder} rounded-2xl p-5 w-full max-w-md space-y-3 max-h-[90vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto" onClick={() => props.onClose()}>
+      <div className={`${th.card} ${th.cardBorder} rounded-2xl p-5 w-full max-w-lg space-y-3.5 my-8 max-h-[90vh] overflow-y-auto shadow-2xl`} onClick={e => e.stopPropagation()}>
         {result?.ok ? (
-          <div className="space-y-4 py-2 text-center">
+          <div className="space-y-4 py-3 text-center">
             <div className="mx-auto w-14 h-14 rounded-full bg-emerald-500/15 flex items-center justify-center">
-              <CheckCircle2 className="w-7 h-7 text-emerald-500" />
+              <CheckCircle2 className="w-8 h-8 text-emerald-500" />
             </div>
-            <div className={`text-sm font-black ${th.strongText}`}>{t('Order imewekwa — Malipo yanasubiri kuthibitishwa')}</div>
-            <div className={`flex items-center justify-center gap-1.5 text-[11px] font-black ${th.chipText} ${th.chip} ${th.chipBorder} px-3 py-1.5 rounded-full mx-auto`}>
-              <ShieldCheck className="w-3.5 h-3.5" /> {t('Payment Reference')}: <span className="font-mono">{result.reference}</span>
+            <div className={`text-base font-black ${th.strongText}`}>{t('Malipo Yamerekodiwa & Order Imekamilika!')}</div>
+            <div className={`flex items-center justify-center gap-1.5 text-xs font-black ${th.chipText} ${th.chip} ${th.chipBorder} px-3.5 py-2 rounded-full mx-auto`}>
+              <ShieldCheck className="w-4 h-4 text-emerald-500" /> {t('Payment Reference')}: <span className="font-mono">{result.reference}</span>
             </div>
-            <p className={`text-[11px] ${th.textMuted} font-semibold leading-relaxed`}>
-              {t('Lipa kwa')} <span className="font-black">{NETWORK_META[network]?.label || network}</span>{' '}
-              <span className="font-black underline">{selected?.payNumber || '-'}</span>
-              {selected?.accountName ? ` (${selected.accountName})` : ''}. {t('Team yetu itathibitisha malipo na kumsaidia muuzaji.')}
+            {transactionId && (
+              <div className="text-xs font-bold text-gray-500">
+                {t('Transaction ID')}: <span className="font-mono text-emerald-600">{transactionId}</span>
+              </div>
+            )}
+            <p className={`text-xs ${th.textMuted} font-semibold leading-relaxed max-w-sm mx-auto`}>
+              {t('Taarifa zako zimehifadhiwa kikamilifu. Muuzaji ametaarifiwa kuanza kuandaa mzigo wako na usafirishaji kuelekea')} {ward || district || region}.
             </p>
-            <button onClick={() => props.onClose()} className={`w-full px-5 py-2.5 text-[11px] font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer`}>
-              {t('Sawa')}
+            <button onClick={() => props.onClose()} className={`w-full px-5 py-2.5 text-xs font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer shadow-md`}>
+              {t('Sawa, Nimemaliza')}
             </button>
           </div>
         ) : (
           <>
-            <div className="flex items-center justify-between">
-              <h4 className={`text-sm font-black ${th.strongText}`}>{props.title}</h4>
-              <button onClick={() => props.onClose()} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-white/10`}>✕</button>
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+              <h4 className={`text-sm font-black ${th.strongText} flex items-center gap-2`}>
+                <HandCoins className="w-4 h-4 text-brand" /> {props.title}
+              </h4>
+              <button onClick={() => props.onClose()} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-black/5`}>✕</button>
             </div>
-            <div className={`rounded-xl border ${milk ? 'border-amber-200 bg-amber-50' : 'border-amber-500/30 bg-amber-500/10'} px-3.5 py-2.5 flex items-center justify-between`}>
-              <span className={`text-[11px] font-black ${th.chipText}`}>{t('Total to Pay')}</span>
-              <span className={`text-lg font-black ${th.statValue}`}>{TZS(props.amount)}</span>
-            </div>
-            <input value={name} onChange={e => setName(e.target.value)} placeholder={t('Jina Kamili')} className={th.input} />
-            <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+255 7XX XXX XXX" className={th.input} />
-            <div className="grid grid-cols-2 gap-2">
-              <select value={region} onChange={e => setRegion(e.target.value)} className={`${th.input} cursor-pointer`}>
-                <option value="">{t('Region (optional)')}</option>
-                {TANZANIA_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
-              </select>
-              <input value={district} onChange={e => setDistrict(e.target.value)} placeholder={t('District (optional)')} className={th.input} />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input value={ward} onChange={e => setWard(e.target.value)} placeholder={t('Ward (optional)')} className={th.input} />
-              <input value={street} onChange={e => setStreet(e.target.value)} placeholder={t('Street (optional)')} className={th.input} />
-            </div>
-            {activeNetworks.length > 0 && (
+
+            <div className={`rounded-xl border ${milk ? 'border-amber-200 bg-amber-50' : 'border-amber-500/30 bg-amber-500/10'} px-4 py-2.5 flex items-center justify-between`}>
               <div>
-                <div className={`block text-[10px] font-black uppercase tracking-wider mb-1.5 ${th.label}`}>{t('Njia ya Malipo')}</div>
-                <div className="grid grid-cols-2 gap-2">
+                <span className={`text-[10px] font-bold uppercase tracking-wider ${th.textMuted}`}>{t('Kiasi cha Kulipa')}</span>
+                <div className={`text-lg font-black ${th.statValue}`}>{TZS(props.amount)}</div>
+              </div>
+              <div className="text-right text-[10px] text-emerald-600 font-bold bg-emerald-100 px-2.5 py-1 rounded-lg">
+                ✓ Bei Iliyokubaliwa
+              </div>
+            </div>
+
+            {/* Buyer Contact & Location Fields */}
+            <div className="space-y-2">
+              <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Taarifa za Mnunuzi & Mahali (Delivery Address)')}</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Jina Kamili')} *</label>
+                  <input value={name} onChange={e => setName(e.target.value)} placeholder={t('Mfano: Juma Rashid')} className={th.input} />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Namba ya Simu')} *</label>
+                  <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="07XX XXX XXX au +255..." className={th.input} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Mkoa')} *</label>
+                  <select value={region} onChange={e => setRegion(e.target.value)} className={`${th.input} cursor-pointer`}>
+                    <option value="">-- {t('Chagua Mkoa')} --</option>
+                    {TANZANIA_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Wilaya / District')}</label>
+                  <input value={district} onChange={e => setDistrict(e.target.value)} placeholder={t('Mfano: Kinondoni, Ilala, Arusha')} className={th.input} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Kata / Ward')}</label>
+                  <input value={ward} onChange={e => setWard(e.target.value)} placeholder={t('Mfano: Mikocheni, Kariakoo')} className={th.input} />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Mtaa / Street / Landmark')}</label>
+                  <input value={street} onChange={e => setStreet(e.target.value)} placeholder={t('Mfano: Mtaa wa Lumumba, Karibu na...') } className={th.input} />
+                </div>
+              </div>
+            </div>
+
+            {/* Payment Method / Lipa Namba */}
+            {activeNetworks.length > 0 && (
+              <div className="space-y-2 pt-1 border-t border-gray-100">
+                <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Chagua Mtandao wa Malipo')}</div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   {activeNetworks.map(n => (
                     <button
                       key={n.network}
+                      type="button"
                       onClick={() => setNetwork(n.network)}
                       className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${network === n.network ? 'border-amber-500 bg-amber-500/10 ring-2 ring-amber-500/40' : `${th.cardBorder} ${th.card} hover:brightness-105`}`}
                     >
-                      <div className="flex items-center gap-2">
-                        <Smartphone className="w-3.5 h-3.5" />
+                      <div className="flex items-center gap-1.5">
+                        <Smartphone className="w-3.5 h-3.5 text-brand" />
                         <span className={`text-[11px] font-black ${th.strongText}`}>{n.displayName || NETWORK_META[n.network]?.label || n.network}</span>
                       </div>
-                      <div className={`text-[9px] ${th.textMuted} font-bold truncate`}>{n.payNumber}</div>
+                      <div className={`text-[10px] ${th.textMuted} font-bold truncate mt-0.5`}>{n.payNumber}</div>
                     </button>
                   ))}
                 </div>
+
+                {selected && (
+                  <div className="p-3 rounded-xl bg-blue-50/70 border border-blue-200 text-xs text-blue-900 space-y-1">
+                    <div className="font-bold flex items-center justify-between">
+                      <span>Lipa Namba ya {selected.displayName || selected.network}:</span>
+                      <span className="font-mono text-sm font-black text-blue-700 bg-white px-2 py-0.5 rounded border border-blue-200">{selected.payNumber}</span>
+                    </div>
+                    {selected.accountName && (
+                      <div className="text-[11px] text-blue-800">
+                        Jina la Akaunti: <span className="font-bold">{selected.accountName}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
+
+            {/* Transaction ID & Receipt Upload */}
+            <div className="space-y-2 pt-1 border-t border-gray-100">
+              <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Uthibitisho wa Malipo (Transaction ID & Risiti)')}</div>
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Namba ya Muamala / Transaction ID')}</label>
+                <input
+                  value={transactionId}
+                  onChange={e => setTransactionId(e.target.value)}
+                  placeholder={t('Mfano: QD83719283 au namba ya SMS ya malipo')}
+                  className={th.input}
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Pakia Picha ya Risiti (Upload Receipt)')}</label>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                {receiptImage ? (
+                  <div className="flex items-center gap-3 p-2 bg-emerald-50 rounded-xl border border-emerald-200">
+                    <img src={receiptImage} alt="Receipt preview" className="w-14 h-14 object-cover rounded-lg border border-emerald-300 shadow-sm" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-bold text-emerald-800">✓ Risiti imepakiwa kikamilifu</div>
+                      <div className="text-[10px] text-emerald-600">Picha hii itaunganishwa na kumbukumbu ya order yako.</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setReceiptImage(undefined)}
+                      className="p-1 rounded-lg hover:bg-emerald-100 text-red-500 cursor-pointer"
+                      title="Ondoa"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    className="w-full py-2.5 px-3 border border-dashed border-gray-300 hover:border-brand rounded-xl text-xs font-bold text-gray-600 hover:text-brand flex items-center justify-center gap-2 cursor-pointer transition bg-gray-50/50"
+                  >
+                    <Upload className="w-4 h-4" /> {t('Bofya hapa kupakia picha/screenshot ya risiti')}
+                  </button>
+                )}
+              </div>
+            </div>
+
             {props.note && <p className={`text-[10px] ${th.textDim} font-semibold`}>{props.note}</p>}
-            {error && <div className="text-[11px] font-bold text-red-500">{error}</div>}
+            {error && <div className="text-xs font-bold text-red-500 bg-red-50 p-2 rounded-lg border border-red-200">{error}</div>}
+
             <button
               onClick={pay}
               disabled={busy}
-              className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 text-[11px] font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer disabled:opacity-50`}
+              className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-xs font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer disabled:opacity-50 shadow-md transition`}
             >
-              {busy ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {t('Inaandaa...')}</> : <><CheckCircle2 className="w-3.5 h-3.5" /> {t('Lipa Sasa — Weka Order')}</>}
+              {busy ? <><Loader2 className="w-4 h-4 animate-spin" /> {t('Inasajili malipo...')}</> : <><CheckCircle2 className="w-4 h-4" /> {t('Thibitisha Malipo & Weka Order')}</>}
             </button>
           </>
         )}
@@ -328,55 +480,51 @@ function GroupDealPage(props: Props) {
   const th = getPublicTheme(theme);
   const milk = theme === 'milk';
   const deal = props.groupDeals.find(d => d.id === Number(props.route.id));
-  const [joined, setJoined] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
-  const [jName, setJName] = useState(props.session?.name || '');
-  const [jPhone, setJPhone] = useState(props.session?.phone || '');
-  const [jError, setJError] = useState('');
-  const [done, setDone] = useState(false);
+  const [copied, setCopied] = useState(false);
+
   if (!deal) return <NotFound th={th} t={t} onBack={props.onBack} label={t('The deal does not exist.')} />;
   const product = props.products.find(p => p.id === deal.productId);
   const company = props.companies.find(c => c.id === deal.companyId);
   const participants = props.groupDealParticipants.filter(p => p.groupDealId === deal.id);
   const paidCount = participants.filter(p => p.status === 'paid').length;
-  const joinedCount = participants.filter(p => p.status === 'joined').length;
   const remaining = Math.max(0, deal.minBuyers - paidCount);
-  const progress = Math.min(100, Math.round(paidCount / deal.minBuyers * 100));
+  const progress = Math.min(100, Math.round((paidCount / deal.minBuyers) * 100));
   const expired = new Date(deal.expiresAt).getTime() < Date.now();
 
-  const join = () => {
-    setJError('');
-    if (!jName.trim()) return setJError(t('Jina linahitajika.'));
-    if (!/^(\+?255|0)[67]\d{8}$/.test(jPhone.trim().replace(/\s/g, ''))) return setJError(t('Namba ya simu si sahihi. Tumia format ya Tanzania (+255 or 0...).'));
-    const res = props.handlers.onJoinGroupDeal(deal.id, { customerName: jName.trim(), customerPhone: jPhone.trim() });
-    if (!res.ok) return setJError(res.error || t('Something went wrong.'));
-    setJoined(true);
-    setDone(true);
+  const handleCopy = () => {
+    navigator.clipboard?.writeText(deal.shareCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
-
-  const canPay = done || (deal.status === 'active' && !expired);
 
   return (
     <div className="space-y-4 pb-16">
       <BackButton th={th} t={t} onClick={props.onBack} />
       <Card th={th} className="p-5">
         <div className="flex items-start gap-4 flex-wrap">
-          <div className="w-20 h-20 rounded-2xl overflow-hidden shrink-0">
+          <div className="w-20 h-20 rounded-2xl overflow-hidden shrink-0 shadow-sm">
             {product?.image ? <img src={product.image} alt="" className="w-full h-full object-cover" /> : <div className={`w-full h-full flex items-center justify-center text-white text-xl font-black bg-gradient-to-br from-indigo-500 to-purple-600`}>{(product?.name || '-').charAt(0)}</div>}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className={`text-sm font-black ${th.strongText}`}>{product?.name}</h2>
               {deal.status === 'completed' ? (
-                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">{t('Imekamilika')}</span>
+                <span className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-500">✓ {t('Imekamilika')}</span>
               ) : expired ? (
-                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-gray-500/15 text-gray-400">{t('Imeisha muda')}</span>
+                <span className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full bg-gray-500/15 text-gray-400">{t('Imeisha muda')}</span>
               ) : (
-                <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400">Nunua Pamoja</span>
+                <span className="text-[9px] font-black uppercase px-2.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-500">Nunua Pamoja (Active)</span>
               )}
             </div>
-            <div className={`text-[10px] ${th.textMuted} font-semibold`}>{company?.name} · {t('Kikodi cha kushiriki')}: <span className="font-mono font-black">{deal.shareCode}</span></div>
-            <div className="flex items-center gap-4 mt-2 flex-wrap">
+            <div className={`text-[11px] ${th.textMuted} font-semibold mt-1 flex items-center gap-2 flex-wrap`}>
+              <span>{company?.name}</span>
+              <span>·</span>
+              <button onClick={handleCopy} className="inline-flex items-center gap-1 font-mono font-bold text-brand hover:underline cursor-pointer bg-brand/10 px-2 py-0.5 rounded">
+                <Copy className="w-3 h-3" /> {copied ? 'Imenakiliwa!' : `Code: ${deal.shareCode}`}
+              </button>
+            </div>
+            <div className="flex items-center gap-4 mt-2.5 flex-wrap">
               <div>
                 <div className={`text-[9px] ${th.textDim} font-bold uppercase`}>{t('Bei ya Kawaida')}</div>
                 <div className={`text-xs font-bold ${th.textMuted} line-through`}>{TZS(deal.soloPrice)}</div>
@@ -393,56 +541,57 @@ function GroupDealPage(props: Props) {
           </div>
         </div>
 
-        <div className="mt-4">
-          <div className="flex items-center justify-between text-[10px] font-black mb-1.5">
-            <span className={th.textMuted}>{paidCount}/{deal.minBuyers} {t('wamelipa')}</span>
-            <span className={th.textMuted}>{joinedCount} {t('wamejiunga')} · {t('Wabaki')}: {remaining}</span>
+        <div className="mt-4 pt-3 border-t border-gray-100">
+          <div className="flex items-center justify-between text-xs font-black mb-1.5">
+            <span className={th.textMuted}>{paidCount} / {deal.minBuyers} {t('wanunuzi wamelipa')}</span>
+            <span className="text-indigo-600 font-extrabold">{progress}% · {remaining === 0 ? 'Lengo limetimia!' : `Bado ${remaining}`}</span>
           </div>
           <div className={`h-2.5 rounded-full ${milk ? 'bg-indigo-100' : 'bg-indigo-500/15'} overflow-hidden`}>
             <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full transition-all" style={{ width: `${progress}%` }} />
           </div>
-          {remaining > 0 && deal.status === 'active' && !expired && (
-            <p className={`text-[10px] ${th.textMuted} font-semibold mt-2`}>
-              {t('Watu')} {remaining} {remaining === 1 ? t('mwingine anahitajika') : t('wengine wanahitajika')} kulipa ili kila mtu apate bei ya kikundi.
-            </p>
-          )}
         </div>
 
-        {deal.status === 'active' && !expired && !joined && (
-          <div className={`mt-4 p-3.5 rounded-2xl border ${th.cardBorder} space-y-2`}>
-            <div className={`text-[11px] font-black ${th.strongText}`}>{t('Jiunge na kikundi')}</div>
-            <div className="grid sm:grid-cols-2 gap-2">
-              <input value={jName} onChange={e => setJName(e.target.value)} placeholder={t('Jina Kamili')} className={th.input} />
-              <input value={jPhone} onChange={e => setJPhone(e.target.value)} placeholder="+255 7XX XXX XXX" className={th.input} />
-            </div>
-            {jError && <div className="text-[11px] font-bold text-red-500">{jError}</div>}
-            <button
-              onClick={join}
-              className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 text-[11px] font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer`}
-            >
-              <Users className="w-3.5 h-3.5" /> {t('Jiunge — Lipa')} {TZS(deal.groupPrice)}
-            </button>
-          </div>
-        )}
-
-        {canPay && (
+        {deal.status === 'active' && !expired && (
           <button
             onClick={() => setPayOpen(true)}
-            className={`mt-4 w-full flex items-center justify-center gap-2 px-5 py-3 text-sm font-black rounded-2xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer`}
+            className={`mt-4 w-full flex items-center justify-center gap-2 px-5 py-3 text-xs sm:text-sm font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer shadow-md hover:scale-[1.01] transition`}
           >
-            <CheckCircle2 className="w-4 h-4" /> {t('Lipa Sasa')} — {TZS(deal.groupPrice)}
+            <Users className="w-4 h-4" /> {t('Jiunge & Lipa kwa Bei ya Kikundi')} — {TZS(deal.groupPrice)}
           </button>
         )}
+
+        {/* Participants list with recorded locations */}
+        {participants.length > 0 && (
+          <div className="mt-4 pt-4 border-t border-gray-100 space-y-2">
+            <div className={`text-[11px] font-black uppercase tracking-wider ${th.label}`}>{t('Washiriki wa Kikundi Hiki')} ({participants.length}):</div>
+            <div className="space-y-1.5">
+              {participants.map(p => (
+                <div key={p.id} className="flex items-center justify-between p-2.5 rounded-xl bg-gray-50/70 border border-gray-200 text-xs">
+                  <div>
+                    <div className="font-black text-gray-900">{p.customerName}</div>
+                    <div className="text-[10px] text-gray-500">
+                      {[p.customerRegion, p.customerWard, p.customerStreet].filter(Boolean).join(', ') || 'Mahali: Tanzania'}
+                    </div>
+                  </div>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full ${p.status === 'paid' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {p.status === 'paid' ? '✓ Amelipa' : 'Amejiunga'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </Card>
+
       {payOpen && (
         <PaymentModal
           th={th} t={t} milk={milk}
           title={`Nunua Pamoja — ${product?.name || ''}`}
           amount={deal.groupPrice}
-          prefillName={jName || props.session?.name || ''}
-          prefillPhone={jPhone || props.session?.phone || ''}
+          prefillName={props.session?.name || ''}
+          prefillPhone={props.session?.phone || ''}
           networks={props.collectionSettings || []}
-          note={`${t('Bei inathibitishwa pale watu')} ${deal.minBuyers} ${t('wamelipa. Kama muda unaisha, unalipa bei ya kawaida.')}`}
+          note={`${t('Bei ya kikundi inathibitishwa pale watu')} ${deal.minBuyers} ${t('wanapokamilisha malipo yao.')}`}
           onClose={() => setPayOpen(false)}
           onPay={(input) => props.handlers.onInitiateGroupPayment(deal.id, input, input.network)}
         />
@@ -454,43 +603,262 @@ function GroupDealPage(props: Props) {
 function GroupDealsListing(props: Props) {
   const { t } = props;
   const th = getPublicTheme(props.theme);
+  const milk = props.theme === 'milk';
   const now = Date.now();
   const deals = props.groupDeals.filter(d => d.status === 'active' && new Date(d.expiresAt).getTime() > now);
+  const [createModal, setCreateModal] = useState(false);
+  const [selectedProdId, setSelectedProdId] = useState<number>(props.products[0]?.id || 0);
+  const [discountPercent, setDiscountPercent] = useState<number>(15);
+  const [minBuyers, setMinBuyers] = useState<number>(3);
+  const [cName, setCName] = useState(props.session?.name || '');
+  const [cPhone, setCPhone] = useState(props.session?.phone || '');
+  const [cRegion, setCRegion] = useState('');
+  const [cDistrict, setCDistrict] = useState('');
+  const [cWard, setCWard] = useState('');
+  const [cStreet, setCStreet] = useState('');
+  const [cTxId, setCTxId] = useState('');
+  const [cReceipt, setCReceipt] = useState<string | undefined>();
+  const [cError, setCError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
+  const selectedProd = props.products.find(p => p.id === selectedProdId) || props.products[0];
+  const calculatedGroupPrice = selectedProd ? Math.round(selectedProd.price * (1 - discountPercent / 100)) : 0;
+
+  const handleStartGroupBuy = () => {
+    setCError('');
+    if (!selectedProd) return setCError(t('Chagua bidhaa.'));
+    if (!cName.trim()) return setCError(t('Weka jina lako kamili.'));
+    if (!/^(\+?255|0)[67]\d{8}$/.test(cPhone.trim().replace(/\s/g, ''))) {
+      return setCError(t('Weka namba sahihi ya simu ya Tanzania (+255 au 07XX...).'));
+    }
+    if (!cRegion) return setCError(t('Chagua mkoa wako kwa ajili ya mzigo.'));
+
+    setSubmitting(true);
+    const res = props.handlers.onCreateGroupDeal ? props.handlers.onCreateGroupDeal({
+      productId: selectedProd.id,
+      companyId: selectedProd.companyId,
+      groupPrice: calculatedGroupPrice,
+      minBuyers,
+      customerName: cName.trim(),
+      customerPhone: cPhone.trim(),
+      customerRegion: cRegion,
+      customerDistrict: cDistrict.trim(),
+      customerWard: cWard.trim(),
+      customerStreet: cStreet.trim(),
+      transactionId: cTxId.trim() || undefined,
+      receiptImage: cReceipt
+    }) : { ok: false, error: 'Handler not configured' };
+
+    setSubmitting(false);
+    if (!res.ok || !res.dealId) return setCError(res.error || t('Kumetokea hitilafu.'));
+    setCreateModal(false);
+    props.onNavigate(`/group-deal/${res.dealId}`);
+  };
+
   return (
     <div className="space-y-4 pb-16">
       <BackButton th={th} t={t} onClick={props.onBack} />
-      <h1 className={`text-xl font-black ${th.strongText}`}>{t('Nunua Pamoja — Deals za Kikundi')}</h1>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className={`text-xl font-black ${th.strongText}`}>{t('Nunua Pamoja — Deals za Kikundi')}</h1>
+          <p className={`text-xs ${th.textMuted} font-semibold mt-0.5`}>
+            {t('Jiunge na vikundi au anzisha kikundi kipya upate punguzo kubwa la bei ya jumla.')}
+          </p>
+        </div>
+        <button
+          onClick={() => { setCError(''); setCreateModal(true); }}
+          className={`inline-flex items-center gap-1.5 px-4 py-2 text-xs font-black rounded-xl cursor-pointer ${th.btnPrimary} ${th.btnPrimaryText} shadow-sm transition`}
+        >
+          <Plus className="w-4 h-4" /> {t('Anzisha Nunua Pamoja Mpya')}
+        </button>
+      </div>
+
       {deals.length === 0 && (
-        <Card th={th} className="p-8 text-center">
-          <div className={`text-sm font-black ${th.strongText}`}>{t('Hakuna deals sasa')}</div>
-          <div className={`text-[11px] ${th.textMuted} font-semibold mt-1`}>{t('Muuzaji akianzisha Nunua Pamoja, deal itaonekana hapa.')}</div>
+        <Card th={th} className="p-8 text-center space-y-3">
+          <Users className={`w-12 h-12 mx-auto ${th.textDim}`} />
+          <div className={`text-sm font-black ${th.strongText}`}>{t('Hakuna deals zinazoendelea kwa sasa')}</div>
+          <div className={`text-xs ${th.textMuted} font-semibold max-w-md mx-auto`}>
+            {t('Kuwa wa kwanza kuanzisha Nunua Pamoja kwa bidhaa yoyote uipendayo, pokea punguzo na waalike wenzako!')}
+          </div>
+          <button
+            onClick={() => setCreateModal(true)}
+            className={`inline-flex items-center gap-1.5 px-5 py-2.5 text-xs font-black rounded-xl cursor-pointer ${th.btnPrimary} ${th.btnPrimaryText} mt-2`}
+          >
+            <Plus className="w-4 h-4" /> {t('Anzisha Kikundi Sasa')}
+          </button>
         </Card>
       )}
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
         {deals.map(d => {
           const product = props.products.find(p => p.id === d.productId);
           const company = props.companies.find(c => c.id === d.companyId);
           const paid = props.groupDealParticipants.filter(p => p.groupDealId === d.id && p.status === 'paid').length;
           return (
-            <button key={d.id} onClick={() => props.onNavigate(`/group-deal/${d.id}`)} className={`${th.card} ${th.cardBorder} rounded-2xl overflow-hidden text-left transition hover:brightness-105 cursor-pointer`}>
+            <button key={d.id} onClick={() => props.onNavigate(`/group-deal/${d.id}`)} className={`${th.card} ${th.cardBorder} rounded-2xl overflow-hidden text-left transition hover:brightness-105 cursor-pointer shadow-sm`}>
               <div className="h-36 overflow-hidden">
                 {product?.image ? <img src={product.image} alt="" className="w-full h-full object-cover" /> : <div className={`w-full h-full flex items-center justify-center text-white text-3xl font-black bg-gradient-to-br from-indigo-500 to-purple-600`}>{(product?.name || '-').charAt(0)}</div>}
               </div>
-              <div className="p-3.5">
-                <div className={`text-[12px] font-black ${th.strongText} line-clamp-1`}>{product?.name}</div>
+              <div className="p-3.5 space-y-1.5">
+                <div className={`text-xs font-black ${th.strongText} line-clamp-1`}>{product?.name}</div>
                 <div className={`text-[10px] ${th.textMuted} font-semibold`}>{company?.name}</div>
-                <div className="flex items-center gap-2 mt-2">
+                <div className="flex items-center gap-2 pt-1">
                   <span className={`text-sm font-black text-emerald-500`}>{TZS(d.groupPrice)}</span>
                   <span className={`text-[10px] font-bold ${th.textMuted} line-through`}>{TZS(d.soloPrice)}</span>
                 </div>
-                <div className="flex items-center gap-1.5 mt-1.5 text-[10px] font-black">
-                  <Users className="w-3 h-3 text-indigo-400" /> {paid}/{d.minBuyers} {t('wamelipa')}
+                <div className="flex items-center justify-between text-[10px] font-black pt-1">
+                  <span className="inline-flex items-center gap-1 text-indigo-500">
+                    <Users className="w-3 h-3" /> {paid}/{d.minBuyers} {t('wamelipa')}
+                  </span>
+                  <span className="text-gray-400 font-mono">Code: {d.shareCode}</span>
                 </div>
               </div>
             </button>
           );
         })}
       </div>
+
+      {/* Modal: Buyer starts a new Group Buy */}
+      {createModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto" onClick={() => setCreateModal(false)}>
+          <div className={`${th.card} ${th.cardBorder} rounded-2xl p-5 w-full max-w-lg space-y-3.5 my-8 max-h-[90vh] overflow-y-auto shadow-2xl`} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+              <h4 className={`text-sm font-black ${th.strongText} flex items-center gap-2`}>
+                <Users className="w-4 h-4 text-brand" /> {t('Anzisha Nunua Pamoja (Group Buy)')}
+              </h4>
+              <button onClick={() => setCreateModal(false)} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-black/5`}>✕</button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-bold text-gray-500 block">{t('Chagua Bidhaa ya Kikundi')} *</label>
+              <select
+                value={selectedProdId}
+                onChange={e => setSelectedProdId(Number(e.target.value))}
+                className={`${th.input} cursor-pointer text-xs font-bold`}
+              >
+                {props.products.map(p => (
+                  <option key={p.id} value={p.id}>{p.name} — {TZS(p.price)}</option>
+                ))}
+              </select>
+            </div>
+
+            {selectedProd && (
+              <div className="p-3 bg-indigo-50/70 rounded-xl border border-indigo-200 flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase font-bold">{t('Bei ya Kawaida')}</div>
+                  <div className="text-xs line-through text-gray-400 font-bold">{TZS(selectedProd.price)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-indigo-700 uppercase font-black">{t('Bei ya Kikundi')} (-{discountPercent}%)</div>
+                  <div className="text-base font-black text-emerald-600">{TZS(calculatedGroupPrice)}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] text-amber-700 uppercase font-bold">{t('Unaokoa')}</div>
+                  <div className="text-xs font-black text-amber-600">{TZS(selectedProd.price - calculatedGroupPrice)}</div>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Punguzo la Bei')}</label>
+                <select
+                  value={discountPercent}
+                  onChange={e => setDiscountPercent(Number(e.target.value))}
+                  className={`${th.input} cursor-pointer`}
+                >
+                  <option value={10}>10% Discount</option>
+                  <option value={15}>15% Discount (Standard)</option>
+                  <option value={20}>20% Super Group Discount</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Idadi ya Wanunuzi')}</label>
+                <select
+                  value={minBuyers}
+                  onChange={e => setMinBuyers(Number(e.target.value))}
+                  className={`${th.input} cursor-pointer`}
+                >
+                  <option value={2}>Watu 2 (Haraka)</option>
+                  <option value={3}>Watu 3 (Standard)</option>
+                  <option value={5}>Watu 5 (Kikundi Kikubwa)</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Buyer Contact & Address */}
+            <div className="space-y-2 pt-2 border-t border-gray-100">
+              <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Taarifa Zako Kama Mwanzilishi (Delivery Address)')}</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input value={cName} onChange={e => setCName(e.target.value)} placeholder={t('Jina Kamili *')} className={th.input} />
+                <input value={cPhone} onChange={e => setCPhone(e.target.value)} placeholder={t('Namba ya Simu * (07XX...)')} className={th.input} />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <select value={cRegion} onChange={e => setCRegion(e.target.value)} className={`${th.input} cursor-pointer`}>
+                  <option value="">-- {t('Chagua Mkoa')} * --</option>
+                  {TANZANIA_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                </select>
+                <input value={cDistrict} onChange={e => setCDistrict(e.target.value)} placeholder={t('Wilaya / District')} className={th.input} />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <input value={cWard} onChange={e => setCWard(e.target.value)} placeholder={t('Kata / Ward')} className={th.input} />
+                <input value={cStreet} onChange={e => setCStreet(e.target.value)} placeholder={t('Mtaa / Street')} className={th.input} />
+              </div>
+            </div>
+
+            {/* Payment Record & Receipt */}
+            <div className="space-y-2 pt-2 border-t border-gray-100">
+              <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Malipo ya Nafasi Yako (Transaction ID & Risiti)')}</div>
+              <input
+                value={cTxId}
+                onChange={e => setCTxId(e.target.value)}
+                placeholder={t('Namba ya Muamala / Transaction ID (mfano: QD83719283)')}
+                className={th.input}
+              />
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                onChange={e => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  const reader = new FileReader();
+                  reader.onload = () => setCReceipt(reader.result as string);
+                  reader.readAsDataURL(f);
+                }}
+                className="hidden"
+              />
+              {cReceipt ? (
+                <div className="flex items-center gap-3 p-2 bg-emerald-50 rounded-xl border border-emerald-200">
+                  <img src={cReceipt} alt="Receipt" className="w-12 h-12 object-cover rounded-lg border border-emerald-300" />
+                  <div className="flex-1 min-w-0 text-xs font-bold text-emerald-800">✓ Risiti ya malipo imepakiwa</div>
+                  <button type="button" onClick={() => setCReceipt(undefined)} className="p-1 text-red-500">✕</button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  className="w-full py-2.5 px-3 border border-dashed border-gray-300 hover:border-brand rounded-xl text-xs font-bold text-gray-600 flex items-center justify-center gap-2 cursor-pointer bg-gray-50"
+                >
+                  <Upload className="w-4 h-4" /> {t('Pakia risiti ya malipo ya M-Pesa / Tigo / Airtel')}
+                </button>
+              )}
+            </div>
+
+            {cError && <div className="text-xs font-bold text-red-500 bg-red-50 p-2 rounded-lg border border-red-200">{cError}</div>}
+
+            <button
+              onClick={handleStartGroupBuy}
+              disabled={submitting}
+              className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-xs font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer disabled:opacity-50 shadow-md transition`}
+            >
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+              {t('Anzisha Kikundi & Kamilisha Usajili')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -501,108 +869,219 @@ function InstallmentStartPage(props: Props) {
   const th = getPublicTheme(theme);
   const milk = theme === 'milk';
   const product = props.products.find(p => p.id === Number(props.route.id));
+
+  // Sensible default plans if seller hasn't configured custom plans
+  const fallbackPlans: InstallmentPlan[] = useMemo(() => {
+    if (!product) return [];
+    return [
+      { id: 9101, productId: product.id, companyId: product.companyId, totalPrice: product.price, downPaymentPercent: 25, installmentsCount: 3, installmentPercentExtra: 0, status: 'active', createdAt: '' },
+      { id: 9102, productId: product.id, companyId: product.companyId, totalPrice: product.price, downPaymentPercent: 30, installmentsCount: 4, installmentPercentExtra: 2, status: 'active', createdAt: '' },
+      { id: 9103, productId: product.id, companyId: product.companyId, totalPrice: product.price, downPaymentPercent: 50, installmentsCount: 2, installmentPercentExtra: 0, status: 'active', createdAt: '' }
+    ];
+  }, [product]);
+
+  const existingPlans = (props.installmentPlans || []).filter(p => p.productId === product?.id && p.status === 'active');
+  const availablePlans = existingPlans.length > 0 ? existingPlans : fallbackPlans;
+
   const [name, setName] = useState(props.session?.name || '');
   const [phone, setPhone] = useState(props.session?.phone || '');
-  const [planId, setPlanId] = useState<number | undefined>(props.installmentPlans.find(p => p.productId === Number(props.route.id) && p.status === 'active')?.id);
+  const [region, setRegion] = useState('');
+  const [district, setDistrict] = useState('');
+  const [ward, setWard] = useState('');
+  const [street, setStreet] = useState('');
+  const [planId, setPlanId] = useState<number>(availablePlans[0]?.id || 9101);
+  const [txId, setTxId] = useState('');
+  const [receiptImage, setReceiptImage] = useState<string | undefined>();
   const [error, setError] = useState('');
-  const [created, setCreated] = useState<{ trackingCode: string } | null>(null);
-  const [payOpen, setPayOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+
   if (!product) return <NotFound th={th} t={t} onBack={props.onBack} label={t('The product does not exist.')} />;
-  const plans = props.installmentPlans.filter(p => p.productId === product.id && p.status === 'active');
-  const plan = plans.find(p => p.id === planId) || plans[0];
 
-  const create = () => {
+  const plan = availablePlans.find(p => p.id === planId) || availablePlans[0];
+  const downPayment = Math.round(product.price * (plan?.downPaymentPercent || 25) / 100);
+  const principal = Math.round((product.price - downPayment) / (plan?.installmentsCount || 3));
+  const installmentAmount = Math.round(principal * (1 + (plan?.installmentPercentExtra || 0) / 100));
+
+  const handleCreate = () => {
     setError('');
-    if (!name.trim()) return setError(t('Jina linahitajika.'));
-    if (!/^(\+?255|0)[67]\d{8}$/.test(phone.trim().replace(/\s/g, ''))) return setError(t('Namba ya simu si sahihi. Tumia format ya Tanzania (+255 or 0...).'));
-    if (!plan) return setError(t('Chagua mpango.'));
-    const res = props.handlers.onCreateInstallmentOrder({
-      productId: product.id, companyId: product.companyId, installmentPlanId: plan.id,
-      customerName: name.trim(), customerPhone: phone.trim()
-    });
-    if (!res.ok || !res.trackingCode) return setError(res.error || t('Something went wrong.'));
-    setCreated({ trackingCode: res.trackingCode });
-  };
+    if (!name.trim()) return setError(t('Jina kamili linahitajika.'));
+    if (!/^(\+?255|0)[67]\d{8}$/.test(phone.trim().replace(/\s/g, ''))) {
+      return setError(t('Namba ya simu si sahihi. Tumia format ya Tanzania (+255 au 07XX...).'));
+    }
+    if (!region) return setError(t('Chagua mkoa wako kwa ajili ya delivery ya bidhaa.'));
 
-  const instOrder = created ? props.installmentOrders.find(o => o.trackingCode === created.trackingCode) : undefined;
+    setBusy(true);
+    const res = props.handlers.onCreateInstallmentOrder({
+      productId: product.id,
+      companyId: product.companyId,
+      installmentPlanId: plan?.id,
+      customerName: name.trim(),
+      customerPhone: phone.trim(),
+      customerRegion: region,
+      customerDistrict: district.trim(),
+      customerWard: ward.trim(),
+      customerStreet: street.trim(),
+      transactionId: txId.trim() || undefined,
+      receiptImage,
+      downPaymentPercent: plan?.downPaymentPercent,
+      installmentsCount: plan?.installmentsCount,
+      installmentPercentExtra: plan?.installmentPercentExtra
+    });
+    setBusy(false);
+
+    if (!res.ok || !res.trackingCode) return setError(res.error || t('Kumetokea hitilafu.'));
+    props.onNavigate(`/lipa-pole-pole/${res.trackingCode}`);
+  };
 
   return (
     <div className="space-y-4 pb-16">
       <BackButton th={th} t={t} onClick={props.onBack} />
-      <Card th={th} className="p-5">
-        <h1 className={`text-lg font-black ${th.strongText}`}>{t('Lipa Pole Pole')} — {product.name}</h1>
-        <div className={`text-[11px] ${th.textMuted} font-semibold mt-1`}>{t('Nunua sasa, lipa kwa awamu. Hakuna mabenki yanayohitajika.')}</div>
-        <div className={`mt-3 rounded-xl border ${milk ? 'border-amber-200 bg-amber-50' : 'border-amber-500/30 bg-amber-500/10'} px-3.5 py-2.5`}>
-          <div className={`text-[10px] ${th.textMuted} font-bold uppercase`}>{t('Bei ya Bidhaa')}</div>
-          <div className={`text-lg font-black ${th.statValue}`}>{TZS(product.price)}</div>
+      <Card th={th} className="p-5 space-y-4">
+        <div>
+          <h1 className={`text-lg font-black ${th.strongText}`}>{t('Lipa Pole Pole')} — {product.name}</h1>
+          <div className={`text-[11px] ${th.textMuted} font-semibold mt-1`}>
+            {t('Nunua leo, lipa kwa awamu nafuu bila riba au usumbufu wa kibenki.')}
+          </div>
         </div>
 
-        {plans.length > 0 && (
-          <div className="mt-4 space-y-2">
-            <div className={`block text-[10px] font-black uppercase tracking-wider mb-1 ${th.label}`}>{t('Chagua Mpango wa Awamu')}</div>
-            {plans.map(p => {
+        <div className={`rounded-xl border ${milk ? 'border-amber-200 bg-amber-50' : 'border-amber-500/30 bg-amber-500/10'} px-4 py-3 flex items-center justify-between`}>
+          <div>
+            <div className={`text-[10px] ${th.textMuted} font-bold uppercase`}>{t('Bei Kamili ya Bidhaa')}</div>
+            <div className={`text-lg font-black ${th.statValue}`}>{TZS(product.price)}</div>
+          </div>
+          <div className="text-right">
+            <div className={`text-[10px] text-sky-600 font-bold uppercase`}>{t('Malipo ya Awali')}</div>
+            <div className={`text-base font-black text-sky-700`}>{TZS(downPayment)}</div>
+          </div>
+        </div>
+
+        {/* Plan selection */}
+        <div className="space-y-2">
+          <div className={`block text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Chagua Mpango wa Awamu')}</div>
+          <div className="space-y-2">
+            {availablePlans.map(p => {
               const down = Math.round(product.price * p.downPaymentPercent / 100);
-              const principal = Math.round((product.price - down) / p.installmentsCount);
-              const instAmount = Math.round(principal * (1 + p.installmentPercentExtra / 100));
-              const active = plan?.id === p.id;
+              const princ = Math.round((product.price - down) / p.installmentsCount);
+              const inst = Math.round(princ * (1 + p.installmentPercentExtra / 100));
+              const active = (plan?.id === p.id);
               return (
                 <button
                   key={p.id}
+                  type="button"
                   onClick={() => setPlanId(p.id)}
                   className={`w-full p-3 rounded-xl border text-left transition cursor-pointer ${active ? 'border-amber-500 bg-amber-500/10 ring-2 ring-amber-500/40' : `${th.cardBorder} ${th.card} hover:brightness-105`}`}
                 >
                   <div className="flex items-center justify-between flex-wrap">
-                    <span className={`text-[11px] font-black ${th.strongText}`}>{t('Awali')} {p.downPaymentPercent}% + {p.installmentsCount} {t('awamu')}</span>
-                    <span className={`text-[10px] font-bold ${th.textMuted}`}>{t('Riba')} {p.installmentPercentExtra}%/{t('awamu')}</span>
+                    <span className={`text-xs font-black ${th.strongText}`}>{t('Awali')} {p.downPaymentPercent}% + {p.installmentsCount} {t('awamu')}</span>
+                    <span className={`text-[10px] font-bold ${th.textMuted}`}>{p.installmentPercentExtra === 0 ? '0% Riba (Bure)' : `Riba ${p.installmentPercentExtra}%`}</span>
                   </div>
-                  <div className={`text-[10px] ${th.textMuted} font-semibold mt-1`}>
-                    {t('Awali')}: {TZS(down)} · {t('Kila awamu')}: {TZS(instAmount)}
+                  <div className={`text-[11px] ${th.textMuted} font-semibold mt-1`}>
+                    {t('Awali')}: <span className="font-bold text-sky-600">{TZS(down)}</span> · {t('Kila awamu')}: <span className="font-bold text-emerald-600">{TZS(inst)}</span> ({p.installmentsCount} {t('miezi/awamu')})
                   </div>
                 </button>
               );
             })}
           </div>
-        )}
+        </div>
 
-        {!created ? (
-          <div className="mt-4 space-y-2">
-            <input value={name} onChange={e => setName(e.target.value)} placeholder={t('Jina Kamili')} className={th.input} />
-            <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="+255 7XX XXX XXX" className={th.input} />
-            {error && <div className="text-[11px] font-bold text-red-500">{error}</div>}
-            <button onClick={create} className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 text-[11px] font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer`}>
-              <CalendarClock className="w-3.5 h-3.5" /> {t('Anza Lipa Pole Pole')}
-            </button>
-          </div>
-        ) : (
-          <div className="mt-4 space-y-2">
-            <div className={`rounded-xl border ${milk ? 'border-emerald-200 bg-emerald-50' : 'border-emerald-500/30 bg-emerald-500/10'} p-3.5`}>
-              <div className={`text-[11px] font-black text-emerald-500`}>{t('Agizo lako la awamu limeundwa!')}</div>
-              <div className={`text-[10px] ${th.textMuted} font-semibold mt-1`}>
-                {t('Kodi ya kufuatilia')}: <span className="font-mono font-black">{created.trackingCode}</span>
-              </div>
+        {/* Customer Address & Delivery Fields */}
+        <div className="space-y-2 pt-2 border-t border-gray-100">
+          <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Taarifa za Mnunuzi & Mahali (Delivery Address)')}</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Jina Kamili')} *</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder={t('Mfano: Neema Emmanuel')} className={th.input} />
             </div>
-            <button
-              onClick={() => setPayOpen(true)}
-              className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 text-[11px] font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer`}
-            >
-              <CheckCircle2 className="w-3.5 h-3.5" /> {t('Lipa Awali')} — {instOrder ? TZS(instOrder.downPayment) : ''}
-            </button>
+            <div>
+              <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Namba ya Simu')} *</label>
+              <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="07XX XXX XXX au +255..." className={th.input} />
+            </div>
           </div>
-        )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Mkoa')} *</label>
+              <select value={region} onChange={e => setRegion(e.target.value)} className={`${th.input} cursor-pointer`}>
+                <option value="">-- {t('Chagua Mkoa')} --</option>
+                {TANZANIA_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Wilaya / District')}</label>
+              <input value={district} onChange={e => setDistrict(e.target.value)} placeholder={t('Mfano: Temeke, Ubungo')} className={th.input} />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Kata / Ward')}</label>
+              <input value={ward} onChange={e => setWard(e.target.value)} placeholder={t('Mfano: Kijitonyama')} className={th.input} />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Mtaa / Street')}</label>
+              <input value={street} onChange={e => setStreet(e.target.value)} placeholder={t('Mfano: Mtaa wa Mbuyuni')} className={th.input} />
+            </div>
+          </div>
+        </div>
+
+        {/* Down Payment info & Receipt upload */}
+        <div className="space-y-2 pt-2 border-t border-gray-100">
+          <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Uthibitisho wa Malipo ya Awali (Transaction ID & Risiti)')}</div>
+          <div>
+            <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Namba ya Muamala / Transaction ID')}</label>
+            <input
+              value={txId}
+              onChange={e => setTxId(e.target.value)}
+              placeholder={t('Mfano: QD83719283 ya M-Pesa / Tigo / Airtel')}
+              className={th.input}
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Pakia Picha ya Risiti ya Malipo (Upload Receipt)')}</label>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              onChange={e => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                const reader = new FileReader();
+                reader.onload = () => setReceiptImage(reader.result as string);
+                reader.readAsDataURL(f);
+              }}
+              className="hidden"
+            />
+            {receiptImage ? (
+              <div className="flex items-center gap-3 p-2 bg-emerald-50 rounded-xl border border-emerald-200">
+                <img src={receiptImage} alt="Receipt" className="w-14 h-14 object-cover rounded-lg border border-emerald-300 shadow-sm" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-bold text-emerald-800">✓ Risiti ya awali imepakiwa</div>
+                  <div className="text-[10px] text-emerald-600">Itaunganishwa moja kwa moja na mkataba wako wa Lipa Pole Pole.</div>
+                </div>
+                <button type="button" onClick={() => setReceiptImage(undefined)} className="p-1 text-red-500">✕</button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className="w-full py-2.5 px-3 border border-dashed border-gray-300 hover:border-brand rounded-xl text-xs font-bold text-gray-600 flex items-center justify-center gap-2 cursor-pointer bg-gray-50"
+              >
+                <Upload className="w-4 h-4" /> {t('Bofya kupakia picha ya risiti ya malipo ya awali')}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {error && <div className="text-xs font-bold text-red-500 bg-red-50 p-2.5 rounded-xl border border-red-200">{error}</div>}
+
+        <button
+          onClick={handleCreate}
+          disabled={busy}
+          className={`w-full flex items-center justify-center gap-2 px-5 py-3.5 text-xs sm:text-sm font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer disabled:opacity-50 shadow-md transition`}
+        >
+          {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarClock className="w-4 h-4" />}
+          {t('Anzisha Lipa Pole Pole & Thibitisha Awali ya')} {TZS(downPayment)}
+        </button>
       </Card>
-      {payOpen && instOrder && (
-        <PaymentModal
-          th={th} t={t} milk={milk}
-          title={t('Malipo ya Awali')}
-          amount={instOrder.downPayment}
-          prefillName={name}
-          prefillPhone={phone}
-          networks={props.collectionSettings || []}
-          note={t('Baada ya awali kuthibitishwa, utapokea SMS ya malipo yafuatayo.')}
-          onClose={() => setPayOpen(false)}
-          onPay={(input) => props.handlers.onInitiateInstallmentPayment(instOrder.id, 'down', input, input.network)}
-        />
-      )}
     </div>
   );
 }

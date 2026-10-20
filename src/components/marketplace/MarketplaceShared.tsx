@@ -1,5 +1,5 @@
 import React from 'react';
-import { BadgeCheck, Globe2, Phone, Mail, Store, Home, LayoutDashboard, ShoppingBag, Plus, ShoppingCart, Video, Star, Search, Landmark } from 'lucide-react';
+import { BadgeCheck, Globe2, Phone, Mail, Store, Home, LayoutDashboard, ShoppingBag, Plus, ShoppingCart, Video, Star, Search, Landmark, HandCoins } from 'lucide-react';
 import { getPublicTheme, PublicTheme, PublicThemeToggle } from '../../utils/publicTheme';
 import { Company, MarketplaceProduct } from '../../types';
 import { LangCode } from '../../utils/i18n';
@@ -201,7 +201,7 @@ export function ProductCard({
 }
 
 export function MarketHeader({
-  theme, t, language, onLanguageChange, onToggleTheme, onHome, onMyOrders, session, onLogout, cartCount, onOpenCart, onSearch, voiceMic
+  theme, t, language, onLanguageChange, onToggleTheme, onHome, onMyOrders, session, onLogout, cartCount, onOpenCart, onSearch, voiceMic, onOffers, offerCount
 }: {
   theme: PublicTheme;
   t: TFunc;
@@ -216,6 +216,8 @@ export function MarketHeader({
   onOpenCart: () => void;
   onSearch?: () => void;
   voiceMic?: React.ReactNode;
+  onOffers?: () => void;
+  offerCount?: number;
 }) {
   const th = getPublicTheme(theme);
   const milk = theme === 'milk';
@@ -254,8 +256,23 @@ export function MarketHeader({
               </span>
             )}
           </button>
+          {onOffers && (
+            <button
+              onClick={onOffers}
+              title={t('Ofa Zangu')}
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-lg transition cursor-pointer ${milk ? 'text-gray-600 hover:text-amber-700 hover:bg-amber-100' : 'text-gray-200 hover:text-white hover:bg-white/10'}`}
+            >
+              <HandCoins className="w-3.5 h-3.5 text-orange-500" />
+              <span className="hidden sm:inline">{t('Ofa Zangu')}</span>
+              {offerCount && offerCount > 0 ? (
+                <span className="min-w-[16px] h-[16px] px-1 rounded-full bg-orange-500 text-white text-[9px] font-black flex items-center justify-center">
+                  {offerCount}
+                </span>
+              ) : null}
+            </button>
+          )}
           <button onClick={onMyOrders} className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold rounded-lg transition cursor-pointer ${milk ? 'text-gray-600 hover:text-amber-700 hover:bg-amber-100' : 'text-gray-200 hover:text-white hover:bg-white/10'}`}>
-            <ShoppingBag className="w-3.5 h-3.5" /> {t('My Orders')}
+            <ShoppingBag className="w-3.5 h-3.5" /> <span className="hidden sm:inline">{t('My Orders')}</span>
           </button>
           {session && (
             <button onClick={onLogout} className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-black rounded-lg transition cursor-pointer ${th.btnPrimary} ${th.btnPrimaryText}`}>

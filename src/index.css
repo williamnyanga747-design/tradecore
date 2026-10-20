@@ -27,7 +27,7 @@
   background-color: var(--bg-card) !important;
 }
 
-[data-theme="dark"] .bg-[#f5f6f8] {
+[data-theme="dark"] .bg-\[\#f5f6f8\] {
   background-color: var(--bg-app) !important;
 }
 

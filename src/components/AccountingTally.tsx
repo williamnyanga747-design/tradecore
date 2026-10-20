@@ -233,10 +233,11 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
     const isRoot = currentUser.isRoot === true || currentUser.username === 'root_mandate' || currentUser.username === 'superadmin';
     const isSuper = isRoot || r === 'super admin' || r === 'superadmin' || r === 'super_admin';
     if (isSuper) return true;
-    const isAdmin = r === 'admin' || r === 'company admin' || r === 'branch administrator' || r === 'branch admin';
+    const isAdmin = r === 'admin' || r === 'company admin' || r === 'company administrator' || r === 'administrator' || r === 'branch administrator' || r === 'branch admin' || r === 'manager' || r === 'user admin' || r === 'user_admin' || r === 'useradmin';
     if (isAdmin) {
-      if (!currentUser.companyId) return true;
-      return String(currentUser.companyId) === String(selectedCompanyId);
+      const userCid = currentUser.companyId ?? currentUser.company_id;
+      if (!userCid || String(userCid) === 'all') return true;
+      return String(userCid) === String(selectedCompanyId);
     }
     return false;
   }, [currentUser, selectedCompanyId]);
@@ -723,6 +724,10 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
 
   // Auto-Sync Company Transactions (Generates double-entry vouchers from live sales, purchases, and expenses for this company)
   const handleSyncCompanyTransactions = () => {
+    if (!isCompanyAdmin) {
+      alert('Action unauthorized: Only company administrators can auto-sync vouchers.');
+      return;
+    }
     const newVouchers: JournalVoucher[] = [];
     const dateToday = new Date().toISOString().split('T')[0];
 
@@ -939,24 +944,80 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            {isCompanyAdmin ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                <span>Admin Mode: Full CRUD Access</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 dark:bg-zinc-800 text-slate-600 dark:text-zinc-400 border border-slate-200 dark:border-zinc-700" title="Only company administrators can create, edit, or delete accounts and vouchers">
+                <Lock className="w-3.5 h-3.5 text-slate-400" />
+                <span>Read-Only (Admin required for CRUD)</span>
+              </span>
+            )}
             <button
-              onClick={handleSyncCompanyTransactions}
-              className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white rounded-lg text-xs font-extrabold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
-              title="Auto-generate double-entry vouchers for this company's sales, purchases, and expenses into Tally"
+              onClick={() => {
+                if (!isCompanyAdmin) {
+                  alert('Action unauthorized: Only company administrators can auto-sync vouchers.');
+                  return;
+                }
+                handleSyncCompanyTransactions();
+              }}
+              disabled={!isCompanyAdmin}
+              className={`px-3.5 py-2 rounded-lg text-xs font-extrabold transition shadow-xs flex items-center gap-1.5 ${
+                isCompanyAdmin
+                  ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white cursor-pointer'
+                  : 'bg-slate-200 dark:bg-zinc-800 text-slate-400 dark:text-zinc-500 cursor-not-allowed opacity-60'
+              }`}
+              title={isCompanyAdmin ? "Auto-generate double-entry vouchers for this company's sales, purchases, and expenses into Tally" : "Only company administrators can auto-sync vouchers"}
             >
               <span>⚡</span>
               Auto-Sync Vouchers
             </button>
             <button
-              onClick={() => setShowAccountModal(true)}
-              className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-200 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer"
+              onClick={() => {
+                if (!isCompanyAdmin) {
+                  alert('Action unauthorized: Only company administrators can create account heads.');
+                  return;
+                }
+                setEditingAccount(null);
+                setNewAccountForm({
+                  code: '',
+                  name: '',
+                  type: 'Asset',
+                  category: 'Current Assets',
+                  openingBalance: '0',
+                  description: ''
+                });
+                setShowAccountModal(true);
+              }}
+              disabled={!isCompanyAdmin}
+              className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 ${
+                isCompanyAdmin
+                  ? 'bg-slate-100 hover:bg-slate-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-200 cursor-pointer'
+                  : 'bg-slate-100 dark:bg-zinc-800/50 text-slate-400 dark:text-zinc-500 cursor-not-allowed opacity-60'
+              }`}
+              title={isCompanyAdmin ? "Create a new ledger account head" : "Only company administrators can create account heads"}
             >
               <Plus className="w-4 h-4" />
               New Account Head
             </button>
             <button
-              onClick={() => setShowVoucherModal(true)}
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition shadow-sm flex items-center gap-1.5 cursor-pointer"
+              onClick={() => {
+                if (!isCompanyAdmin) {
+                  alert('Action unauthorized: Only company administrators can post journal vouchers.');
+                  return;
+                }
+                setEditingVoucher(null);
+                setShowVoucherModal(true);
+              }}
+              disabled={!isCompanyAdmin}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition shadow-sm flex items-center gap-1.5 ${
+                isCompanyAdmin
+                  ? 'bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer'
+                  : 'bg-slate-200 dark:bg-zinc-800 text-slate-400 dark:text-zinc-500 cursor-not-allowed opacity-60'
+              }`}
+              title={isCompanyAdmin ? "Post a double-entry journal voucher" : "Only company administrators can post vouchers"}
             >
               <FileText className="w-4 h-4" />
               Post Journal Voucher
@@ -1246,12 +1307,33 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                         {v.totalCredit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="px-4 py-3 text-right font-sans">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); setSelectedVoucherDetail(v); }}
-                          className="px-2 py-1 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded transition"
-                        >
-                          View Entries
-                        </button>
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setSelectedVoucherDetail(v); }}
+                            className="px-2.5 py-1 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-md transition cursor-pointer"
+                            title="View Voucher Entries"
+                          >
+                            View
+                          </button>
+                          {isCompanyAdmin && (
+                            <>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleStartEditVoucher(v); }}
+                                className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-md transition cursor-pointer"
+                                title="Edit Voucher (Admin only)"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setVoucherToDelete(v); }}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-md transition cursor-pointer"
+                                title="Delete Voucher (Admin only)"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1395,13 +1477,26 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                 Standard ledger account directory categorized by Assets, Liabilities, Equity, Incomes, and Expenses.
               </p>
             </div>
-            <button
-              onClick={() => setShowAccountModal(true)}
-              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add Account
-            </button>
+            {isCompanyAdmin && (
+              <button
+                onClick={() => {
+                  setEditingAccount(null);
+                  setNewAccountForm({
+                    code: '',
+                    name: '',
+                    type: 'Asset',
+                    category: 'Current Assets',
+                    openingBalance: '0',
+                    description: ''
+                  });
+                  setShowAccountModal(true);
+                }}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Add Account
+              </button>
+            )}
           </div>
 
           <div className="overflow-x-auto">
@@ -1436,12 +1531,32 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                       {fmt(acc.openingBalance)}
                     </td>
                     <td className="px-4 py-3 text-right font-sans">
-                      <button
-                        onClick={() => { setSelectedAccountId(acc.id); setActiveTab('ledger'); }}
-                        className="px-2 py-1 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded transition"
-                      >
-                        View Ledger
-                      </button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={() => { setSelectedAccountId(acc.id); setActiveTab('ledger'); }}
+                          className="px-2.5 py-1 text-[11px] font-semibold text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-md transition cursor-pointer"
+                        >
+                          View Ledger
+                        </button>
+                        {isCompanyAdmin && (
+                          <>
+                            <button
+                              onClick={() => handleStartEditAccount(acc)}
+                              className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-md transition cursor-pointer"
+                              title="Edit Account (Admin only)"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => { setAccountToDelete(acc); setAccountDeleteWarning(null); }}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-md transition cursor-pointer"
+                              title="Delete Account (Admin only)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -1462,7 +1577,7 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                 </div>
                 <div>
                   <h3 className="font-bold text-sm text-slate-900 dark:text-white">
-                    Post Journal Voucher (Tally Double-Entry)
+                    {editingVoucher ? `Edit Journal Voucher #${editingVoucher.voucherNo}` : 'Post Journal Voucher (Tally Double-Entry)'}
                   </h3>
                   <span className="text-[11px] text-slate-500">
                     Debits must strictly equal credits before posting to general ledger.
@@ -1654,7 +1769,7 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                   disabled={!voucherTotals.isBalanced}
                   className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-xs font-bold transition shadow-sm"
                 >
-                  Post Voucher to Ledger
+                  {editingVoucher ? 'Update Voucher' : 'Post Voucher to Ledger'}
                 </button>
               </div>
             </form>
@@ -1668,7 +1783,7 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
           <div className="bg-white dark:bg-zinc-900 rounded-xl max-w-md w-full border border-slate-200 dark:border-zinc-800 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             <div className="p-4 border-b border-slate-200 dark:border-zinc-800 flex items-center justify-between bg-slate-50/70 dark:bg-zinc-800/40">
               <h3 className="font-bold text-sm text-slate-900 dark:text-white">
-                Create New Ledger Account Head
+                {editingAccount ? 'Edit Ledger Account Head' : 'Create New Ledger Account Head'}
               </h3>
               <button
                 onClick={() => setShowAccountModal(false)}
@@ -1783,7 +1898,7 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                   type="submit"
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold transition shadow-sm"
                 >
-                  Create Account
+                  {editingAccount ? 'Update Account' : 'Create Account'}
                 </button>
               </div>
             </form>
@@ -1857,12 +1972,129 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
               </div>
             </div>
 
-            <div className="p-3 border-t border-slate-200 dark:border-zinc-800 bg-slate-50/70 dark:bg-zinc-800/40 flex justify-end">
+            <div className="p-3 border-t border-slate-200 dark:border-zinc-800 bg-slate-50/70 dark:bg-zinc-800/40 flex items-center justify-between">
+              {isCompanyAdmin ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const v = selectedVoucherDetail;
+                      handleStartEditVoucher(v);
+                    }}
+                    className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    Edit Voucher
+                  </button>
+                  <button
+                    onClick={() => {
+                      const v = selectedVoucherDetail;
+                      setSelectedVoucherDetail(null);
+                      setVoucherToDelete(v);
+                    }}
+                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Delete Voucher
+                  </button>
+                </div>
+              ) : (
+                <span className="text-[11px] text-slate-400 flex items-center gap-1">
+                  <Lock className="w-3 h-3" /> Read-only mode
+                </span>
+              )}
               <button
                 onClick={() => setSelectedVoucherDetail(null)}
-                className="px-4 py-1.5 bg-slate-800 text-white rounded-lg text-xs font-semibold"
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold cursor-pointer"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DELETE ACCOUNT CONFIRMATION */}
+      {accountToDelete && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-xl max-w-md w-full border border-slate-200 dark:border-zinc-800 shadow-2xl p-5">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white">Delete Ledger Account</h3>
+                <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">
+                  Are you sure you want to delete <span className="font-bold text-slate-700 dark:text-zinc-200">{accountToDelete.code} - {accountToDelete.name}</span>?
+                </p>
+                {accountDeleteWarning ? (
+                  <div className="mt-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 text-xs flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <span>{accountDeleteWarning}</span>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-400 dark:text-zinc-500 mt-2">
+                    Opening balance: {fmt(accountToDelete.openingBalance)} · Category: {accountToDelete.category}
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2 border-t border-slate-100 dark:border-zinc-800 pt-3">
+              <button
+                type="button"
+                onClick={() => { setAccountToDelete(null); setAccountDeleteWarning(null); }}
+                className="px-4 py-2 border rounded-lg text-xs font-semibold text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800 cursor-pointer"
+              >
+                Cancel
+              </button>
+              {!accountDeleteWarning && (
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteAccount}
+                  className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition shadow-sm cursor-pointer"
+                >
+                  Confirm Delete
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DELETE VOUCHER CONFIRMATION */}
+      {voucherToDelete && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-zinc-900 rounded-xl max-w-md w-full border border-slate-200 dark:border-zinc-800 shadow-2xl p-5">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white">Delete Journal Voucher</h3>
+                <p className="text-xs text-slate-500 dark:text-zinc-400 mt-1">
+                  Are you sure you want to delete Voucher <span className="font-bold text-indigo-600 dark:text-indigo-400">#{voucherToDelete.voucherNo}</span> ({voucherToDelete.type}) dated <span className="font-mono">{voucherToDelete.date}</span>?
+                </p>
+                <p className="text-[11px] text-slate-400 dark:text-zinc-500 mt-1">
+                  Narration: {voucherToDelete.narration || 'No narration'} · Amount: {fmt(voucherToDelete.totalDebit)}
+                </p>
+                <div className="mt-2 text-[11px] text-rose-600 dark:text-rose-400 font-medium">
+                  This action removes the double-entry postings from the company's general ledger.
+                </div>
+              </div>
+            </div>
+            <div className="mt-5 flex items-center justify-end gap-2 border-t border-slate-100 dark:border-zinc-800 pt-3">
+              <button
+                type="button"
+                onClick={() => setVoucherToDelete(null)}
+                className="px-4 py-2 border rounded-lg text-xs font-semibold text-slate-700 dark:text-zinc-300 hover:bg-slate-50 dark:hover:bg-zinc-800 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteVoucher}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold transition shadow-sm cursor-pointer"
+              >
+                Confirm Delete
               </button>
             </div>
           </div>

@@ -1,10 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Play, Video, ShoppingCart, MapPin, Store as StoreIcon, Package, Phone, MessageCircle, Star, Check, HandCoins, Users, CalendarClock, X, Zap, CreditCard } from 'lucide-react';
-import { Company, MarketplaceProduct, Review, MarketplaceCustomer, GroupDeal, InstallmentPlan, Store } from '../../types';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ChevronLeft, ChevronRight, Play, Video, ShoppingCart, MapPin, Store as StoreIcon, Package, Phone,
+  MessageCircle, Star, Check, HandCoins, Users, CalendarClock, X, Zap, CreditCard, Upload, ShieldCheck, Loader2, Plus
+} from 'lucide-react';
+import { Company, MarketplaceProduct, Review, MarketplaceCustomer, GroupDeal, InstallmentPlan, Store, Offer, CollectionSetting, CollectionNetwork } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TZS, TFunc, VerifiedBadge, Stars, RatingBreakdown } from './MarketplaceShared';
 import { reviewsFor, ratingSummary } from '../../utils/reviews';
 import { formatCountdown } from '../../utils/megaHelpers';
+import { TANZANIA_REGIONS } from '../../utils/regions';
+import { PaymentModal } from './MarketplacePhase2C';
 import StoreMapCard from './StoreMapCard';
 
 interface Props {
@@ -32,8 +37,10 @@ interface Props {
   onTrackProductView?: (productId: number) => void;
   session?: { id?: number; phone: string; name: string } | null;
   // --- MEGA Phase 2C: Piga Bei / Nunua Pamoja / Lipa Pole Pole ---
+  offers?: Offer[];
   groupDeals?: GroupDeal[];
   installmentPlans?: InstallmentPlan[];
+  collectionSettings?: CollectionSetting[];
   onSubmitOffer?: (input: {
     productId: number;
     companyId: number;
@@ -44,6 +51,34 @@ interface Props {
   }) => { ok: boolean; error?: string };
   onOpenGroupDeal?: (dealId: number) => void;
   onStartInstallment?: (productId: number) => void;
+  onOpenOffer?: (offerId: number) => void;
+  onInitiateOfferPayment?: (offerId: number, address: {
+    customerName?: string;
+    customerPhone?: string;
+    customerRegion?: string;
+    customerDistrict?: string;
+    customerWard?: string;
+    customerStreet?: string;
+    transactionId?: string;
+    receiptImage?: string;
+  }, network?: CollectionNetwork) => { ok: boolean; reference?: string; orderId?: number | null; error?: string };
+  onCreateGroupDeal?: (input: {
+    productId: number;
+    companyId: number;
+    groupPrice: number;
+    minBuyers: number;
+    maxBuyers?: number;
+    durationHours?: number;
+    customerName?: string;
+    customerPhone?: string;
+    customerRegion?: string;
+    customerDistrict?: string;
+    customerWard?: string;
+    customerStreet?: string;
+    transactionId?: string;
+    receiptImage?: string;
+    network?: CollectionNetwork;
+  }) => { ok: boolean; dealId?: number; shareCode?: string; error?: string };
   // --- MEGA BUILD F5/F2: flash pricing + ask-seller chat ---
   flashPrice?: number;
   flashEndsAt?: string;
@@ -63,7 +98,8 @@ export function productGallery(product: MarketplaceProduct): Array<{ type: 'vide
 export default function ProductDetailPage({
   product, company, stores, theme, t, onBack, onAddToCart, onCheckout, onViewCompany, onOrderWhatsApp,
   reviews, onSubmitReview, onTrackProductView, session,
-  groupDeals, installmentPlans, onSubmitOffer, onOpenGroupDeal, onStartInstallment,
+  offers, collectionSettings, groupDeals, installmentPlans, onSubmitOffer, onOpenGroupDeal, onStartInstallment,
+  onOpenOffer, onInitiateOfferPayment, onCreateGroupDeal,
   flashPrice, flashEndsAt, onAskSeller, onNavigateOffers
 }: Props) {
   const th = getPublicTheme(theme);
@@ -130,6 +166,81 @@ export default function ProductDetailPage({
     [installmentPlans, product.id]
   );
 
+  // Accepted Offer Detection: if buyer has an accepted offer on this product
+  const storedBuyerPhone = typeof window !== 'undefined' ? (localStorage.getItem('tradecore_buyer_phone') || '') : '';
+  const activeBuyerPhone = session?.phone || storedBuyerPhone || '';
+  const cleanPhone = activeBuyerPhone.replace(/\D/g, '').slice(-9);
+
+  const myAcceptedOffer = useMemo(() => {
+    return (offers || []).find(o =>
+      o.productId === product.id &&
+      o.status === 'accepted' &&
+      (!cleanPhone || o.customerPhone.replace(/\D/g, '').endsWith(cleanPhone))
+    );
+  }, [offers, product.id, cleanPhone]);
+
+  const [payAcceptedOfferOpen, setPayAcceptedOfferOpen] = useState(false);
+
+  // Group Buy creation modal state
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [gbDiscountPercent, setGbDiscountPercent] = useState<number>(15);
+  const [gbMinBuyers, setGbMinBuyers] = useState<number>(3);
+  const [gbName, setGbName] = useState(session?.name || (typeof window !== 'undefined' ? (localStorage.getItem('tradecore_buyer_name') || '') : ''));
+  const [gbPhone, setGbPhone] = useState(activeBuyerPhone);
+  const [gbRegion, setGbRegion] = useState('');
+  const [gbDistrict, setGbDistrict] = useState('');
+  const [gbWard, setGbWard] = useState('');
+  const [gbStreet, setGbStreet] = useState('');
+  const [gbNetwork, setGbNetwork] = useState<CollectionNetwork>('mpesa');
+  const [gbTxId, setGbTxId] = useState('');
+  const [gbReceipt, setGbReceipt] = useState<string | undefined>();
+  const [gbError, setGbError] = useState('');
+  const [gbSubmitting, setGbSubmitting] = useState(false);
+  const gbFileRef = useRef<HTMLInputElement | null>(null);
+
+  const calculatedGbPrice = Math.round(product.price * (1 - gbDiscountPercent / 100));
+
+  const handleStartGroupBuy = () => {
+    setGbError('');
+    if (!gbName.trim()) return setGbError(t('Jina kamili linahitajika.'));
+    if (!/^(\+?255|0)[67]\d{8}$/.test(gbPhone.trim().replace(/\s/g, ''))) {
+      return setGbError(t('Weka namba sahihi ya simu ya Tanzania (+255 au 07XX...).'));
+    }
+    if (!gbRegion) return setGbError(t('Tafadhali chagua mkoa wako kwa ajili ya delivery ya mzigo.'));
+
+    setGbSubmitting(true);
+    const res = onCreateGroupDeal ? onCreateGroupDeal({
+      productId: product.id,
+      companyId: product.companyId,
+      groupPrice: calculatedGbPrice,
+      minBuyers: gbMinBuyers,
+      customerName: gbName.trim(),
+      customerPhone: gbPhone.trim(),
+      customerRegion: gbRegion,
+      customerDistrict: gbDistrict.trim(),
+      customerWard: gbWard.trim(),
+      customerStreet: gbStreet.trim(),
+      transactionId: gbTxId.trim() || undefined,
+      receiptImage: gbReceipt,
+      network: gbNetwork
+    }) : { ok: false, error: 'Group deal creation handler not configured' };
+
+    setGbSubmitting(false);
+    if (!res.ok || !res.dealId) {
+      return setGbError(res.error || t('Kumetokea hitilafu wakati wa kuanzisha Nunua Pamoja.'));
+    }
+
+    try {
+      localStorage.setItem('tradecore_buyer_phone', gbPhone.trim());
+      localStorage.setItem('tradecore_buyer_name', gbName.trim());
+    } catch {}
+
+    setShowCreateGroupModal(false);
+    if (onOpenGroupDeal) {
+      onOpenGroupDeal(res.dealId);
+    }
+  };
+
   const submitOffer = () => {
     setOError('');
     if (!onSubmitOffer) return;
@@ -148,6 +259,11 @@ export default function ProductDetailPage({
       offeredPrice: price
     });
     if (!res.ok) return setOError(res.error || t('Something went wrong while submitting your offer.'));
+    try {
+      localStorage.setItem('tradecore_buyer_phone', oPhone.trim());
+      localStorage.setItem('tradecore_buyer_name', oName.trim());
+      localStorage.setItem('tradecore_chat_name', oName.trim());
+    } catch {}
     setOSuccess(true);
     setShowOffer(false);
   };
@@ -413,96 +529,334 @@ export default function ProductDetailPage({
         </div>
       </div>
 
-      {/* MEGA Phase 2C — Piga Bei / Nunua Pamoja / Lipa Pole Pole */}
-      {(onSubmitOffer || activeGroupDeals.length > 0 || activeInstallmentPlans.length > 0) && (
-        <div className={`${th.card} ${th.cardBorder} rounded-3xl p-4 md:p-5`}>
-          <h3 className={`text-sm font-black ${th.strongText} mb-3`}>{t('Smart Ways to Buy')}</h3>
-          <div className="grid sm:grid-cols-3 gap-2.5">
-            {onSubmitOffer && (
-              <button
-                onClick={() => { setOSuccess(false); setShowOffer(true); }}
-                className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
-              >
-                <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-orange-100 text-orange-700' : 'bg-orange-500/20 text-orange-400'}`}>
-                  <HandCoins className="w-4.5 h-4.5" />
+      {/* If buyer has an accepted offer on this product */}
+      {myAcceptedOffer && (
+        <div className="rounded-3xl p-4 md:p-5 bg-gradient-to-r from-emerald-500/15 via-teal-500/10 to-amber-500/15 border-2 border-emerald-500/40 shadow-sm space-y-3">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-2xl bg-emerald-500 text-white flex items-center justify-center font-black">
+                <Check className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="text-xs font-black text-emerald-800 uppercase tracking-wide">
+                  {t('Hongera! Muuzaji amekubali ofa yako')}
                 </div>
-                <div className={`text-[11px] font-black ${th.strongText}`}>{t('Piga Bei')}</div>
-                <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>{t('Nadi bei yako mwenyewe — muuzaji atakujibu ndani ya saa 24.')}</div>
-              </button>
-            )}
-            {activeGroupDeals.length > 0 && (
-              <button
-                onClick={() => onOpenGroupDeal?.(activeGroupDeals[0].id)}
-                className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
-              >
-                <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-indigo-100 text-indigo-700' : 'bg-indigo-500/20 text-indigo-400'}`}>
-                  <Users className="w-4.5 h-4.5" />
+                <div className="text-sm font-black text-emerald-950 mt-0.5">
+                  {t('Bei ya Makubaliano')}: <span className="text-emerald-700 text-base font-extrabold">{TZS(myAcceptedOffer.finalPrice || myAcceptedOffer.counterPrice || myAcceptedOffer.offeredPrice)}</span>
+                  <span className="text-xs line-through text-gray-400 font-bold ml-2">{TZS(myAcceptedOffer.originalPrice)}</span>
                 </div>
-                <div className={`text-[11px] font-black ${th.strongText}`}>{t('Nunua Pamoja')}</div>
-                <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>{t('Bei ya kikundi')}: <span className="text-emerald-500 font-black">{TZS(activeGroupDeals[0].groupPrice)}</span> · {activeGroupDeals[0].paidCount}/{activeGroupDeals[0].minBuyers} {t('wamelipa')}</div>
-              </button>
-            )}
-            {activeInstallmentPlans.length > 0 && (
-              <button
-                onClick={() => onStartInstallment?.(product.id)}
-                className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
-              >
-                <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-sky-100 text-sky-700' : 'bg-sky-500/20 text-sky-400'}`}>
-                  <CalendarClock className="w-4.5 h-4.5" />
-                </div>
-                <div className={`text-[11px] font-black ${th.strongText}`}>{t('Lipa Pole Pole')}</div>
-                <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>{t('Malipo ya awali')} {activeInstallmentPlans[0].downPaymentPercent}% + {activeInstallmentPlans[0].installmentsCount} {t('awamu')}</div>
-              </button>
-            )}
-          </div>
-
-          {/* Piga Bei modal */}
-          {showOffer && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setShowOffer(false)}>
-              <div
-                className={`${th.card} ${th.cardBorder} rounded-2xl p-5 w-full max-w-sm space-y-3`}
-                onClick={e => e.stopPropagation()}
-              >
-                <div className="flex items-center justify-between">
-                  <h4 className={`text-sm font-black ${th.strongText}`}>{t('Piga Bei')} — {product.name}</h4>
-                  <button onClick={() => setShowOffer(false)} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-white/10`}>
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-                <p className={`text-[11px] ${th.textMuted} font-semibold`}>
-                  {t('Bei ya sasa')}: <span className="font-black text-amber-500">{TZS(product.price)}</span>. {t('Weka bei yako — muuzaji anaweza kukubali, kutoa bei yake, au kukataa.')}
-                </p>
-                <input value={oName} onChange={e => setOName(e.target.value)} placeholder={t('Jina Kamili')} className={th.input} />
-                <input value={oPhone} onChange={e => setOPhone(e.target.value)} placeholder="+255 7XX XXX XXX" className={th.input} />
-                <input value={oPrice} onChange={e => setOPrice(e.target.value.replace(/[^\d]/g, ''))} placeholder={t('Bei yako (TZS)')} type="number" className={th.input} />
-                {oError && <div className="text-[11px] font-bold text-red-500">{oError}</div>}
-                <button
-                  onClick={submitOffer}
-                  className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 text-[11px] font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer`}
-                >
-                  <HandCoins className="w-3.5 h-3.5" /> {t('Tuma Offer')}
-                </button>
               </div>
             </div>
-          )}
-
-          {/* Offer success toast */}
-          {oSuccess && (
-            <div className="mt-3 space-y-2">
-              <div className="flex items-center gap-2 text-[11px] font-black text-emerald-500 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-2">
-                <Check className="w-4 h-4" /> {t('Offer yako imetumwa! Muuzaji atajibu ndani ya masaa 24.')}
-              </div>
-              {onNavigateOffers && (
-                <button
-                  onClick={onNavigateOffers}
-                  className={`inline-flex items-center gap-1.5 text-[10px] font-black px-3 py-1.5 rounded-lg cursor-pointer ${th.btnPrimary} ${th.btnPrimaryText}`}
-                >
-                  <HandCoins className="w-3 h-3" /> {t('Angalia status kwenye Ofa Zangu')}
-                </button>
-              )}
+            <button
+              onClick={() => {
+                if (onInitiateOfferPayment) {
+                  setPayAcceptedOfferOpen(true);
+                } else if (onOpenOffer) {
+                  onOpenOffer(myAcceptedOffer.id);
+                }
+              }}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black rounded-xl shadow-md cursor-pointer transition active:scale-95"
+            >
+              <Zap className="w-4 h-4 text-amber-300" />
+              {t('Nunua Sasa kwa Bei ya Mazungumzo')}
+            </button>
+          </div>
+          {myAcceptedOffer.sellerMessage && (
+            <div className="text-xs text-emerald-900 bg-white/80 rounded-xl px-3 py-2 border border-emerald-200">
+              💬 <span className="font-bold">{t('Ujumbe wa Muuzaji')}:</span> {myAcceptedOffer.sellerMessage}
             </div>
           )}
         </div>
+      )}
+
+      {/* MEGA Phase 2C — Piga Bei / Nunua Pamoja / Lipa Pole Pole (ALWAYS ACTIVE) */}
+      <div className={`${th.card} ${th.cardBorder} rounded-3xl p-4 md:p-5`}>
+        <h3 className={`text-sm font-black ${th.strongText} mb-3 flex items-center justify-between`}>
+          <span>{t('Smart Ways to Buy')}</span>
+          <span className="text-[10px] text-brand font-bold uppercase tracking-wider">{t('Okoa Pesa & Lipa Kidogo Kidogo')}</span>
+        </h3>
+        <div className="grid sm:grid-cols-3 gap-2.5">
+          {/* 1. Piga Bei */}
+          <button
+            onClick={() => { setOSuccess(false); setShowOffer(true); }}
+            className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
+          >
+            <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-orange-100 text-orange-700' : 'bg-orange-500/20 text-orange-400'}`}>
+              <HandCoins className="w-4.5 h-4.5" />
+            </div>
+            <div className={`text-[11px] font-black ${th.strongText}`}>{t('Piga Bei')}</div>
+            <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>{t('Nadi bei yako mwenyewe — muuzaji atakujibu ndani ya saa 24.')}</div>
+          </button>
+
+          {/* 2. Nunua Pamoja (Group Buy) - Always Active */}
+          <button
+            onClick={() => {
+              if (activeGroupDeals.length > 0) {
+                onOpenGroupDeal?.(activeGroupDeals[0].id);
+              } else {
+                setGbError('');
+                setShowCreateGroupModal(true);
+              }
+            }}
+            className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
+          >
+            <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-indigo-100 text-indigo-700' : 'bg-indigo-500/20 text-indigo-400'}`}>
+              <Users className="w-4.5 h-4.5" />
+            </div>
+            <div className={`text-[11px] font-black ${th.strongText}`}>{t('Nunua Pamoja')}</div>
+            {activeGroupDeals.length > 0 ? (
+              <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
+                {t('Bei ya kikundi')}: <span className="text-emerald-500 font-black">{TZS(activeGroupDeals[0].groupPrice)}</span> · {activeGroupDeals[0].paidCount}/{activeGroupDeals[0].minBuyers} {t('wamelipa')}
+              </div>
+            ) : (
+              <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
+                {t('Anzisha kikundi upate punguzo la -15% hadi -20%')}
+              </div>
+            )}
+          </button>
+
+          {/* 3. Lipa Pole Pole - Always Active */}
+          <button
+            onClick={() => onStartInstallment?.(product.id)}
+            className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
+          >
+            <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-sky-100 text-sky-700' : 'bg-sky-500/20 text-sky-400'}`}>
+              <CalendarClock className="w-4.5 h-4.5" />
+            </div>
+            <div className={`text-[11px] font-black ${th.strongText}`}>{t('Lipa Pole Pole')}</div>
+            <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
+              {activeInstallmentPlans.length > 0 ? (
+                <>{t('Malipo ya awali')} {activeInstallmentPlans[0].downPaymentPercent}% + {activeInstallmentPlans[0].installmentsCount} {t('awamu')}</>
+              ) : (
+                <>{t('Malipo ya awali')} 25% + 3 {t('awamu bila riba')}</>
+              )}
+            </div>
+          </button>
+        </div>
+
+        {/* Piga Bei modal */}
+        {showOffer && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setShowOffer(false)}>
+            <div
+              className={`${th.card} ${th.cardBorder} rounded-2xl p-5 w-full max-w-sm space-y-3`}
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h4 className={`text-sm font-black ${th.strongText}`}>{t('Piga Bei')} — {product.name}</h4>
+                <button onClick={() => setShowOffer(false)} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-white/10`}>
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className={`text-[11px] ${th.textMuted} font-semibold`}>
+                {t('Bei ya sasa')}: <span className="font-black text-amber-500">{TZS(product.price)}</span>. {t('Weka bei yako — muuzaji anaweza kukubali, kutoa bei yake, au kukataa.')}
+              </p>
+              <input value={oName} onChange={e => setOName(e.target.value)} placeholder={t('Jina Kamili')} className={th.input} />
+              <input value={oPhone} onChange={e => setOPhone(e.target.value)} placeholder="+255 7XX XXX XXX" className={th.input} />
+              <input value={oPrice} onChange={e => setOPrice(e.target.value.replace(/[^\d]/g, ''))} placeholder={t('Bei yako (TZS)')} type="number" className={th.input} />
+              {oError && <div className="text-[11px] font-bold text-red-500">{oError}</div>}
+              <button
+                onClick={submitOffer}
+                className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 text-[11px] font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer`}
+              >
+                <HandCoins className="w-3.5 h-3.5" /> {t('Tuma Offer')}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Offer success toast */}
+        {oSuccess && (
+          <div className="mt-3 space-y-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl p-4">
+            <div className="flex items-start gap-2.5 text-xs font-black text-emerald-600">
+              <Check className="w-5 h-5 shrink-0 mt-0.5" />
+              <div>
+                <div>{t('Offer yako ya Piga Bei imetumwa kikamilifu!')}</div>
+                <div className={`text-[11px] font-semibold ${th.textMuted} mt-0.5`}>
+                  {t('Muuzaji akijibu au akikubali, utaona majibu yake na utaweza kukamilisha ununuzi papo kwa hapo.')}
+                </div>
+              </div>
+            </div>
+            {onNavigateOffers && (
+              <button
+                onClick={onNavigateOffers}
+                className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 text-xs font-black px-4 py-2.5 rounded-xl cursor-pointer ${th.btnPrimary} ${th.btnPrimaryText} shadow-md`}
+              >
+                <HandCoins className="w-4 h-4" /> {t('Fuatilia Mazungumzo kwenye Ofa Zangu')}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Modal: Buyer creates a new Group Buy for this product */}
+      {showCreateGroupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto" onClick={() => setShowCreateGroupModal(false)}>
+          <div className={`${th.card} ${th.cardBorder} rounded-2xl p-5 w-full max-w-lg space-y-3.5 my-8 max-h-[90vh] overflow-y-auto shadow-2xl`} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+              <h4 className={`text-sm font-black ${th.strongText} flex items-center gap-2`}>
+                <Users className="w-4 h-4 text-brand" /> {t('Anzisha Nunua Pamoja (Group Buy)')}
+              </h4>
+              <button onClick={() => setShowCreateGroupModal(false)} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-black/5`}>✕</button>
+            </div>
+
+            <div className="p-3 bg-indigo-50/70 rounded-xl border border-indigo-200 flex items-center justify-between">
+              <div>
+                <div className="text-[10px] text-gray-500 uppercase font-bold">{t('Bei ya Kawaida')}</div>
+                <div className="text-xs line-through text-gray-400 font-bold">{TZS(product.price)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] text-indigo-700 uppercase font-black">{t('Bei ya Kikundi')} (-{gbDiscountPercent}%)</div>
+                <div className="text-base font-black text-emerald-600">{TZS(calculatedGbPrice)}</div>
+              </div>
+              <div className="text-right">
+                <div className="text-[10px] text-amber-700 uppercase font-bold">{t('Unaokoa')}</div>
+                <div className="text-xs font-black text-amber-600">{TZS(product.price - calculatedGbPrice)}</div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Punguzo la Bei')}</label>
+                <select
+                  value={gbDiscountPercent}
+                  onChange={e => setGbDiscountPercent(Number(e.target.value))}
+                  className={`${th.input} cursor-pointer text-xs font-bold`}
+                >
+                  <option value={10}>10% Discount</option>
+                  <option value={15}>15% Discount (Standard)</option>
+                  <option value={20}>20% Super Group Discount</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Idadi ya Wanunuzi')}</label>
+                <select
+                  value={gbMinBuyers}
+                  onChange={e => setGbMinBuyers(Number(e.target.value))}
+                  className={`${th.input} cursor-pointer text-xs font-bold`}
+                >
+                  <option value={2}>Wanunuzi 2</option>
+                  <option value={3}>Wanunuzi 3 (Standard)</option>
+                  <option value={5}>Wanunuzi 5</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Buyer Contact & Location Fields for records */}
+            <div className="space-y-2 pt-2 border-t border-gray-100">
+              <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Taarifa za Mnunuzi & Mahali (Delivery Address)')}</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Jina Kamili')} *</label>
+                  <input value={gbName} onChange={e => setGbName(e.target.value)} placeholder={t('Mfano: Neema Emmanuel')} className={th.input} />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Namba ya Simu')} *</label>
+                  <input value={gbPhone} onChange={e => setGbPhone(e.target.value)} placeholder="07XX XXX XXX au +255..." className={th.input} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Mkoa')} *</label>
+                  <select value={gbRegion} onChange={e => setGbRegion(e.target.value)} className={`${th.input} cursor-pointer`}>
+                    <option value="">-- {t('Chagua Mkoa')} --</option>
+                    {TANZANIA_REGIONS.map(r => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Wilaya / District')}</label>
+                  <input value={gbDistrict} onChange={e => setGbDistrict(e.target.value)} placeholder={t('Mfano: Kinondoni, Ilala')} className={th.input} />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Kata / Ward')}</label>
+                  <input value={gbWard} onChange={e => setGbWard(e.target.value)} placeholder={t('Mfano: Kariakoo, Mikocheni')} className={th.input} />
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Mtaa / Street')}</label>
+                  <input value={gbStreet} onChange={e => setGbStreet(e.target.value)} placeholder={t('Mfano: Mtaa wa Uhuru')} className={th.input} />
+                </div>
+              </div>
+            </div>
+
+            {/* Payment proof */}
+            <div className="space-y-2 pt-2 border-t border-gray-100">
+              <div className={`text-[10px] font-black uppercase tracking-wider ${th.label}`}>{t('Uthibitisho wa Malipo ya Awali (Transaction ID & Risiti)')}</div>
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Namba ya Muamala / Transaction ID')}</label>
+                <input
+                  value={gbTxId}
+                  onChange={e => setGbTxId(e.target.value)}
+                  placeholder={t('Mfano: QD83719283 ya M-Pesa / Tigo / Airtel')}
+                  className={th.input}
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Pakia Picha ya Risiti (Upload Receipt)')}</label>
+                <input
+                  ref={gbFileRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={e => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    const reader = new FileReader();
+                    reader.onload = () => setGbReceipt(reader.result as string);
+                    reader.readAsDataURL(f);
+                  }}
+                  className="hidden"
+                />
+                {gbReceipt ? (
+                  <div className="flex items-center gap-3 p-2 bg-emerald-50 rounded-xl border border-emerald-200">
+                    <img src={gbReceipt} alt="Receipt preview" className="w-14 h-14 object-cover rounded-lg border border-emerald-300 shadow-sm" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-bold text-emerald-800">✓ Risiti imepakiwa</div>
+                      <div className="text-[10px] text-emerald-600">Itaunganishwa moja kwa moja na agizo lako.</div>
+                    </div>
+                    <button type="button" onClick={() => setGbReceipt(undefined)} className="p-1 text-red-500 cursor-pointer">✕</button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => gbFileRef.current?.click()}
+                    className="w-full py-2.5 px-3 border border-dashed border-gray-300 hover:border-brand rounded-xl text-xs font-bold text-gray-600 flex items-center justify-center gap-2 cursor-pointer bg-gray-50"
+                  >
+                    <Upload className="w-4 h-4" /> {t('Bofya hapa kupakia picha/screenshot ya risiti')}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {gbError && <div className="text-xs font-bold text-red-500 bg-red-50 p-2.5 rounded-xl border border-red-200">{gbError}</div>}
+
+            <button
+              onClick={handleStartGroupBuy}
+              disabled={gbSubmitting}
+              className={`w-full flex items-center justify-center gap-2 px-5 py-3 text-xs sm:text-sm font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer disabled:opacity-50 shadow-md transition`}
+            >
+              {gbSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
+              {t('Anzisha Kikundi & Kamilisha Malipo ya')} {TZS(calculatedGbPrice)}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Payment modal when buyer clicks to pay for accepted offer directly from Product Detail */}
+      {payAcceptedOfferOpen && myAcceptedOffer && onInitiateOfferPayment && (
+        <PaymentModal
+          th={th} t={t} milk={milk}
+          title={`${t('Piga Bei')} — Malipo ya Makubaliano`}
+          amount={myAcceptedOffer.finalPrice || myAcceptedOffer.counterPrice || myAcceptedOffer.offeredPrice}
+          prefillName={myAcceptedOffer.customerName}
+          prefillPhone={myAcceptedOffer.customerPhone}
+          networks={collectionSettings || []}
+          note={t('Malipo yako yamelindwa na TradeCore. Muuzaji ametaarifiwa kuandaa mzigo wako mara baada ya kuthibitisha.')}
+          onClose={() => setPayAcceptedOfferOpen(false)}
+          onPay={(input) => onInitiateOfferPayment(myAcceptedOffer.id, input, input.network)}
+        />
       )}
 
       {/* Feature 4 — store location map + directions */}

@@ -4,7 +4,7 @@ import { Company, MarketplaceCustomer, MarketplaceOrder, MarketplaceProduct, Cur
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { haversineKm, readCustomerLocation } from '../../utils/haversine';
 import { GoldenTopLine } from '../../utils/publicTheme';
-import { MarketHeader, MarketFooter, CartLine, isProductVisible, isCompanySubscriptionExpired } from './MarketplaceShared';
+import { MarketHeader, MarketFooter, CartLine, isProductVisible, isCompanySubscriptionExpired, TZS } from './MarketplaceShared';
 import { translate } from '../../utils/format';
 import { safeLower } from '../../utils/stateHelpers';
 import { getScopedStoredLanguage, setScopedStoredLanguage, clearScopedStoredLanguage, ensureLocaleCookie, setLocaleCookie, isLangCode, syncDocumentLang, LangCode } from '../../utils/i18n';
@@ -265,6 +265,16 @@ export default function MarketplaceApp({
 
   // --- MEGA BUILD: visual search modal + buyer notification feed ---
   const [showVisualSearch, setShowVisualSearch] = useState(false);
+  const [askSellerProduct, setAskSellerProduct] = useState<{ product: MarketplaceProduct; company: Company } | null>(null);
+  const [askSellerName, setAskSellerName] = useState(() => {
+    try { return localStorage.getItem('tradecore_buyer_name') || localStorage.getItem('tradecore_chat_name') || ''; } catch { return ''; }
+  });
+  const [askSellerPhone, setAskSellerPhone] = useState(() => {
+    try { return identityPhone || localStorage.getItem('tradecore_buyer_phone') || ''; } catch { return ''; }
+  });
+  const [askSellerMsg, setAskSellerMsg] = useState('');
+  const [askSellerError, setAskSellerError] = useState('');
+
   const buyerNotifications = useMemo(() =>
     (appNotifications || []).filter(n => !!n.audiencePhone
       ? n.audiencePhone === (identityPhone || '')
@@ -716,18 +726,25 @@ export default function MarketplaceApp({
       const flashItemForProduct = activeSaleForProduct?.items?.find(fi => fi && fi.productId === product.id);
       const startChatAboutProduct = () => {
         let phone = identityPhone || session?.phone || '';
-        const chatName = localStorage.getItem('tradecore_chat_name') || session?.name || 'Mteja';
+        try {
+          if (!phone) phone = localStorage.getItem('tradecore_buyer_phone') || '';
+        } catch {}
+        let chatName = session?.name || '';
+        try {
+          if (!chatName) chatName = localStorage.getItem('tradecore_buyer_name') || localStorage.getItem('tradecore_chat_name') || 'Mteja';
+        } catch {}
+
         if (!phone) {
-          const entered = window.prompt(t('Ingiza namba yako ya simu kuanza mazungumzo na muuzaji:'));
-          if (!entered) return;
-          const digits = entered.replace(/[^0-9]/g, '');
-          if (!/^(255|0)?[67]\d{8}$/.test(digits)) { window.alert(t('Namba ya simu si sahihi.')); return; }
-          phone = '+255' + digits.replace(/^255/, '').replace(/^0/, '');
-          localStorage.setItem('tradecore_buyer_phone', phone);
-          localStorage.setItem('tradecore_chat_name', chatName);
+          setAskSellerMsg(`Habari, naulizia kuhusu bidhaa hii: ${product.name} (${TZS(product.price)})`);
+          setAskSellerError('');
+          setAskSellerProduct({ product, company });
+          return;
         }
+
         const convId = chatHandlers?.onStartConversation(company.id, chatName, phone, product.id);
-        if (convId) go(`/marketplace/chat/${convId}`);
+        if (convId) {
+          go(`/marketplace/chat/${convId}`);
+        }
       };
       return (
         <>
@@ -759,9 +776,14 @@ export default function MarketplaceApp({
             onSubmitReview={onSubmitReview}
             onTrackProductView={onTrackProductView}
             session={session}
+            offers={offers || []}
             groupDeals={(groupDeals || []).filter(d => d.productId === product.id)}
             installmentPlans={(installmentPlans || []).filter(p => p.productId === product.id)}
+            collectionSettings={collectionSettings}
             onSubmitOffer={featureHandlers?.onSubmitOffer}
+            onOpenOffer={(id) => go(`/offer/${id}`)}
+            onInitiateOfferPayment={featureHandlers?.onInitiateOfferPayment}
+            onCreateGroupDeal={featureHandlers?.onCreateGroupDeal}
             onOpenGroupDeal={(id) => go(`/group-deal/${id}`)}
             onStartInstallment={(pid) => go(`/lipa-pole-pole/start/${pid}`)}
             flashPrice={flashItemForProduct?.flashPrice}
@@ -1025,6 +1047,7 @@ export default function MarketplaceApp({
 
     // --- MEGA CRITICAL FIX 2-in-1: buyer offers list (Ofa Zangu) ---
     if (route.name === 'offers') {
+      const activeBuyerPhone = identityPhone || session?.phone || (typeof window !== 'undefined' ? localStorage.getItem('tradecore_buyer_phone') : null);
       return (
         <MegaOffers
           theme={theme}
@@ -1032,10 +1055,12 @@ export default function MarketplaceApp({
           offers={offers || []}
           products={products}
           companies={companies}
-          identityPhone={identityPhone || session?.phone || null}
+          identityPhone={activeBuyerPhone}
+          collectionSettings={collectionSettings}
           onBack={() => go('/marketplace')}
           onOpenProduct={openProduct}
           onOpenOffer={(id) => go(`/offer/${id}`)}
+          onInitiateOfferPayment={featureHandlers?.onInitiateOfferPayment}
           onAcceptCounter={(id) => offerActions?.onAcceptCounter(id) || { ok: false }}
           onRejectCounter={(id) => offerActions?.onRejectCounter(id) || { ok: false }}
           onCounterAgain={(id, price, message) => offerActions?.onCounterAgain(id, price, message) || { ok: false }}
@@ -1045,6 +1070,8 @@ export default function MarketplaceApp({
 
     // --- MEGA BUILD: chat routes ---
     if (route.name === 'chat-conv' || route.name === 'chat') {
+      const activeBuyerPhone = identityPhone || session?.phone || (typeof window !== 'undefined' ? localStorage.getItem('tradecore_buyer_phone') : null);
+      const activeBuyerName = localStorage.getItem('tradecore_buyer_name') || localStorage.getItem('tradecore_chat_name') || session?.name || 'Mteja';
       return (
         <MegaChat
           theme={theme}
@@ -1054,7 +1081,7 @@ export default function MarketplaceApp({
           messages={chatMessages || []}
           products={products}
           companies={companies}
-          buyerIdentity={identityPhone ? { phone: identityPhone, name: localStorage.getItem('tradecore_chat_name') || 'Mteja' } : null}
+          buyerIdentity={activeBuyerPhone ? { phone: activeBuyerPhone, name: activeBuyerName } : null}
           initialConversationId={route.name === 'chat-conv' ? (route as any).conversationId : undefined}
           onSend={(convId: number, input: any) => chatHandlers?.onSend(convId, input)}
           onMarkRead={(convId: number) => chatHandlers?.onMarkRead(convId)}
@@ -1171,6 +1198,8 @@ export default function MarketplaceApp({
         onToggleTheme={onToggleTheme}
         onHome={() => go('/marketplace')}
         onMyOrders={() => go('/marketplace/orders')}
+        onOffers={() => go('/marketplace/offers')}
+        offerCount={(offers || []).filter(o => o.status === 'pending' || o.status === 'countered' || o.status === 'accepted').length}
         session={session}
         onLogout={customerLogout}
         cartCount={cartCount}
@@ -1308,10 +1337,102 @@ export default function MarketplaceApp({
         <button
           onClick={() => go('/marketplace/chat')}
           title={t('Chat na Muuzaji')}
-          className="fixed bottom-5 right-5 z-50 w-13 h-13 p-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xl flex items-center justify-center transition"
+          className="fixed bottom-5 right-5 z-50 w-13 h-13 p-3.5 rounded-full bg-emerald-600 hover:bg-emerald-700 text-white shadow-2xl flex items-center justify-center transition cursor-pointer"
         >
           <MessageCircle className="w-6 h-6" />
         </button>
+      )}
+
+      {/* --- Ask Seller In-App Modal --- */}
+      {askSellerProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" onClick={() => setAskSellerProduct(null)}>
+          <div className="bg-white rounded-2xl border border-gray-200 p-5 w-full max-w-sm space-y-3.5 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <MessageCircle className="w-5 h-5 text-brand" />
+                <h4 className="text-sm font-black text-gray-900">{t('Uliza Muuzaji')} (Chat)</h4>
+              </div>
+              <button onClick={() => setAskSellerProduct(null)} className="p-1 rounded-lg text-gray-400 hover:bg-gray-100 cursor-pointer">
+                ✕
+              </button>
+            </div>
+
+            {/* Product teaser */}
+            <div className="flex items-center gap-2.5 p-2.5 bg-gray-50 rounded-xl border border-gray-200">
+              <div className="w-10 h-10 rounded-lg overflow-hidden bg-white shrink-0 flex items-center justify-center text-xs font-bold text-gray-400 border border-gray-100">
+                {askSellerProduct.product.image ? (
+                  <img src={askSellerProduct.product.image} alt="" className="w-full h-full object-cover" />
+                ) : '🛍'}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-black text-gray-900 truncate">{askSellerProduct.product.name}</div>
+                <div className="text-[11px] font-black text-brand">{TZS(askSellerProduct.product.price)}</div>
+              </div>
+            </div>
+
+            <div className="space-y-2 text-xs">
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">{t('Jina Lako')}:</label>
+                <input
+                  value={askSellerName}
+                  onChange={e => setAskSellerName(e.target.value)}
+                  placeholder={t('Jina kamili')}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-brand font-semibold"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">{t('Namba ya Simu (WhatsApp / SMS)')}:</label>
+                <input
+                  value={askSellerPhone}
+                  onChange={e => setAskSellerPhone(e.target.value)}
+                  placeholder="07XX XXX XXX au +255 7XX XXX XXX"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-brand font-bold"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-gray-700 block mb-1">{t('Swali au Ujumbe wako')}:</label>
+                <textarea
+                  value={askSellerMsg}
+                  onChange={e => setAskSellerMsg(e.target.value)}
+                  rows={2}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs outline-none focus:ring-2 focus:ring-brand"
+                />
+              </div>
+
+              {askSellerError && <div className="text-xs text-red-500 font-bold">{askSellerError}</div>}
+
+              <button
+                onClick={() => {
+                  setAskSellerError('');
+                  const cleanPhone = askSellerPhone.trim().replace(/\s/g, '');
+                  const cleanName = askSellerName.trim() || 'Mteja';
+                  if (!/^(\+?255|0)[67]\d{8}$/.test(cleanPhone)) {
+                    setAskSellerError(t('Namba ya simu si sahihi. Tumia format ya Tanzania (+255 au 07/06...).'));
+                    return;
+                  }
+                  const normalized = cleanPhone.startsWith('+') ? cleanPhone : (cleanPhone.startsWith('255') ? `+${cleanPhone}` : `+255${cleanPhone.replace(/^0/, '')}`);
+                  try {
+                    localStorage.setItem('tradecore_buyer_phone', normalized);
+                    localStorage.setItem('tradecore_buyer_name', cleanName);
+                    localStorage.setItem('tradecore_chat_name', cleanName);
+                  } catch {}
+
+                  const convId = chatHandlers?.onStartConversation(askSellerProduct.company.id, cleanName, normalized, askSellerProduct.product.id);
+                  if (convId) {
+                    if (askSellerMsg.trim() && chatHandlers?.onSend) {
+                      chatHandlers.onSend(convId, { text: askSellerMsg.trim(), messageType: 'text', productId: askSellerProduct.product.id });
+                    }
+                    setAskSellerProduct(null);
+                    go(`/marketplace/chat/${convId}`);
+                  }
+                }}
+                className="w-full py-2.5 bg-brand text-white rounded-xl text-xs font-black hover:bg-brand/90 cursor-pointer shadow-md transition"
+              >
+                {t('Anza Mazungumzo na Muuzaji')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
