@@ -776,6 +776,7 @@ export interface Affiliate {
   userId?: number | null;
   name: string;
   phone: string;
+  email?: string;
   referralCode: string; // unique, e.g. WAKALA-8F3K2Q or juma123 (legacy)
   balance: number;
   totalEarned: number;

@@ -1,9 +1,9 @@
-import React, { useMemo, useState, useRef } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import {
   ChevronLeft, HandCoins, Users, CalendarClock, Radio, Heart, MessageCircle, Send,
   MapPin, Navigation, Truck, Smartphone, CheckCircle2, Loader2, ShieldCheck, Clock,
   Gift, Star, Play, Bot, Copy, ExternalLink, ShoppingCart, Upload, Image, X, Plus,
-  Share2, Check, Search
+  Share2, Check, Search, Sparkles
 } from 'lucide-react';
 import {
   Company, MarketplaceProduct, Offer, GroupDeal, GroupDealParticipant,
