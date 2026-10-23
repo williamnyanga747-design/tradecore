@@ -1023,6 +1023,10 @@ export interface GroupDeal {
   expiresAt: string;
   shareCode: string; // 8-char invite code
   status: GroupDealStatus;
+  title?: string; // e.g. "Kikundi cha Sarah & Marafiki"
+  creatorName?: string; // Name of buyer or seller who created this group
+  creatorPhone?: string; // Phone of group leader
+  isBuyerCreated?: boolean; // True if started by a customer/buyer
   createdAt: string;
 }
 

@@ -69,6 +69,8 @@ interface Props {
     minBuyers: number;
     maxBuyers?: number;
     durationHours?: number;
+    title?: string;
+    isBuyerCreated?: boolean;
     customerName?: string;
     customerPhone?: string;
     customerRegion?: string;
@@ -182,7 +184,9 @@ export default function ProductDetailPage({
   const [payAcceptedOfferOpen, setPayAcceptedOfferOpen] = useState(false);
 
   // Group Buy creation modal state
+  const [showGroupChooserModal, setShowGroupChooserModal] = useState(false);
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [gbGroupTitle, setGbGroupTitle] = useState('');
   const [gbDiscountPercent, setGbDiscountPercent] = useState<number>(15);
   const [gbMinBuyers, setGbMinBuyers] = useState<number>(3);
   const [gbName, setGbName] = useState(session?.name || (typeof window !== 'undefined' ? (localStorage.getItem('tradecore_buyer_name') || '') : ''));
@@ -214,6 +218,8 @@ export default function ProductDetailPage({
       companyId: product.companyId,
       groupPrice: calculatedGbPrice,
       minBuyers: gbMinBuyers,
+      title: gbGroupTitle.trim() || undefined,
+      isBuyerCreated: true,
       customerName: gbName.trim(),
       customerPhone: gbPhone.trim(),
       customerRegion: gbRegion,
@@ -236,6 +242,7 @@ export default function ProductDetailPage({
     } catch {}
 
     setShowCreateGroupModal(false);
+    setShowGroupChooserModal(false);
     if (onOpenGroupDeal) {
       onOpenGroupDeal(res.dealId);
     }
@@ -592,9 +599,10 @@ export default function ProductDetailPage({
           <button
             onClick={() => {
               if (activeGroupDeals.length > 0) {
-                onOpenGroupDeal?.(activeGroupDeals[0].id);
+                setShowGroupChooserModal(true);
               } else {
                 setGbError('');
+                setGbGroupTitle('');
                 setShowCreateGroupModal(true);
               }
             }}
@@ -606,11 +614,11 @@ export default function ProductDetailPage({
             <div className={`text-[11px] font-black ${th.strongText}`}>{t('Nunua Pamoja')}</div>
             {activeGroupDeals.length > 0 ? (
               <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
-                {t('Bei ya kikundi')}: <span className="text-emerald-500 font-black">{TZS(activeGroupDeals[0].groupPrice)}</span> · {activeGroupDeals[0].paidCount}/{activeGroupDeals[0].minBuyers} {t('wamelipa')}
+                <span className="text-indigo-600 font-bold">{activeGroupDeals.length} {t('vikundi vilivyopo')}</span> · {t('au anzisha chako')}
               </div>
             ) : (
               <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
-                {t('Anzisha kikundi upate punguzo la -15% hadi -20%')}
+                {t('Anzisha kikundi chako upate punguzo la -15% hadi -20%')}
               </div>
             )}
           </button>
@@ -688,6 +696,89 @@ export default function ProductDetailPage({
         )}
       </div>
 
+      {/* Modal: Group Buy Chooser (Start My Own vs Join Existing) */}
+      {showGroupChooserModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto" onClick={() => setShowGroupChooserModal(false)}>
+          <div className={`${th.card} ${th.cardBorder} rounded-2xl p-5 w-full max-w-lg space-y-4 my-8 max-h-[90vh] overflow-y-auto shadow-2xl`} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+              <h4 className={`text-sm font-black ${th.strongText} flex items-center gap-2`}>
+                <Users className="w-4 h-4 text-indigo-600" /> {t('Nunua Pamoja')} — {product.name}
+              </h4>
+              <button onClick={() => setShowGroupChooserModal(false)} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-black/5`}>✕</button>
+            </div>
+
+            <p className={`text-xs ${th.textMuted} leading-relaxed`}>
+              {t('Unaweza kuanzisha kikundi chako mwenyewe (na kualika marafiki au ndugu zako bila kuingiliwa), au unaweza kujiunga na kikundi kilicho tayari kuanzishwa ili kukamilisha haraka!')}
+            </p>
+
+            {/* Option 1: Start My Own Group */}
+            <div className="p-4 rounded-2xl border-2 border-indigo-500 bg-indigo-50/50 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black text-indigo-900 flex items-center gap-1.5">
+                  <Plus className="w-4 h-4 text-indigo-600" /> {t('Anzisha Kikundi Chako Kipya')}
+                </span>
+                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-indigo-200 text-indigo-800">
+                  {t('Uwe Kiongozi')}
+                </span>
+              </div>
+              <p className="text-[11px] text-indigo-800">
+                {t('Kikundi kitakuwa chako binafsi chenye jina lako, share code ya kipekee, na link ya WhatsApp ya kualika watu wako.')}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGroupChooserModal(false);
+                  setGbError('');
+                  setGbGroupTitle('');
+                  setShowCreateGroupModal(true);
+                }}
+                className={`w-full py-2.5 px-4 rounded-xl text-xs font-black ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer flex items-center justify-center gap-2 shadow-sm`}
+              >
+                <Plus className="w-4 h-4" /> {t('Anzisha Kikundi Changu Sasa')}
+              </button>
+            </div>
+
+            {/* Option 2: Join Existing Groups */}
+            {activeGroupDeals.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-gray-100">
+                <div className={`text-[11px] font-black uppercase tracking-wider ${th.label}`}>
+                  {t('Au Jiunge na Vikundi Vilivyopo')} ({activeGroupDeals.length}):
+                </div>
+                <div className="space-y-2">
+                  {activeGroupDeals.map(d => {
+                    const remainingSpots = Math.max(0, d.minBuyers - d.paidCount);
+                    return (
+                      <div key={d.id} className="p-3 border rounded-xl bg-white hover:border-indigo-400 transition flex items-center justify-between gap-3 flex-wrap">
+                        <div>
+                          <div className="text-xs font-black text-gray-900 flex items-center gap-1.5">
+                            <span>{d.title || `Kikundi #${d.shareCode}`}</span>
+                            {d.creatorName && <span className="text-[10px] font-bold text-gray-500">({t('Kiongozi')}: {d.creatorName})</span>}
+                          </div>
+                          <div className="text-[10px] text-indigo-600 font-bold mt-0.5">
+                            {d.paidCount}/{d.minBuyers} {t('wamelipa')} · <span className="text-emerald-600">{TZS(d.groupPrice)}</span>
+                            {remainingSpots > 0 ? ` · Bado ${remainingSpots}` : ' · Lengo limetimia!'}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowGroupChooserModal(false);
+                            onOpenGroupDeal?.(d.id);
+                          }}
+                          className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black cursor-pointer shadow-xs"
+                        >
+                          {t('Jiunge Hapa')}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Modal: Buyer creates a new Group Buy for this product */}
       {showCreateGroupModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto" onClick={() => setShowCreateGroupModal(false)}>
@@ -712,6 +803,16 @@ export default function ProductDetailPage({
                 <div className="text-[10px] text-amber-700 uppercase font-bold">{t('Unaokoa')}</div>
                 <div className="text-xs font-black text-amber-600">{TZS(product.price - calculatedGbPrice)}</div>
               </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Jina la Kikundi Chako (Group Title)')}</label>
+              <input
+                value={gbGroupTitle}
+                onChange={e => setGbGroupTitle(e.target.value)}
+                placeholder={t('Mfano: Kikundi cha Sarah & Marafiki wa Kazini')}
+                className={th.input}
+              />
             </div>
 
             <div className="grid grid-cols-2 gap-2">

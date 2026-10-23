@@ -2568,7 +2568,10 @@ export default function App() {
   // --- PUBLIC MARKETPLACE ROUTING (outside the internal system) ---
   const isPublicMarketplacePath = (p: string) =>
     p.startsWith('/marketplace') || p.startsWith('/product/') || p.startsWith('/company/') || p.startsWith('/mikoa/') ||
-    p.startsWith('/search') || p.startsWith('/ref/') || p.startsWith('/affiliate/');
+    p.startsWith('/search') || p.startsWith('/ref/') || p.startsWith('/affiliate/') ||
+    p.startsWith('/lipa-pole-pole') || p.startsWith('/group-deal') || p.startsWith('/deals') ||
+    p.startsWith('/offer/') || p.startsWith('/live') || p.startsWith('/track') ||
+    p.startsWith('/loyalty') || p.startsWith('/whatsapp-bot');
 
   // LOGIN DEADLOCK FIX (2026-09-07-05): auth-only routes (/login, /register, /forgot-password,
   // /reset-password) must NOT run the boot-time company snapshot + full get_state resolution
@@ -10178,6 +10181,56 @@ try {
     saveAllData({ affiliateClicks: clicks });
   };
 
+  const createAffiliateAgent = (input: {
+    name: string;
+    phone: string;
+    email?: string;
+    region?: string;
+    district?: string;
+    commissionPercent?: number;
+    nationalId?: string;
+  }): { ok: boolean; error?: string; agent?: Affiliate } => {
+    if (!input.name.trim()) return { ok: false, error: t('Jina la wakala linahitajika.') };
+    if (!input.phone.trim()) return { ok: false, error: t('Namba ya simu ya wakala inahitajika.') };
+
+    const cleanName = input.name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase() || 'WAK';
+    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    const refCode = `WAKALA-${cleanName}-${randomSuffix}`;
+
+    const newAgent: Affiliate = {
+      id: Date.now(),
+      name: input.name.trim(),
+      phone: input.phone.trim(),
+      email: input.email?.trim(),
+      region: input.region || 'Dar es Salaam',
+      district: input.district?.trim(),
+      referralCode: refCode,
+      balance: 0,
+      totalEarned: 0,
+      totalWithdrawn: 0,
+      isActive: true,
+      status: 'active',
+      createdAt: new Date().toISOString()
+    };
+
+    saveAllData({ affiliates: [newAgent, ...(affiliates || [])] });
+    logAction('Agent Created', `Wakala mpya ${newAgent.name} (${newAgent.referralCode}) amesajiliwa.`);
+    toast.success(t('Wakala amesajiliwa kikamilifu!'));
+    return { ok: true, agent: newAgent };
+  };
+
+  const updateAffiliateAgent = (id: number, patch: Partial<Affiliate>): void => {
+    const next = (affiliates || []).map(a => a.id === id ? { ...a, ...patch } : a);
+    saveAllData({ affiliates: next });
+    toast.success(t('Taarifa za wakala zimesasishwa.'));
+  };
+
+  const deleteAffiliateAgent = (id: number): void => {
+    const next = (affiliates || []).filter(a => a.id !== id);
+    saveAllData({ affiliates: next });
+    toast.success(t('Wakala ameondolewa.'));
+  };
+
   // ---- MEGA ULTIMATE — MFUMO WA WAKALA (public portal) ----
 
   const generateWakalaCode = (): string => {
@@ -10832,6 +10885,7 @@ try {
     liveStreamKey?: string;
     transactionId?: string;
     receiptImage?: string;
+    skipStockDeduction?: boolean;
   }): { ok: boolean; reference?: string; orderId?: number | null; error?: string } => {
     const phone = normalizeTzPhone((input.customerPhone || '').trim());
     if (!phone) return { ok: false, error: 'Namba ya simu si sahihi.' };
@@ -10840,7 +10894,7 @@ try {
     if (!company) return { ok: false, error: 'Company not found.' };
     const product = input.product;
     const qty = input.quantity || 1;
-    if ((product.stockQuantity || 0) < qty) return { ok: false, error: `${product.name} — out of stock.` };
+    if (!input.skipStockDeduction && (product.stockQuantity || 0) < qty) return { ok: false, error: `${product.name} — out of stock.` };
     const totalAmount = Math.round(input.unitPrice * qty * 100) / 100;
 
     let customer = marketplaceCustomers.find(c => c.phone === phone);
@@ -10915,7 +10969,9 @@ try {
       paymentStatus: 'manual_pending_approval',
       collectionReference: collection.reference
     };
-    const updatedProducts = marketplaceProducts.map(p => p.id === product.id ? { ...p, stockQuantity: Math.max(0, (p.stockQuantity || 0) - qty) } : p);
+    const updatedProducts = input.skipStockDeduction
+      ? marketplaceProducts
+      : marketplaceProducts.map(p => p.id === product.id ? { ...p, stockQuantity: Math.max(0, (p.stockQuantity || 0) - qty) } : p);
     saveAllData({
       marketplaceOrders: [newOrder, ...(marketplaceOrders || [])],
       marketplaceProducts: updatedProducts,
@@ -11157,6 +11213,8 @@ try {
     minBuyers: number;
     maxBuyers?: number;
     durationHours?: number;
+    title?: string;
+    isBuyerCreated?: boolean;
     customerName?: string;
     customerPhone?: string;
     customerRegion?: string;
@@ -11189,6 +11247,10 @@ try {
       expiresAt: new Date(Date.now() + (input.durationHours || 48) * 3600000).toISOString(),
       shareCode,
       status: 'active',
+      title: input.title || (input.customerName ? `Kikundi cha ${input.customerName.trim()}` : undefined),
+      creatorName: input.customerName?.trim(),
+      creatorPhone: phone || undefined,
+      isBuyerCreated: input.isBuyerCreated ?? Boolean(phone),
       createdAt: new Date().toISOString()
     };
 
@@ -11210,7 +11272,8 @@ try {
           customerRegion: input.customerRegion,
           customerDistrict: input.customerDistrict,
           customerWard: input.customerWard,
-          customerStreet: input.customerStreet
+          customerStreet: input.customerStreet,
+          skipStockDeduction: true
         });
         if (payRes.ok && payRes.orderId) {
           orderId = payRes.orderId;
@@ -11235,10 +11298,15 @@ try {
         paidAt: hasCustomerPayment ? new Date().toISOString() : undefined
       };
       nextParticipants = [participant, ...nextParticipants];
+
+      try {
+        localStorage.setItem('tradecore_buyer_phone', phone);
+        localStorage.setItem('tradecore_buyer_name', input.customerName.trim());
+      } catch {}
     }
 
     saveAllData({ groupDeals: [deal, ...(groupDeals || [])], groupDealParticipants: nextParticipants });
-    logAction('Group Deal Created', `Nunua Pamoja #${shareCode} on product ${product.name} — group price TZS ${deal.groupPrice.toLocaleString()} (min ${input.minBuyers}).`);
+    logAction('Group Deal Created', `Nunua Pamoja #${shareCode} (${deal.title || 'Kikundi'}) on product ${product.name} — group price TZS ${deal.groupPrice.toLocaleString()} (min ${input.minBuyers}).`);
     return { ok: true, dealId: deal.id, shareCode };
   };
 
@@ -11281,6 +11349,12 @@ try {
       paidCount: nextPaidCount,
       status: isCompleted ? ('completed' as const) : d.status
     } : d);
+
+    try {
+      localStorage.setItem('tradecore_buyer_phone', phone);
+      localStorage.setItem('tradecore_buyer_name', input.customerName.trim());
+    } catch {}
+
     saveAllData({ groupDealParticipants: [participant, ...(groupDealParticipants || [])], groupDeals: updatedDeals });
     logNotification(phone, `Umejiunga Nunua Pamoja #${deal.shareCode}! Lipa TZS ${deal.groupPrice.toLocaleString()} ili kukamilisha ushiriki wako.`, 'sms', `/group-deal/${dealId}`);
     return { ok: true, reference: ref };
@@ -11312,7 +11386,8 @@ try {
       customerRegion: address.customerRegion,
       customerDistrict: address.customerDistrict,
       customerWard: address.customerWard,
-      customerStreet: address.customerStreet
+      customerStreet: address.customerStreet,
+      skipStockDeduction: true
     });
     if (res.ok) {
       let found = false;
@@ -11364,7 +11439,53 @@ try {
         currentBuyersCount: Math.max(d.currentBuyersCount || 0, updatedParticipants.filter(p => p.groupDealId === dealId).length),
         status: isCompleted ? ('completed' as const) : d.status
       } : d);
-      saveAllData({ groupDealParticipants: updatedParticipants, groupDeals: updatedDeals });
+
+      let nextDeliveries = deliveries || [];
+      let nextDeliveryUpdates = deliveryUpdates || [];
+
+      if (isCompleted) {
+        const paidParts = updatedParticipants.filter(p => p.groupDealId === deal.id && p.status === 'paid');
+        const nowIso = new Date().toISOString();
+        paidParts.forEach(p => {
+          const alreadyHasDeliv = nextDeliveries.some(d => d.customerPhone === p.customerPhone && (d.orderId === p.orderId || d.trackingCode.includes(`GRP-${deal.id}-${p.id}`)));
+          if (!alreadyHasDeliv) {
+            const tracking = `BODA-GRP-${deal.id}-${p.id}-${Math.floor(1000 + Math.random() * 9000)}`;
+            const deliv: Delivery = {
+              id: Date.now() + Math.floor(Math.random() * 1000),
+              orderId: p.orderId || (Date.now() + Math.floor(Math.random() * 1000)),
+              companyId: deal.companyId,
+              customerName: p.customerName,
+              customerPhone: p.customerPhone,
+              customerAddress: [p.customerRegion && `Mkoa: ${p.customerRegion}`, p.customerDistrict && `Wilaya: ${p.customerDistrict}`, p.customerWard && `Kata: ${p.customerWard}`, p.customerStreet && `Mtaa: ${p.customerStreet}`].filter(Boolean).join(', ') || 'Dar es Salaam, Tanzania',
+              status: 'pending',
+              trackingCode: tracking,
+              createdAt: nowIso,
+              updatedAt: nowIso
+            };
+            nextDeliveries = [deliv, ...nextDeliveries];
+            nextDeliveryUpdates = [{
+              id: Date.now() + Math.floor(Math.random() * 1000),
+              deliveryId: deliv.id,
+              status: 'pending',
+              note: `Nunua Pamoja #${deal.shareCode} imekamilika! Agizo la kupeleka bidhaa limeundwa kiotomatiki.`,
+              createdAt: nowIso
+            }, ...nextDeliveryUpdates];
+            logNotification(p.customerPhone, `Nunua Pamoja #${deal.shareCode} imekamilika! Agizo lako la bodaboda limeundwa (${tracking}). Muuzaji anakabidhi rider sasa.`, 'sms', `/track/${tracking}`);
+          }
+        });
+      }
+
+      try {
+        localStorage.setItem('tradecore_buyer_phone', phone);
+        if (address.customerName) localStorage.setItem('tradecore_buyer_name', address.customerName.trim());
+      } catch {}
+
+      saveAllData({
+        groupDealParticipants: updatedParticipants,
+        groupDeals: updatedDeals,
+        deliveries: nextDeliveries,
+        deliveryUpdates: nextDeliveryUpdates
+      });
       logNotification(phone, `Malipo yako ya Nunua Pamoja #${deal.shareCode} (TZS ${deal.groupPrice.toLocaleString()}) yamekamilika! Ref: ${res.reference}`, 'sms');
       logAction('Group Deal Payment', `Participant ${phone} paid TZS ${deal.groupPrice.toLocaleString()} for Nunua Pamoja #${deal.shareCode} on ${product.name}.`);
     }
@@ -11759,7 +11880,8 @@ try {
       customerRegion: address.customerRegion || instOrder.customerRegion,
       customerDistrict: address.customerDistrict || instOrder.customerDistrict,
       customerWard: address.customerWard || instOrder.customerWard,
-      customerStreet: address.customerStreet || instOrder.customerStreet
+      customerStreet: address.customerStreet || instOrder.customerStreet,
+      skipStockDeduction: !isDown // Stock was already allocated during down payment
     });
 
     if (res.ok) {
@@ -11783,10 +11905,55 @@ try {
         orderId: res.orderId ?? o.orderId ?? null
       } : o);
 
+      let nextDeliveries = deliveries || [];
+      let nextDeliveryUpdates = deliveryUpdates || [];
+
+      if (isCompleted) {
+        const alreadyHasDeliv = nextDeliveries.some(d => d.customerPhone === instOrder.customerPhone && (d.orderId === (res.orderId ?? instOrder.orderId) || d.trackingCode.includes(`LP-${instOrder.id}`)));
+        if (!alreadyHasDeliv) {
+          const nowIso = new Date().toISOString();
+          const deliveryTracking = `BODA-LP-${instOrder.trackingCode}-${Math.floor(1000 + Math.random() * 9000)}`;
+          const deliv: Delivery = {
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            orderId: res.orderId ?? instOrder.orderId ?? (Date.now() + Math.floor(Math.random() * 1000)),
+            companyId: instOrder.companyId,
+            customerName: instOrder.customerName,
+            customerPhone: instOrder.customerPhone,
+            customerAddress: [
+              (address.customerRegion || instOrder.customerRegion) && `Mkoa: ${address.customerRegion || instOrder.customerRegion}`,
+              (address.customerDistrict || instOrder.customerDistrict) && `Wilaya: ${address.customerDistrict || instOrder.customerDistrict}`,
+              (address.customerWard || instOrder.customerWard) && `Kata: ${address.customerWard || instOrder.customerWard}`,
+              (address.customerStreet || instOrder.customerStreet) && `Mtaa: ${address.customerStreet || instOrder.customerStreet}`
+            ].filter(Boolean).join(', ') || 'Dar es Salaam, Tanzania',
+            status: 'pending',
+            trackingCode: deliveryTracking,
+            createdAt: nowIso,
+            updatedAt: nowIso
+          };
+          nextDeliveries = [deliv, ...nextDeliveries];
+          nextDeliveryUpdates = [{
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            deliveryId: deliv.id,
+            status: 'pending',
+            note: `Lipa Pole Pole #${instOrder.trackingCode} imekamilika! Agizo la kupeleka mzigo limeundwa.`,
+            createdAt: nowIso
+          }, ...nextDeliveryUpdates];
+          logNotification(instOrder.customerPhone, `Hongera! Awamu zote za Lipa Pole Pole #${instOrder.trackingCode} zimekamilika. Mzigo wako unatumwa na bodaboda sasa (Tracking: ${deliveryTracking}).`, 'sms', `/track/${deliveryTracking}`);
+        }
+      }
+
       saveAllData({
         installmentOrders: updatedOrders,
-        installmentPayments: [payment, ...(installmentPayments || [])]
+        installmentPayments: [payment, ...(installmentPayments || [])],
+        deliveries: nextDeliveries,
+        deliveryUpdates: nextDeliveryUpdates
       });
+
+      try {
+        localStorage.setItem('tradecore_buyer_phone', instOrder.customerPhone);
+        localStorage.setItem('tradecore_buyer_name', instOrder.customerName);
+      } catch {}
+
       logNotification(instOrder.customerPhone, `Awamu #${payIndex} ya Lipa Pole Pole #${instOrder.trackingCode} (TZS ${amount.toLocaleString()}) imelipwa. Baki: TZS ${nextRemaining.toLocaleString()}.`, 'sms');
       logAction('Installment Payment Made', `Payment for ${instOrder.trackingCode} (${type}) TZS ${amount.toLocaleString()} received with TxID ${address.transactionId || '-'}.`);
     }
@@ -16016,6 +16183,7 @@ try {
           companies[0] || null;
         return (
           <SellerPhase2CPanel
+            currentUser={currentUser}
             company={sellerComp}
             offers={offers}
             offerMessages={offerMessages}

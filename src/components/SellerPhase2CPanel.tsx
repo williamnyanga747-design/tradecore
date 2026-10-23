@@ -63,6 +63,7 @@ interface SellerPhase2CPanelProps {
   onStartLiveStream?: (streamId: number) => void;
   onEndLiveStream?: (streamId: number) => void;
   onAddLiveComment?: (streamId: number, input: { customerName: string; customerPhone?: string; message: string; type?: LiveCommentType; productId?: number }) => void;
+  currentUser?: any;
 }
 
 const OFFER_STATUS: Record<string, { label: string; cls: string }> = {
@@ -94,6 +95,7 @@ const QUICK_REPLIES = [
 ];
 
 export default function SellerPhase2CPanel({
+  currentUser,
   company, offers, offerMessages, products = [], groupDeals, groupDealParticipants, installmentPlans,
   installmentOrders, installmentPayments, deliveries, deliveryUpdates, liveStreams,
   liveComments, loyaltyCustomers, whatsappConversations, translate: t,
@@ -104,6 +106,14 @@ export default function SellerPhase2CPanel({
   onCreateLiveStream, onStartLiveStream, onEndLiveStream, onAddLiveComment
 }: SellerPhase2CPanelProps) {
   const companyId = company?.id || 0;
+  const isAdmin = Boolean(
+    currentUser?.role === 'Admin' ||
+    currentUser?.role === 'Super Admin' ||
+    currentUser?.role === 'admin' ||
+    currentUser?.role === 'superadmin' ||
+    currentUser?.isAdmin ||
+    !currentUser
+  );
   const [tab, setTab] = useState('offers');
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -764,12 +774,18 @@ export default function SellerPhase2CPanel({
             <div className="text-xs font-black text-gray-900">{t('Group Deals (Nunua Pamoja)')}</div>
             <div className="text-[11px] text-gray-500">{t('Ruhusu wateja wajiunge pamoja kununua kwa punguzo. Hakiki malipo, kamilisha deal au ghairi.')}</div>
           </div>
-          <button
-            onClick={() => { setDealError(''); setDealModal(true); }}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-white rounded-xl text-xs font-black hover:bg-brand/90 cursor-pointer shadow-sm transition"
-          >
-            <Plus className="w-3.5 h-3.5" /> {t('Tengeneza Group Deal Mpya')}
-          </button>
+          {isAdmin ? (
+            <button
+              onClick={() => { setDealError(''); setDealModal(true); }}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-brand text-white rounded-xl text-xs font-black hover:bg-brand/90 cursor-pointer shadow-sm transition"
+            >
+              <Plus className="w-3.5 h-3.5" /> {t('Tengeneza Group Deal Mpya')}
+            </button>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-500 rounded-xl text-xs font-bold border border-gray-200">
+              <ShieldCheck className="w-3.5 h-3.5 text-gray-400" /> {t('Admin pekee ndiye anayetengeneza Group Deals')}
+            </span>
+          )}
         </div>
 
         {/* Filters */}
@@ -1015,12 +1031,18 @@ export default function SellerPhase2CPanel({
                 {t('Bidhaa ulizoruhusu wateja kulipa kwa awamu. Washa au zima mpango wakati wowote.')}
               </div>
             </div>
-            <button
-              onClick={() => { setInstError(''); setInstallmentModal(true); }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-black cursor-pointer shadow-sm transition"
-            >
-              <Plus className="w-3.5 h-3.5" /> {t('Washa Lipa Pole Pole Mpya')}
-            </button>
+            {isAdmin ? (
+              <button
+                onClick={() => { setInstError(''); setInstallmentModal(true); }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-black cursor-pointer shadow-sm transition"
+              >
+                <Plus className="w-3.5 h-3.5" /> {t('Washa Lipa Pole Pole Mpya')}
+              </button>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-500 rounded-xl text-xs font-bold border border-gray-200">
+                <ShieldCheck className="w-3.5 h-3.5 text-gray-400" /> {t('Admin pekee ndiye anayewasha Lipa Pole Pole')}
+              </span>
+            )}
           </div>
 
           {myPlans.length === 0 ? (
@@ -1530,12 +1552,18 @@ export default function SellerPhase2CPanel({
           <div className="text-xs font-black text-gray-900">{t('Live Shopping (TikTok Style)')}</div>
           <div className="text-[11px] text-gray-500">{t('Onyesha bidhaa zako mubashara, pokea maoni na maagizo ya papo kwa hapo kutoka kwa wateja.')}</div>
         </div>
-        <button
-          onClick={() => { setStreamError(''); setStreamModal(true); }}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 text-white rounded-xl text-xs font-black hover:bg-rose-700 cursor-pointer shadow-sm transition"
-        >
-          <Video className="w-3.5 h-3.5" /> {t('Panga Live Stream Mpya')}
-        </button>
+        {isAdmin ? (
+          <button
+            onClick={() => { setStreamError(''); setStreamModal(true); }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-rose-600 text-white rounded-xl text-xs font-black hover:bg-rose-700 cursor-pointer shadow-sm transition"
+          >
+            <Video className="w-3.5 h-3.5" /> {t('Panga Live Stream Mpya')}
+          </button>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 text-gray-500 rounded-xl text-xs font-bold border border-gray-200">
+            <ShieldCheck className="w-3.5 h-3.5 text-gray-400" /> {t('Admin pekee ndiye anayepanga Live Streams')}
+          </span>
+        )}
       </div>
 
       {myStreams.length === 0 && (
@@ -1762,6 +1790,15 @@ export default function SellerPhase2CPanel({
             <div className="text-lg font-black mt-1">{t('Piga Bei · Ask Seller Chat · Nunua Pamoja · Lipa Pole Pole · Bodaboda')}</div>
           </div>
           <div className="flex items-center gap-2">
+            {isAdmin ? (
+              <span className="text-xs font-black bg-emerald-500/80 text-white backdrop-blur px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-sm">
+                <ShieldCheck className="w-3.5 h-3.5" /> {t('Admin Mode (CRUD Active)')}
+              </span>
+            ) : (
+              <span className="text-xs font-bold bg-amber-500/80 text-white backdrop-blur px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-sm" title={t('CRUD actions are restricted to Admin')}>
+                <AlertCircle className="w-3.5 h-3.5" /> {t('Staff (Read-Only Mode)')}
+              </span>
+            )}
             <span className="text-xs font-black bg-white/20 backdrop-blur px-3 py-1.5 rounded-full">
               {myOffers.length} {t('Ofa')} · {totalUnreadChats} {t('Soga')}
             </span>

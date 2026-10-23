@@ -302,8 +302,8 @@ export default function MarketplaceApp({
     if (segments[0] === 'lipa-pole-pole' && segments[1] === 'start' && segments[2]) return { name: 'installment-start' as const, id: decodeURIComponent(segments[2]) };
     if (segments[0] === 'lipa-pole-pole' && segments[1]) return { name: 'installment-order' as const, id: decodeURIComponent(segments[1]) };
     if (segments[0] === 'live-shopping') return { name: 'live-shopping' as const };
-    if (segments[0] === 'live' && segments[1]) return { name: 'live' as const, id: decodeURIComponent(segments[1]) };
-    if (segments[0] === 'track' && segments[1]) return { name: 'track-delivery' as const, id: decodeURIComponent(segments[1]) };
+    if (segments[0] === 'track') return { name: 'track' as const, orderNumber: segments[1] ? decodeURIComponent(segments[1]) : undefined };
+    if (segments[0] === 'track-delivery' && segments[1]) return { name: 'track-delivery' as const, id: decodeURIComponent(segments[1]) };
     if (segments[0] === 'loyalty') return { name: 'loyalty' as const };
     if (segments[0] === 'whatsapp-bot') return { name: 'whatsapp-bot' as const };
     // --- MEGA ULTIMATE: MFUMO WA WAKALA (public affiliate portal) ---
@@ -934,9 +934,15 @@ export default function MarketplaceApp({
           t={t}
           orders={orders}
           companies={companies}
+          products={products}
+          installmentOrders={installmentOrders || []}
+          installmentPayments={installmentPayments || []}
+          groupDeals={groupDeals || []}
+          groupDealParticipants={groupDealParticipants || []}
           initialOrderNumber={route.orderNumber}
           onBack={() => go('/marketplace')}
           onViewCompany={openCompany}
+          onNavigate={go}
         />
       );
     }
@@ -949,12 +955,17 @@ export default function MarketplaceApp({
           orders={orders}
           customers={customers}
           companies={companies}
+          products={products}
+          installmentOrders={installmentOrders || []}
+          groupDeals={groupDeals || []}
+          groupDealParticipants={groupDealParticipants || []}
           session={session}
           onLogin={customerLogin}
           onLogout={customerLogout}
           onTrack={(orderNumber) => go(`/marketplace/track/${orderNumber}`)}
           onViewCompany={openCompany}
           onBack={() => go('/marketplace')}
+          onNavigate={go}
         />
       );
     }
