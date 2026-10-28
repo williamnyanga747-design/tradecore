@@ -20,18 +20,20 @@ export interface MilestoneItem {
 interface Props {
   order: InstallmentOrder;
   payments?: InstallmentPayment[];
-  theme: PublicTheme;
-  t: TFunc;
+  theme?: PublicTheme;
+  t?: TFunc;
   onPayNow?: () => void;
+  onRecordPayment?: (instNum: number, amount: number) => void;
   readOnly?: boolean;
 }
 
 export default function InstallmentVisualSchedule({
   order,
   payments = [],
-  theme,
-  t,
+  theme = 'milk',
+  t = (s: string) => s,
   onPayNow,
+  onRecordPayment,
   readOnly = false
 }: Props) {
   const th = getPublicTheme(theme);

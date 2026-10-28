@@ -1931,7 +1931,10 @@ app.use((req, res, next) => {
     action === 'get_state' ||
     action === 'get_company_snapshot' ||
     action === 'getCompanySnapshot' ||
-    (req.path && (req.path.endsWith('.php') || req.path.includes('api.php') || req.path.includes('php_sync')))
+    action === 'save_state' ||
+    action === 'mutate_record' ||
+    action === 'login' ||
+    (req.path && (req.path.endsWith('.php') || req.path.includes('api.php') || req.path.includes('php_sync') || req.path.includes('/cpanel/')))
   ) {
     return handlePhpApi(req, res);
   }
@@ -2739,20 +2742,43 @@ Start with [REASONING] tags and end with [QUESTIONS_FOR_USER] tags.`;
 // Vite or Static assets middleware
 async function setupServer() {
   let vite: any = null;
+  let viteReadyPromise: Promise<void> | null = null;
+
   if (process.env.NODE_ENV !== "production") {
-    try {
-      const { createServer: createViteServer } = await import("vite");
-      vite = await createViteServer({
-        server: {
-          middlewareMode: true,
-          hmr: false,
-        },
-        appType: "spa",
-      });
-      app.use(vite.middlewares);
-    } catch (err) {
-      console.error("[server.ts] Error initializing Vite dev server:", err);
-    }
+    // Dynamic Vite middleware wrapper: if vite is ready, delegate immediately;
+    // if still initializing, wait for it before proceeding.
+    app.use((req, res, next) => {
+      if (vite) {
+        return vite.middlewares(req, res, next);
+      }
+      if (viteReadyPromise) {
+        viteReadyPromise.then(() => {
+          if (vite) {
+            vite.middlewares(req, res, next);
+          } else {
+            next();
+          }
+        }).catch(next);
+        return;
+      }
+      next();
+    });
+
+    viteReadyPromise = (async () => {
+      try {
+        const { createServer: createViteServer } = await import("vite");
+        vite = await createViteServer({
+          server: {
+            middlewareMode: true,
+            hmr: false,
+          },
+          appType: "spa",
+        });
+        console.log("[server.ts] Vite dev server middleware initialized.");
+      } catch (err) {
+        console.error("[server.ts] Error initializing Vite dev server:", err);
+      }
+    })();
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));

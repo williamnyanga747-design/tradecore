@@ -3197,6 +3197,26 @@ export default function App() {
         // tabId is accepted for older cached bundles in other tabs (defense-in-depth).
         if (msg.senderId === TAB_ID) return;
         if (msg.tabId && msg.tabId === TAB_ID) return;
+        // Instant peer-to-peer sync for group deal joins & payments
+        if (msg.type === 'GROUP_DEAL_JOIN' && msg.participant) {
+          setGroupDealParticipants(prev => {
+            const list = prev || [];
+            if (list.some(p => p.id === msg.participant.id || p.reference === msg.participant.reference)) return list;
+            return [msg.participant, ...list];
+          });
+          if (msg.dealId) {
+            setGroupDeals(prev => (prev || []).map(d => d.id === msg.dealId ? {
+              ...d,
+              currentBuyersCount: Math.max((d.currentBuyersCount || 0) + 1, (d.paidCount || 0) + (msg.participant.status === 'paid' ? 1 : 0))
+            } : d));
+          }
+          return;
+        }
+        if (msg.type === 'GROUP_DEAL_PAYMENT') {
+          scheduleCrossTabRefetch(0);
+          return;
+        }
+
         const msgVer = Number(msg.version ?? 0);
         // Don't log or re-fetch if we already have this version. lastServerVersionRef
         // tracks the highest version WE have APPLIED, and server versions are globally
@@ -10076,6 +10096,66 @@ try {
     logAction('Withdrawal ' + (decision === 'approved' ? 'Approved' : 'Rejected'), `Withdrawal #${withdrawalId} (TZS ${target.amount.toLocaleString()}) ${decision} by ${currentUser?.username || 'ROOT'}.`);
   };
 
+  const creditSellerWallet = (companyId: number, amount: number, description?: string): { ok: boolean } => {
+    const nowIso = new Date().toISOString();
+    let nextWallets = wallets || [];
+    let wallet = nextWallets.find(w => sameId(w.companyId, companyId));
+    if (!wallet) {
+      wallet = { id: Date.now(), companyId, balance: 0, totalEarned: 0, totalWithdrawn: 0, updatedAt: nowIso };
+      nextWallets = [...nextWallets, wallet];
+    }
+    const nextBalance = Math.round((wallet.balance + amount) * 100) / 100;
+    nextWallets = nextWallets.map(w => w.id === wallet!.id
+      ? { ...w, balance: nextBalance, totalEarned: Math.round((w.totalEarned + amount) * 100) / 100, updatedAt: nowIso }
+      : w);
+    const nextTxns: WalletTransaction[] = [{
+      id: Date.now(),
+      walletId: wallet.id,
+      companyId,
+      type: 'credit',
+      amount,
+      description: description || 'Salio la moja kwa moja (Manual / Test wallet credit)',
+      status: 'completed',
+      createdAt: nowIso
+    }, ...(walletTransactions || [])];
+    saveAllData({ wallets: nextWallets, walletTransactions: nextTxns });
+    forceFlushNow();
+    toast.success(t('Salio la pochi limesasishwa kikamilifu!'));
+    return { ok: true };
+  };
+
+  const saveStore = (storeData: Partial<Store> & { id?: number; name?: string }) => {
+    const nowIso = new Date().toISOString();
+    const currentStores = dbStateRef.current.stores || [];
+    let nextStores: Store[];
+    if (storeData.id) {
+      nextStores = currentStores.map(s => sameId(s.id, storeData.id) ? { ...s, ...storeData, updatedAt: nowIso } : s);
+    } else {
+      const newStore: Store = {
+        id: Date.now(),
+        branchId: storeData.branchId || branches[0]?.id || 1,
+        name: storeData.name || 'Store',
+        code: storeData.code || `STR-${Date.now().toString().slice(-4)}`,
+        address: storeData.address || '',
+        latitude: storeData.latitude,
+        longitude: storeData.longitude,
+        phone: storeData.phone,
+        managerName: storeData.managerName,
+        isMarketplaceVisible: storeData.isMarketplaceVisible !== false,
+        isDeleted: false,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        ...(storeData as any)
+      };
+      nextStores = [...currentStores, newStore];
+    }
+    dbStateRef.current = { ...dbStateRef.current, stores: nextStores };
+    setStores(nextStores);
+    saveAllData({ stores: nextStores });
+    forceFlushNow();
+    toast.success(t('Taarifa za duka zimehifadhiwa kikamilifu!'));
+  };
+
   // ---- Affiliate helpers ----
 
   const readAffiliateRefCookie = (): string | null => {
@@ -10886,6 +10966,8 @@ try {
     transactionId?: string;
     receiptImage?: string;
     skipStockDeduction?: boolean;
+    orderStatus?: MarketplaceOrderStatus;
+    orderSource?: string;
   }): { ok: boolean; reference?: string; orderId?: number | null; error?: string } => {
     const phone = normalizeTzPhone((input.customerPhone || '').trim());
     if (!phone) return { ok: false, error: 'Namba ya simu si sahihi.' };
@@ -10929,12 +11011,14 @@ try {
     const commissionPercent = company.planType === 'direct' ? 0 : (company.commissionPercentSnapshot ?? 0);
     const commissionAmount = Math.round(totalAmount * (commissionPercent / 100) * 100) / 100;
     const featureTags = [
+      '[Smart Selling]',
       input.trackingRef ? `FEATURE-REF: ${input.trackingRef}` : '',
       input.liveStreamKey ? `LIVE-STREAM: ${input.liveStreamKey}` : '',
       input.customerWard ? `Kata: ${input.customerWard}` : '',
       input.customerStreet ? `Mtaa: ${input.customerStreet}` : '',
       input.transactionId ? `TxID: ${input.transactionId}` : ''
     ].filter(Boolean).join(' | ');
+    const isCompleted = input.orderStatus === 'delivered';
     const newOrder: MarketplaceOrder = {
       id: Date.now(),
       orderNumber,
@@ -10952,7 +11036,9 @@ try {
       paymentMethodType: input.network || 'mpesa',
       transactionId: input.transactionId ? input.transactionId.trim() : `PENDING-${collection.reference}`,
       receiptImage: input.receiptImage || undefined,
-      status: 'pending_verification',
+      status: input.orderStatus || 'pending_verification',
+      deliveredAt: isCompleted ? nowIso : undefined,
+      orderSource: input.orderSource || 'smart_selling',
       items: [{
         productId: product.id,
         productName: product.name,
@@ -10966,7 +11052,7 @@ try {
       commissionPercent,
       commissionAmount: commissionPercent > 0 ? commissionAmount : undefined,
       payToSellerDone: false,
-      paymentStatus: 'manual_pending_approval',
+      paymentStatus: isCompleted ? 'completed' : 'manual_pending_approval',
       collectionReference: collection.reference
     };
     const updatedProducts = input.skipStockDeduction
@@ -11204,7 +11290,145 @@ try {
     return res;
   };
 
-  // ---------- 2. NUNUA PAMOJA (Group Buying) ----------
+  // Seller directly completes and confirms payment of an accepted offer inside Smart Selling (Piga Bei)
+  const completeOfferSale = (offerId: number, paymentMethod: string = 'cash', transactionId?: string): { ok: boolean; error?: string } => {
+    const offer = offers.find(o => o.id === offerId);
+    if (!offer) return { ok: false, error: 'Ofa haikupatikana.' };
+    const product = marketplaceProducts.find(p => p.id === offer.productId);
+    if (!product) return { ok: false, error: 'Bidhaa haikupatikana.' };
+    const price = offer.finalPrice ?? offer.counterPrice ?? offer.offeredPrice;
+    const nowIso = new Date().toISOString();
+
+    const existingOrder = marketplaceOrders.find(o => (offer.orderId && o.id === offer.orderId) || o.deliveryInstructions?.includes(`OFFER-${offer.id}`));
+    let nextMpOrders = marketplaceOrders || [];
+
+    if (existingOrder) {
+      nextMpOrders = nextMpOrders.map(o => o.id === existingOrder.id ? {
+        ...o,
+        status: 'delivered' as const,
+        deliveredAt: nowIso,
+        orderSource: 'smart_selling',
+        paymentStatus: 'completed',
+        amountPaid: o.totalAmount,
+        transactionId: transactionId || o.transactionId || `SMART-OFFER-${offer.id}`
+      } : o);
+    } else {
+      const orderNumber = generateOrderNumber();
+      const newOrder: MarketplaceOrder = {
+        id: Date.now(),
+        orderNumber,
+        companyId: offer.companyId,
+        customerName: offer.customerName,
+        customerPhone: offer.customerPhone,
+        customerRegion: offer.customerRegion || 'Dar es Salaam',
+        customerDistrict: offer.customerDistrict || '',
+        customerWard: offer.customerWard || '',
+        customerStreet: offer.customerStreet || '',
+        deliveryInstructions: `[Smart Selling POS - Piga Bei Offer #${offer.id}]`,
+        totalAmount: price,
+        amountPaid: price,
+        paymentMethodType: paymentMethod,
+        transactionId: transactionId || `SMART-OFFER-${offer.id}`,
+        status: 'delivered',
+        deliveredAt: nowIso,
+        orderSource: 'smart_selling',
+        paymentStatus: 'completed',
+        customerType: 'guest',
+        createdAt: nowIso,
+        items: [{
+          productId: product.id,
+          productName: product.name,
+          productImage: product.image || undefined,
+          quantity: 1,
+          unitPrice: price,
+          subtotal: price
+        }]
+      };
+      nextMpOrders = [newOrder, ...nextMpOrders];
+    }
+
+    const updatedOffers = offers.map(o => o.id === offer.id ? {
+      ...o,
+      status: 'paid' as const,
+      paidAt: nowIso,
+      transactionId: transactionId || `SMART-OFFER-${offer.id}`
+    } : o);
+
+    const updatedProducts = marketplaceProducts.map(p => p.id === product.id ? { ...p, stockQuantity: Math.max(0, (p.stockQuantity || 0) - 1) } : p);
+
+    saveAllData({
+      offers: updatedOffers,
+      marketplaceOrders: nextMpOrders,
+      marketplaceProducts: updatedProducts
+    });
+
+    logNotification(offer.customerPhone, `Malipo ya ofa #${offer.id} (TZS ${price.toLocaleString()}) yamethibitishwa na muuzaji dukani! Mzigo uko tayari kukabidhiwa.`, 'sms');
+    logAction('Smart Selling Offer Completed', `Seller completed sale of Offer #${offer.id} at TZS ${price.toLocaleString()}. Automatically placed into Marketplace Orders with status delivered.`);
+    return { ok: true };
+  };
+
+  // Direct sale conducted inside Smart Selling (POS Direct Commerce)
+  const recordSmartDirectSale = (input: {
+    companyId: number;
+    productId: number;
+    quantity: number;
+    unitPrice: number;
+    customerName: string;
+    customerPhone: string;
+    customerAddress?: string;
+    paymentMethod: string;
+    transactionId?: string;
+    note?: string;
+  }): { ok: boolean; orderId?: number; orderNumber?: string; error?: string } => {
+    const product = marketplaceProducts.find(p => p.id === input.productId);
+    if (!product) return { ok: false, error: 'Bidhaa haikupatikana.' };
+    const qty = Math.max(1, input.quantity || 1);
+    if ((product.stockQuantity || 0) < qty) return { ok: false, error: `Mzigo hautoshi ghalani. Zimebaki ${product.stockQuantity || 0}.` };
+    const totalAmount = Math.round(input.unitPrice * qty * 100) / 100;
+    const nowIso = new Date().toISOString();
+    const orderNumber = generateOrderNumber();
+
+    const newOrder: MarketplaceOrder = {
+      id: Date.now(),
+      orderNumber,
+      companyId: input.companyId,
+      customerName: input.customerName.trim() || 'Mteja wa Dukani',
+      customerPhone: input.customerPhone.trim() || '255700000000',
+      customerRegion: 'Dar es Salaam',
+      customerDistrict: '',
+      customerWard: '',
+      customerStreet: input.customerAddress || '',
+      deliveryInstructions: `[Smart Selling POS - Direct Sale] ${input.note || ''}`.trim(),
+      totalAmount,
+      amountPaid: totalAmount,
+      paymentMethodType: input.paymentMethod || 'cash',
+      transactionId: input.transactionId || `SMART-DIR-${Date.now().toString().slice(-6)}`,
+      status: 'delivered',
+      deliveredAt: nowIso,
+      orderSource: 'smart_selling',
+      paymentStatus: 'completed',
+      customerType: 'guest',
+      createdAt: nowIso,
+      items: [{
+        productId: product.id,
+        productName: product.name,
+        productImage: product.image || undefined,
+        quantity: qty,
+        unitPrice: input.unitPrice,
+        subtotal: totalAmount
+      }]
+    };
+
+    const updatedProducts = marketplaceProducts.map(p => p.id === product.id ? { ...p, stockQuantity: Math.max(0, (p.stockQuantity || 0) - qty) } : p);
+
+    saveAllData({
+      marketplaceOrders: [newOrder, ...(marketplaceOrders || [])],
+      marketplaceProducts: updatedProducts
+    });
+
+    logAction('Smart Selling POS Direct Sale', `Direct Sale recorded in Smart Selling: Order ${orderNumber} - ${qty}x ${product.name} (TZS ${totalAmount.toLocaleString()}). Automatically added to Marketplace Orders.`);
+    return { ok: true, orderId: newOrder.id, orderNumber };
+  };
 
   const createGroupDeal = (input: {
     productId: number;
@@ -11224,37 +11448,68 @@ try {
     transactionId?: string;
     receiptImage?: string;
     network?: CollectionNetwork;
+    targetTotalAmount?: number;
+    initialContribution?: number;
+    deliveryRecipientName?: string;
+    deliveryRecipientPhone?: string;
+    deliveryAddress?: string;
   }): { ok: boolean; dealId?: number; shareCode?: string; error?: string } => {
     const product = marketplaceProducts.find(p => p.id === input.productId);
     if (!product) return { ok: false, error: 'Product not found.' };
-    if (input.groupPrice <= 0 || input.groupPrice >= product.price) return { ok: false, error: 'Bei ya kikundi lazima iwe chini ya bei ya kawaida.' };
-    if (input.minBuyers < 2) return { ok: false, error: 'Idadi ya wanunuzi wa kikundi lazima iwe angalau 2.' };
+    const targetTotal = input.targetTotalAmount && input.targetTotalAmount > 0 ? input.targetTotalAmount : product.price;
     const shareCode = Array.from({ length: 8 }, () => 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[Math.floor(Math.random() * 32)]).join('');
     const dealId = Date.now();
     const phone = input.customerPhone ? normalizeTzPhone(input.customerPhone) : '';
     const hasCustomerPayment = Boolean(phone && (input.transactionId || input.receiptImage));
+
+    const initialContribution = hasCustomerPayment
+      ? (input.initialContribution && input.initialContribution > 0 ? Math.min(input.initialContribution, targetTotal) : (input.groupPrice || Math.round(targetTotal / (input.minBuyers || 2))))
+      : 0;
+
+    const remainingAmount = Math.max(0, targetTotal - initialContribution);
+    const isReadyForDelivery = remainingAmount <= 0;
+    const trackingCode = isReadyForDelivery ? `BODA-GRP-${dealId}-${Math.floor(1000 + Math.random() * 9000)}` : undefined;
+
+    const destAddress = input.deliveryAddress || [
+      input.customerRegion && `Mkoa: ${input.customerRegion}`,
+      input.customerDistrict && `Wilaya: ${input.customerDistrict}`,
+      input.customerWard && `Kata: ${input.customerWard}`,
+      input.customerStreet && `Mtaa: ${input.customerStreet}`
+    ].filter(Boolean).join(', ') || 'Dar es Salaam, Tanzania';
 
     const deal: GroupDeal = {
       id: dealId,
       productId: input.productId,
       companyId: input.companyId,
       soloPrice: product.price,
-      groupPrice: Math.round(input.groupPrice * 100) / 100,
-      minBuyers: input.minBuyers,
+      groupPrice: Math.round((input.groupPrice || targetTotal) * 100) / 100,
+      minBuyers: input.minBuyers || 2,
       maxBuyers: input.maxBuyers,
       currentBuyersCount: phone ? 1 : 0,
       paidCount: hasCustomerPayment ? 1 : 0,
       expiresAt: new Date(Date.now() + (input.durationHours || 48) * 3600000).toISOString(),
       shareCode,
-      status: 'active',
+      status: isReadyForDelivery ? 'completed' : 'active',
       title: input.title || (input.customerName ? `Kikundi cha ${input.customerName.trim()}` : undefined),
       creatorName: input.customerName?.trim(),
       creatorPhone: phone || undefined,
       isBuyerCreated: input.isBuyerCreated ?? Boolean(phone),
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      // Crowdfund Split-Deduct fields
+      targetTotalAmount: targetTotal,
+      totalPaidAmount: initialContribution,
+      remainingAmount,
+      isReadyForDelivery,
+      deliveryRecipientName: input.deliveryRecipientName || input.customerName?.trim(),
+      deliveryRecipientPhone: input.deliveryRecipientPhone || phone || undefined,
+      deliveryAddress: destAddress,
+      deliveryTrackingCode: trackingCode
     };
 
     let nextParticipants = groupDealParticipants || [];
+    let nextDeliveries = deliveries || [];
+    let nextDeliveryUpdates = deliveryUpdates || [];
+
     if (phone && input.customerName) {
       const ref = `GROUP-${dealId}-${phone}`;
       let orderId: number | null = null;
@@ -11262,7 +11517,7 @@ try {
         const payRes = createFeaturePayment({
           companyId: input.companyId,
           product,
-          unitPrice: deal.groupPrice,
+          unitPrice: initialContribution,
           customerName: input.customerName.trim(),
           customerPhone: phone,
           trackingRef: ref,
@@ -11291,7 +11546,9 @@ try {
         transactionId: input.transactionId,
         receiptImage: input.receiptImage,
         status: hasCustomerPayment ? 'paid' : 'joined',
-        amountPaid: hasCustomerPayment ? deal.groupPrice : 0,
+        amountPaid: initialContribution,
+        percentageOfTotal: targetTotal > 0 ? Math.round((initialContribution / targetTotal) * 100) : 0,
+        network: input.network || 'mpesa',
         reference: ref,
         orderId,
         joinedAt: new Date().toISOString(),
@@ -11299,14 +11556,60 @@ try {
       };
       nextParticipants = [participant, ...nextParticipants];
 
+      if (isReadyForDelivery && trackingCode) {
+        const nowIso = new Date().toISOString();
+        const deliv: Delivery = {
+          id: Date.now() + Math.floor(Math.random() * 1000),
+          orderId: orderId || (Date.now() + Math.floor(Math.random() * 1000)),
+          companyId: deal.companyId,
+          customerName: deal.deliveryRecipientName || input.customerName.trim(),
+          customerPhone: phone,
+          customerAddress: destAddress,
+          status: 'assigned',
+          trackingCode,
+          riderName: 'Juma Rashid (Bodaboda Express)',
+          riderPhone: '+255 714 882 190',
+          riderLat: -6.8162,
+          riderLng: 39.2804,
+          estimatedMinutes: 25,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        };
+        nextDeliveries = [deliv, ...nextDeliveries];
+        nextDeliveryUpdates = [
+          {
+            id: Date.now() + Math.floor(Math.random() * 1000) + 1,
+            deliveryId: deliv.id,
+            status: 'assigned',
+            note: 'Rider Juma Rashid (+255 714 882 190) ameteuliwa na anajiandaa kuelekea dukani.',
+            lat: -6.8162,
+            lng: 39.2804,
+            createdAt: nowIso
+          },
+          {
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            deliveryId: deliv.id,
+            status: 'pending',
+            note: `🎉 Nunua Pamoja #${shareCode} imelipwa 100%! Bidhaa iko TAYARI KUSAFIRISHWA.`,
+            createdAt: nowIso
+          },
+          ...nextDeliveryUpdates
+        ];
+      }
+
       try {
         localStorage.setItem('tradecore_buyer_phone', phone);
         localStorage.setItem('tradecore_buyer_name', input.customerName.trim());
       } catch {}
     }
 
-    saveAllData({ groupDeals: [deal, ...(groupDeals || [])], groupDealParticipants: nextParticipants });
-    logAction('Group Deal Created', `Nunua Pamoja #${shareCode} (${deal.title || 'Kikundi'}) on product ${product.name} — group price TZS ${deal.groupPrice.toLocaleString()} (min ${input.minBuyers}).`);
+    saveAllData({
+      groupDeals: [deal, ...(groupDeals || [])],
+      groupDealParticipants: nextParticipants,
+      deliveries: nextDeliveries,
+      deliveryUpdates: nextDeliveryUpdates
+    });
+    logAction('Group Deal Created', `Nunua Pamoja #${shareCode} (${deal.title || 'Kikundi'}) on ${product.name} — Target TZS ${targetTotal.toLocaleString()}, Paid TZS ${initialContribution.toLocaleString()}, Remaining TZS ${remainingAmount.toLocaleString()}.`);
     return { ok: true, dealId: deal.id, shareCode };
   };
 
@@ -11314,6 +11617,8 @@ try {
     customerName: string; customerPhone: string;
     customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
     transactionId?: string; receiptImage?: string;
+    contributionAmount?: number;
+    network?: CollectionNetwork;
   }): { ok: boolean; reference?: string; error?: string; alreadyPaid?: boolean } => {
     const deal = groupDeals.find(d => d.id === dealId);
     if (!deal || deal.status !== 'active') return { ok: false, error: 'Deal haipo tena au imeisha.' };
@@ -11323,6 +11628,16 @@ try {
     if (existing) return { ok: true, reference: existing.reference, alreadyPaid: existing.status === 'paid' };
     const ref = `GROUP-${dealId}-${phone}`;
     const isPaid = Boolean(input.transactionId || input.receiptImage);
+
+    const targetAmount = deal.targetTotalAmount || deal.soloPrice || deal.groupPrice;
+    const paidParts = (groupDealParticipants || []).filter(p => p.groupDealId === dealId && p.status === 'paid');
+    const totalPaidSoFar = paidParts.reduce((sum, p) => sum + (p.amountPaid || 0), 0);
+    const remainingBefore = Math.max(0, targetAmount - totalPaidSoFar);
+
+    const amountToPay = (input.contributionAmount && input.contributionAmount > 0)
+      ? Math.min(input.contributionAmount, remainingBefore > 0 ? remainingBefore : input.contributionAmount)
+      : (remainingBefore > 0 ? Math.min(remainingBefore, deal.groupPrice) : deal.groupPrice);
+
     const participant: GroupDealParticipant = {
       id: Date.now(),
       groupDealId: dealId,
@@ -11335,18 +11650,26 @@ try {
       transactionId: input.transactionId,
       receiptImage: input.receiptImage,
       status: isPaid ? 'paid' : 'joined',
-      amountPaid: isPaid ? deal.groupPrice : 0,
+      amountPaid: isPaid ? amountToPay : 0,
+      percentageOfTotal: targetAmount > 0 && isPaid ? Math.round((amountToPay / targetAmount) * 100) : 0,
+      network: input.network || 'mpesa',
       paidAt: isPaid ? new Date().toISOString() : undefined,
       reference: ref,
       joinedAt: new Date().toISOString()
     };
-    const newPaid = isPaid ? 1 : 0;
-    const nextPaidCount = (deal.paidCount || 0) + newPaid;
-    const isCompleted = nextPaidCount >= deal.minBuyers;
+
+    const newPaidSum = isPaid ? totalPaidSoFar + amountToPay : totalPaidSoFar;
+    const newRemaining = Math.max(0, targetAmount - newPaidSum);
+    const isReady = newRemaining <= 0;
+    const isCompleted = isReady || ((deal.paidCount || 0) + (isPaid ? 1 : 0)) >= deal.minBuyers;
+
     const updatedDeals = groupDeals.map(d => d.id === dealId ? {
       ...d,
       currentBuyersCount: (d.currentBuyersCount || 0) + 1,
-      paidCount: nextPaidCount,
+      paidCount: (d.paidCount || 0) + (isPaid ? 1 : 0),
+      totalPaidAmount: newPaidSum,
+      remainingAmount: newRemaining,
+      isReadyForDelivery: isReady,
       status: isCompleted ? ('completed' as const) : d.status
     } : d);
 
@@ -11356,7 +11679,15 @@ try {
     } catch {}
 
     saveAllData({ groupDealParticipants: [participant, ...(groupDealParticipants || [])], groupDeals: updatedDeals });
-    logNotification(phone, `Umejiunga Nunua Pamoja #${deal.shareCode}! Lipa TZS ${deal.groupPrice.toLocaleString()} ili kukamilisha ushiriki wako.`, 'sms', `/group-deal/${dealId}`);
+
+    notifyCrossTab();
+    try {
+      syncChannelRef.current?.postMessage({ type: 'GROUP_DEAL_JOIN', dealId, participant });
+      window.dispatchEvent(new CustomEvent('tradecore:local-sync', { detail: { type: 'GROUP_DEAL_JOIN', dealId, participant } }));
+    } catch {}
+    forceFlushNow();
+
+    logNotification(phone, `Umejiunga Nunua Pamoja #${deal.shareCode}! Kiasi kilichobaki kulipwa kwa bidhaa hii ni TZS ${newRemaining.toLocaleString()}.`, 'sms', `/group-deal/${dealId}`);
     return { ok: true, reference: ref };
   };
 
@@ -11365,6 +11696,8 @@ try {
     customerPhone?: string;
     customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
     transactionId?: string; receiptImage?: string;
+    contributionAmount?: number;
+    note?: string;
   }, network?: CollectionNetwork): { ok: boolean; reference?: string; orderId?: number | null; error?: string } => {
     const deal = groupDeals.find(d => d.id === dealId);
     if (!deal || deal.status !== 'active') return { ok: false, error: 'Deal haipo tena au imeisha.' };
@@ -11373,10 +11706,27 @@ try {
     const phone = normalizeTzPhone(address.customerPhone || '');
     if (!phone) return { ok: false, error: 'Namba ya simu si sahihi.' };
     const ref = `GROUP-${dealId}-${phone}`;
+
+    // Target total amount of the product:
+    const targetAmount = deal.targetTotalAmount || deal.soloPrice || product.price;
+    const paidPartsBefore = (groupDealParticipants || []).filter(p => p.groupDealId === dealId && p.status === 'paid');
+    const totalPaidBefore = paidPartsBefore.reduce((sum, p) => sum + (p.amountPaid || 0), 0);
+    const remainingBefore = Math.max(0, targetAmount - totalPaidBefore);
+
+    // Calculate buyer's payment / contribution:
+    let paymentAmount = address.contributionAmount && address.contributionAmount > 0
+      ? address.contributionAmount
+      : (remainingBefore > 0 ? remainingBefore : deal.groupPrice);
+
+    // Cap payment amount at remaining balance so they don't overpay
+    if (remainingBefore > 0 && paymentAmount > remainingBefore) {
+      paymentAmount = remainingBefore;
+    }
+
     const res = createFeaturePayment({
       companyId: deal.companyId,
       product,
-      unitPrice: deal.groupPrice,
+      unitPrice: paymentAmount,
       customerName: address.customerName || 'Mteja',
       customerPhone: phone,
       trackingRef: ref,
@@ -11389,17 +11739,23 @@ try {
       customerStreet: address.customerStreet,
       skipStockDeduction: true
     });
+
     if (res.ok) {
+      const percentageShare = targetAmount > 0 ? Math.round((paymentAmount / targetAmount) * 100) : 0;
       let found = false;
       const updatedParticipants = (groupDealParticipants || []).map(p => {
         if (p.reference === ref || (p.groupDealId === dealId && p.customerPhone === phone)) {
           found = true;
+          const prevPaid = p.status === 'paid' ? (p.amountPaid || 0) : 0;
+          const cumPaid = prevPaid + paymentAmount;
           return {
             ...p,
             status: 'paid' as const,
             paidAt: new Date().toISOString(),
-            amountPaid: deal.groupPrice,
-            orderId: res.orderId ?? null,
+            amountPaid: cumPaid,
+            percentageOfTotal: targetAmount > 0 ? Math.round((cumPaid / targetAmount) * 100) : percentageShare,
+            network: network || p.network || 'mpesa',
+            orderId: res.orderId ?? p.orderId ?? null,
             transactionId: address.transactionId || p.transactionId,
             receiptImage: address.receiptImage || p.receiptImage,
             customerRegion: address.customerRegion || p.customerRegion,
@@ -11410,6 +11766,7 @@ try {
         }
         return p;
       });
+
       if (!found) {
         const newPart: GroupDealParticipant = {
           id: Date.now(),
@@ -11423,7 +11780,9 @@ try {
           transactionId: address.transactionId,
           receiptImage: address.receiptImage,
           status: 'paid',
-          amountPaid: deal.groupPrice,
+          amountPaid: paymentAmount,
+          percentageOfTotal: percentageShare,
+          network: network || 'mpesa',
           reference: ref,
           orderId: res.orderId ?? null,
           joinedAt: new Date().toISOString(),
@@ -11431,48 +11790,88 @@ try {
         };
         updatedParticipants.unshift(newPart);
       }
-      const paidNum = updatedParticipants.filter(p => p.groupDealId === dealId && p.status === 'paid').length;
-      const isCompleted = paidNum >= deal.minBuyers;
+
+      const allPaidParticipants = updatedParticipants.filter(p => p.groupDealId === dealId && p.status === 'paid');
+      const newTotalPaid = allPaidParticipants.reduce((sum, p) => sum + (p.amountPaid || 0), 0);
+      const newRemaining = Math.max(0, targetAmount - newTotalPaid);
+      const isReadyForDelivery = newRemaining <= 0;
+      const isCompleted = isReadyForDelivery || allPaidParticipants.length >= deal.minBuyers;
+
+      const destinationAddress = [
+        address.customerRegion && `Mkoa: ${address.customerRegion}`,
+        address.customerDistrict && `Wilaya: ${address.customerDistrict}`,
+        address.customerWard && `Kata: ${address.customerWard}`,
+        address.customerStreet && `Mtaa: ${address.customerStreet}`
+      ].filter(Boolean).join(', ') || deal.deliveryAddress || 'Dar es Salaam, Tanzania';
+
+      const tracking = deal.deliveryTrackingCode || `BODA-GRP-${deal.id}-${Math.floor(1000 + Math.random() * 9000)}`;
+
       const updatedDeals = groupDeals.map(d => d.id === dealId ? {
         ...d,
-        paidCount: paidNum,
+        paidCount: allPaidParticipants.length,
         currentBuyersCount: Math.max(d.currentBuyersCount || 0, updatedParticipants.filter(p => p.groupDealId === dealId).length),
+        targetTotalAmount: targetAmount,
+        totalPaidAmount: newTotalPaid,
+        remainingAmount: newRemaining,
+        isReadyForDelivery,
+        deliveryTrackingCode: isReadyForDelivery ? tracking : d.deliveryTrackingCode,
+        deliveryRecipientName: d.deliveryRecipientName || address.customerName || d.creatorName,
+        deliveryRecipientPhone: d.deliveryRecipientPhone || phone || d.creatorPhone,
+        deliveryAddress: d.deliveryAddress || destinationAddress,
         status: isCompleted ? ('completed' as const) : d.status
       } : d);
 
       let nextDeliveries = deliveries || [];
       let nextDeliveryUpdates = deliveryUpdates || [];
 
-      if (isCompleted) {
-        const paidParts = updatedParticipants.filter(p => p.groupDealId === deal.id && p.status === 'paid');
+      if (isReadyForDelivery) {
         const nowIso = new Date().toISOString();
-        paidParts.forEach(p => {
-          const alreadyHasDeliv = nextDeliveries.some(d => d.customerPhone === p.customerPhone && (d.orderId === p.orderId || d.trackingCode.includes(`GRP-${deal.id}-${p.id}`)));
-          if (!alreadyHasDeliv) {
-            const tracking = `BODA-GRP-${deal.id}-${p.id}-${Math.floor(1000 + Math.random() * 9000)}`;
-            const deliv: Delivery = {
-              id: Date.now() + Math.floor(Math.random() * 1000),
-              orderId: p.orderId || (Date.now() + Math.floor(Math.random() * 1000)),
-              companyId: deal.companyId,
-              customerName: p.customerName,
-              customerPhone: p.customerPhone,
-              customerAddress: [p.customerRegion && `Mkoa: ${p.customerRegion}`, p.customerDistrict && `Wilaya: ${p.customerDistrict}`, p.customerWard && `Kata: ${p.customerWard}`, p.customerStreet && `Mtaa: ${p.customerStreet}`].filter(Boolean).join(', ') || 'Dar es Salaam, Tanzania',
-              status: 'pending',
-              trackingCode: tracking,
-              createdAt: nowIso,
-              updatedAt: nowIso
-            };
-            nextDeliveries = [deliv, ...nextDeliveries];
-            nextDeliveryUpdates = [{
+        const alreadyHasDeliv = nextDeliveries.some(d => d.trackingCode.includes(`GRP-${deal.id}`) || (res.orderId && d.orderId === res.orderId));
+        if (!alreadyHasDeliv) {
+          const deliv: Delivery = {
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            orderId: res.orderId || (Date.now() + Math.floor(Math.random() * 1000)),
+            companyId: deal.companyId,
+            customerName: deal.deliveryRecipientName || address.customerName || deal.creatorName || 'Mnunuzi wa Nunua Pamoja',
+            customerPhone: deal.deliveryRecipientPhone || phone || deal.creatorPhone || '',
+            customerAddress: deal.deliveryAddress || destinationAddress,
+            status: 'assigned',
+            trackingCode: tracking,
+            riderName: 'Juma Rashid (Bodaboda Express)',
+            riderPhone: '+255 714 882 190',
+            riderLat: -6.8162,
+            riderLng: 39.2804,
+            estimatedMinutes: 25,
+            createdAt: nowIso,
+            updatedAt: nowIso
+          };
+          nextDeliveries = [deliv, ...nextDeliveries];
+          nextDeliveryUpdates = [
+            {
+              id: Date.now() + Math.floor(Math.random() * 1000) + 1,
+              deliveryId: deliv.id,
+              status: 'assigned',
+              note: 'Rider Juma Rashid (+255 714 882 190) ameteuliwa na anajiandaa kuelekea dukani.',
+              lat: -6.8162,
+              lng: 39.2804,
+              createdAt: nowIso
+            },
+            {
               id: Date.now() + Math.floor(Math.random() * 1000),
               deliveryId: deliv.id,
               status: 'pending',
-              note: `Nunua Pamoja #${deal.shareCode} imekamilika! Agizo la kupeleka bidhaa limeundwa kiotomatiki.`,
+              note: `🎉 Nunua Pamoja #${deal.shareCode} imekamilika kwa 100%! Bidhaa ya "${product.name}" imelipwa kamili na iko TAYARI KUSAFIRISHWA.`,
               createdAt: nowIso
-            }, ...nextDeliveryUpdates];
-            logNotification(p.customerPhone, `Nunua Pamoja #${deal.shareCode} imekamilika! Agizo lako la bodaboda limeundwa (${tracking}). Muuzaji anakabidhi rider sasa.`, 'sms', `/track/${tracking}`);
-          }
-        });
+            },
+            ...nextDeliveryUpdates
+          ];
+
+          allPaidParticipants.forEach(p => {
+            logNotification(p.customerPhone, `🎉 Nunua Pamoja #${deal.shareCode} ya ${product.name} imelipwa 100%! Mzigo uko TAYARI KUSAFIRISHWA (${tracking}).`, 'sms', `/track-delivery/${tracking}`);
+          });
+        }
+      } else {
+        logNotification(phone, `Malipo yako ya TZS ${paymentAmount.toLocaleString()} yamerekodiwa kwa ${product.name}! Zimebaki TZS ${newRemaining.toLocaleString()} kulipwa na wanunuzi wengine ili mzigo utumwe.`, 'sms', `/group-deal/${deal.id}`);
       }
 
       try {
@@ -11486,8 +11885,15 @@ try {
         deliveries: nextDeliveries,
         deliveryUpdates: nextDeliveryUpdates
       });
-      logNotification(phone, `Malipo yako ya Nunua Pamoja #${deal.shareCode} (TZS ${deal.groupPrice.toLocaleString()}) yamekamilika! Ref: ${res.reference}`, 'sms');
-      logAction('Group Deal Payment', `Participant ${phone} paid TZS ${deal.groupPrice.toLocaleString()} for Nunua Pamoja #${deal.shareCode} on ${product.name}.`);
+
+      notifyCrossTab();
+      try {
+        syncChannelRef.current?.postMessage({ type: 'GROUP_DEAL_PAYMENT', dealId });
+        window.dispatchEvent(new CustomEvent('tradecore:local-sync', { detail: { type: 'GROUP_DEAL_PAYMENT', dealId } }));
+      } catch {}
+      forceFlushNow();
+
+      logAction('Group Deal Payment', `Participant ${phone} contributed TZS ${paymentAmount.toLocaleString()} (deducted, ${newRemaining.toLocaleString()} TZS remaining) for Nunua Pamoja #${deal.shareCode} on ${product.name}.`);
     }
     return res;
   };
@@ -11497,67 +11903,127 @@ try {
     if (!part) return { ok: false, error: 'Mshiriki hajapatikana.' };
     const deal = (groupDeals || []).find(d => d.id === part.groupDealId);
     if (!deal) return { ok: false, error: 'Group deal haipatikani.' };
+    const product = (marketplaceProducts || []).find(p => p.id === deal.productId);
 
+    const targetAmount = deal.targetTotalAmount || deal.soloPrice || product?.price || deal.groupPrice;
+    const paymentAmount = part.amountPaid && part.amountPaid > 0 ? part.amountPaid : deal.groupPrice;
     const nowIso = new Date().toISOString();
     const updatedParticipants = (groupDealParticipants || []).map(p => p.id === participantId ? {
       ...p,
       status: 'paid' as const,
-      amountPaid: deal.groupPrice,
+      amountPaid: paymentAmount,
+      percentageOfTotal: targetAmount > 0 ? Math.round((paymentAmount / targetAmount) * 100) : 0,
       paidAt: nowIso
     } : p);
 
-    const paidNum = updatedParticipants.filter(p => p.groupDealId === deal.id && p.status === 'paid').length;
-    const isCompleted = paidNum >= deal.minBuyers;
+    const allPaidParts = updatedParticipants.filter(p => p.groupDealId === deal.id && p.status === 'paid');
+    const totalPaid = allPaidParts.reduce((s, p) => s + (p.amountPaid || 0), 0);
+    const remaining = Math.max(0, targetAmount - totalPaid);
+    const isReadyForDelivery = remaining <= 0;
+    const isCompleted = isReadyForDelivery || allPaidParts.length >= deal.minBuyers;
+
+    const tracking = deal.deliveryTrackingCode || `BODA-GRP-${deal.id}-${Math.floor(1000 + Math.random() * 9000)}`;
+
     const updatedDeals = (groupDeals || []).map(d => d.id === deal.id ? {
       ...d,
-      paidCount: paidNum,
+      paidCount: allPaidParts.length,
       currentBuyersCount: Math.max(d.currentBuyersCount || 0, updatedParticipants.filter(p => p.groupDealId === deal.id).length),
+      targetTotalAmount: targetAmount,
+      totalPaidAmount: totalPaid,
+      remainingAmount: remaining,
+      isReadyForDelivery,
+      deliveryTrackingCode: isReadyForDelivery ? tracking : d.deliveryTrackingCode,
       status: isCompleted ? ('completed' as const) : d.status
     } : d);
 
     let nextDeliveries = deliveries || [];
     let nextDeliveryUpdates = deliveryUpdates || [];
 
-    if (isCompleted) {
-      const paidParts = updatedParticipants.filter(p => p.groupDealId === deal.id && p.status === 'paid');
-      paidParts.forEach(p => {
-        const alreadyHasDeliv = nextDeliveries.some(d => d.customerPhone === p.customerPhone && (d.orderId === p.orderId || d.trackingCode.includes(`GRP-${deal.id}-${p.id}`)));
-        if (!alreadyHasDeliv) {
-          const tracking = `BODA-GRP-${deal.id}-${p.id}-${Math.floor(1000 + Math.random() * 9000)}`;
-          const deliv: Delivery = {
-            id: Date.now() + Math.floor(Math.random() * 1000),
-            orderId: p.orderId || (Date.now() + Math.floor(Math.random() * 1000)),
-            companyId: deal.companyId,
-            customerName: p.customerName,
-            customerPhone: p.customerPhone,
-            customerAddress: [p.customerRegion && `Mkoa: ${p.customerRegion}`, p.customerDistrict && `Wilaya: ${p.customerDistrict}`, p.customerWard && `Kata: ${p.customerWard}`, p.customerStreet && `Mtaa: ${p.customerStreet}`].filter(Boolean).join(', ') || 'Dar es Salaam, Tanzania',
-            status: 'pending',
-            trackingCode: tracking,
-            createdAt: nowIso,
-            updatedAt: nowIso
-          };
-          nextDeliveries = [deliv, ...nextDeliveries];
-          nextDeliveryUpdates = [{
-            id: Date.now() + Math.floor(Math.random() * 1000),
-            deliveryId: deliv.id,
-            status: 'pending',
-            note: `Nunua Pamoja #${deal.shareCode} imekamilika! Agizo la kupeleka bidhaa limeundwa kiotomatiki.`,
-            createdAt: nowIso
-          }, ...nextDeliveryUpdates];
-          logNotification(p.customerPhone, `Nunua Pamoja #${deal.shareCode} imekamilika! Agizo lako la bodaboda limeundwa (${tracking}). Muuzaji anakabidhi rider sasa.`, 'sms', `/track/${tracking}`);
-        }
-      });
+    let nextMpOrders = marketplaceOrders || [];
+    if (isReadyForDelivery) {
+      const existingMpOrder = nextMpOrders.find(o => o.deliveryInstructions?.includes(`GROUP-${deal.id}`));
+      if (existingMpOrder) {
+        nextMpOrders = nextMpOrders.map(o => o.id === existingMpOrder.id ? {
+          ...o,
+          status: 'delivered' as const,
+          paymentStatus: 'completed',
+          deliveredAt: nowIso,
+          orderSource: 'smart_selling'
+        } : o);
+      } else {
+        const orderNumber = generateOrderNumber();
+        const newMpOrder: MarketplaceOrder = {
+          id: Date.now() + Math.floor(Math.random() * 1000),
+          orderNumber,
+          companyId: deal.companyId,
+          customerName: deal.deliveryRecipientName || part.customerName || deal.creatorName || 'Mnunuzi wa Nunua Pamoja',
+          customerPhone: deal.deliveryRecipientPhone || part.customerPhone || deal.creatorPhone || '',
+          customerRegion: part.customerRegion || 'Dar es Salaam',
+          customerDistrict: part.customerDistrict || '',
+          customerWard: part.customerWard || '',
+          customerStreet: part.customerStreet || '',
+          deliveryInstructions: `[Smart Selling POS - Nunua Pamoja #${deal.shareCode}] FEATURE-REF: GROUP-${deal.id}`,
+          totalAmount: totalPaid || targetAmount,
+          amountPaid: totalPaid || targetAmount,
+          paymentMethodType: 'mpesa',
+          transactionId: `GRP-DEAL-${deal.id}`,
+          status: 'delivered',
+          deliveredAt: nowIso,
+          orderSource: 'smart_selling',
+          paymentStatus: 'completed',
+          customerType: 'guest',
+          createdAt: nowIso,
+          items: [{
+            productId: deal.productId,
+            productName: product?.name || 'Bidhaa ya Nunua Pamoja',
+            productImage: product?.image || undefined,
+            quantity: 1,
+            unitPrice: totalPaid || targetAmount,
+            subtotal: totalPaid || targetAmount
+          }]
+        };
+        nextMpOrders = [newMpOrder, ...nextMpOrders];
+      }
+
+      const alreadyHasDeliv = nextDeliveries.some(d => d.trackingCode.includes(`GRP-${deal.id}`));
+      if (!alreadyHasDeliv) {
+        const deliv: Delivery = {
+          id: Date.now() + Math.floor(Math.random() * 1000),
+          orderId: part.orderId || (Date.now() + Math.floor(Math.random() * 1000)),
+          companyId: deal.companyId,
+          customerName: deal.deliveryRecipientName || part.customerName || deal.creatorName || 'Mnunuzi wa Nunua Pamoja',
+          customerPhone: deal.deliveryRecipientPhone || part.customerPhone || deal.creatorPhone || '',
+          customerAddress: deal.deliveryAddress || [part.customerRegion, part.customerDistrict, part.customerWard, part.customerStreet].filter(Boolean).join(', ') || 'Dar es Salaam, Tanzania',
+          status: 'pending',
+          trackingCode: tracking,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        };
+        nextDeliveries = [deliv, ...nextDeliveries];
+        nextDeliveryUpdates = [{
+          id: Date.now() + Math.floor(Math.random() * 1000),
+          deliveryId: deliv.id,
+          status: 'pending',
+          note: `🎉 Nunua Pamoja #${deal.shareCode} imekamilika kwa 100%! Bidhaa iko TAYARI KUSAFIRISHWA.`,
+          createdAt: nowIso
+        }, ...nextDeliveryUpdates];
+
+        allPaidParts.forEach(p => {
+          logNotification(p.customerPhone, `🎉 Nunua Pamoja #${deal.shareCode} imekamilika 100%! Mzigo uko TAYARI KUSAFIRISHWA (${tracking}).`, 'sms', `/track/${tracking}`);
+        });
+      }
     } else {
-      logNotification(part.customerPhone, `Malipo yako ya Nunua Pamoja #${deal.shareCode} (TZS ${deal.groupPrice.toLocaleString()}) yamethibitishwa na muuzaji! Wamebaki ${deal.minBuyers - paidNum} ili agizo litumwe.`, 'sms', `/group-deal/${deal.id}`);
+      logNotification(part.customerPhone, `Malipo yako ya Nunua Pamoja #${deal.shareCode} (TZS ${paymentAmount.toLocaleString()}) yamethibitishwa na muuzaji! Zimebaki TZS ${remaining.toLocaleString()} kulipwa ili bidhaa itumwe.`, 'sms', `/group-deal/${deal.id}`);
     }
 
     saveAllData({
       groupDealParticipants: updatedParticipants,
       groupDeals: updatedDeals,
       deliveries: nextDeliveries,
-      deliveryUpdates: nextDeliveryUpdates
+      deliveryUpdates: nextDeliveryUpdates,
+      marketplaceOrders: nextMpOrders
     });
-    logAction('Group Deal Payment Verified', `Seller verified payment of TZS ${deal.groupPrice.toLocaleString()} for participant ${part.customerPhone} on deal #${deal.shareCode}.`);
+    logAction('Group Deal Payment Verified', `Seller verified payment of TZS ${paymentAmount.toLocaleString()} for participant ${part.customerPhone} on deal #${deal.shareCode}. Remaining: TZS ${remaining.toLocaleString()}.`);
     return { ok: true };
   };
 
@@ -11568,9 +12034,57 @@ try {
     const updatedDeals = (groupDeals || []).map(d => d.id === dealId ? { ...d, status } : d);
     let nextDeliveries = deliveries || [];
     let nextDeliveryUpdates = deliveryUpdates || [];
+    let nextMpOrders = marketplaceOrders || [];
 
     if (status === 'completed') {
+      const product = marketplaceProducts.find(p => p.id === deal.productId);
       const paidParts = (groupDealParticipants || []).filter(p => p.groupDealId === deal.id && p.status === 'paid');
+      const totalPaidAmount = paidParts.reduce((s, p) => s + (p.amountPaid || 0), 0) || deal.groupPrice;
+
+      const existingMpOrder = nextMpOrders.find(o => o.deliveryInstructions?.includes(`GROUP-${deal.id}`));
+      if (existingMpOrder) {
+        nextMpOrders = nextMpOrders.map(o => o.id === existingMpOrder.id ? {
+          ...o,
+          status: 'delivered' as const,
+          paymentStatus: 'completed',
+          deliveredAt: nowIso,
+          orderSource: 'smart_selling'
+        } : o);
+      } else {
+        const orderNumber = generateOrderNumber();
+        const newMpOrder: MarketplaceOrder = {
+          id: Date.now() + Math.floor(Math.random() * 1000),
+          orderNumber,
+          companyId: deal.companyId,
+          customerName: deal.deliveryRecipientName || deal.creatorName || 'Mnunuzi wa Nunua Pamoja',
+          customerPhone: deal.deliveryRecipientPhone || deal.creatorPhone || '',
+          customerRegion: 'Dar es Salaam',
+          customerDistrict: '',
+          customerWard: '',
+          customerStreet: deal.deliveryAddress || '',
+          deliveryInstructions: `[Smart Selling POS - Nunua Pamoja #${deal.shareCode}] FEATURE-REF: GROUP-${deal.id}`,
+          totalAmount: totalPaidAmount,
+          amountPaid: totalPaidAmount,
+          paymentMethodType: 'mpesa',
+          transactionId: `GRP-DEAL-${deal.id}`,
+          status: 'delivered',
+          deliveredAt: nowIso,
+          orderSource: 'smart_selling',
+          paymentStatus: 'completed',
+          customerType: 'guest',
+          createdAt: nowIso,
+          items: [{
+            productId: deal.productId,
+            productName: product?.name || 'Bidhaa ya Nunua Pamoja',
+            productImage: product?.image || undefined,
+            quantity: 1,
+            unitPrice: totalPaidAmount,
+            subtotal: totalPaidAmount
+          }]
+        };
+        nextMpOrders = [newMpOrder, ...nextMpOrders];
+      }
+
       paidParts.forEach(p => {
         const alreadyHasDeliv = nextDeliveries.some(d => d.customerPhone === p.customerPhone && (d.orderId === p.orderId || d.trackingCode.includes(`GRP-${deal.id}-${p.id}`)));
         if (!alreadyHasDeliv) {
@@ -11607,9 +12121,10 @@ try {
     saveAllData({
       groupDeals: updatedDeals,
       deliveries: nextDeliveries,
-      deliveryUpdates: nextDeliveryUpdates
+      deliveryUpdates: nextDeliveryUpdates,
+      marketplaceOrders: nextMpOrders
     });
-    logAction('Group Deal Closed', `Group deal #${deal.shareCode} closed with status ${status}.`);
+    logAction('Group Deal Closed', `Group deal #${deal.shareCode} closed with status ${status}. Automatically synced to Marketplace Orders.`);
     return { ok: true };
   };
 
@@ -12008,9 +12523,60 @@ try {
       nextDueDate
     } : o);
 
+    let nextMpOrders = marketplaceOrders || [];
+    if (isCompleted) {
+      const existingMpOrder = nextMpOrders.find(o => o.deliveryInstructions?.includes(`LP-${order.id}`));
+      if (existingMpOrder) {
+        nextMpOrders = nextMpOrders.map(o => o.id === existingMpOrder.id ? {
+          ...o,
+          status: 'delivered' as const,
+          paymentStatus: 'completed',
+          deliveredAt: nowIso,
+          orderSource: 'smart_selling',
+          totalAmount: nextTotalPaid,
+          amountPaid: nextTotalPaid
+        } : o);
+      } else {
+        const product = marketplaceProducts.find(p => p.id === order.productId);
+        const orderNumber = generateOrderNumber();
+        const newMpOrder: MarketplaceOrder = {
+          id: Date.now() + Math.floor(Math.random() * 1000),
+          orderNumber,
+          companyId: order.companyId,
+          customerName: order.customerName,
+          customerPhone: order.customerPhone,
+          customerRegion: 'Dar es Salaam',
+          customerDistrict: '',
+          customerWard: '',
+          customerStreet: '',
+          deliveryInstructions: `[Smart Selling POS - Lipa Pole Pole #${order.trackingCode}] FEATURE-REF: LP-${order.id}`,
+          totalAmount: nextTotalPaid,
+          amountPaid: nextTotalPaid,
+          paymentMethodType: 'installment',
+          transactionId: input.transactionId || `LP-${order.id}`,
+          status: 'delivered',
+          deliveredAt: nowIso,
+          orderSource: 'smart_selling',
+          paymentStatus: 'completed',
+          customerType: 'guest',
+          createdAt: nowIso,
+          items: [{
+            productId: order.productId,
+            productName: product?.name || 'Bidhaa ya Lipa Pole Pole',
+            productImage: product?.image || undefined,
+            quantity: 1,
+            unitPrice: nextTotalPaid,
+            subtotal: nextTotalPaid
+          }]
+        };
+        nextMpOrders = [newMpOrder, ...nextMpOrders];
+      }
+    }
+
     saveAllData({
       installmentOrders: updatedOrders,
-      installmentPayments: [payment, ...(installmentPayments || [])]
+      installmentPayments: [payment, ...(installmentPayments || [])],
+      marketplaceOrders: nextMpOrders
     });
 
     logNotification(order.customerPhone, `Malipo ya awamu #${input.paymentIndex} (TZS ${input.amount.toLocaleString()}) ya Lipa Pole Pole #${order.trackingCode} yamerekodiwa! Baki: TZS ${nextRemaining.toLocaleString()}.${input.transactionId ? ` Muamala: ${input.transactionId}` : ''}`, 'sms', `/lipa-pole-pole/${order.trackingCode}`);
@@ -12019,14 +12585,30 @@ try {
       logNotification(order.customerPhone, `Hongera sana! Umekamilisha malipo yote ya Lipa Pole Pole #${order.trackingCode}. Bidhaa yako inatolewa sasa!`, 'sms', `/lipa-pole-pole/${order.trackingCode}`);
     }
 
-    logAction('Manual Installment Recorded', `Seller recorded installment payment of TZS ${input.amount.toLocaleString()} for order #${order.trackingCode} (TxID: ${input.transactionId || '-'}).`);
+    logAction('Manual Installment Recorded', `Seller recorded installment payment of TZS ${input.amount.toLocaleString()} for order #${order.trackingCode} (TxID: ${input.transactionId || '-'}). Automatically synced to Marketplace Orders.`);
     return { ok: true };
   };
 
   const updateInstallmentOrderStatus = (orderId: number, status: InstallmentOrderStatus): void => {
     const updatedOrders = (installmentOrders || []).map(o => o.id === orderId ? { ...o, status } : o);
-    saveAllData({ installmentOrders: updatedOrders });
     const order = (installmentOrders || []).find(o => o.id === orderId);
+    let nextMpOrders = marketplaceOrders || [];
+    const nowIso = new Date().toISOString();
+
+    if (order && status === 'completed') {
+      const existingMpOrder = nextMpOrders.find(o => o.deliveryInstructions?.includes(`LP-${order.id}`));
+      if (existingMpOrder) {
+        nextMpOrders = nextMpOrders.map(o => o.id === existingMpOrder.id ? {
+          ...o,
+          status: 'delivered' as const,
+          paymentStatus: 'completed',
+          deliveredAt: nowIso,
+          orderSource: 'smart_selling'
+        } : o);
+      }
+    }
+
+    saveAllData({ installmentOrders: updatedOrders, marketplaceOrders: nextMpOrders });
     if (order) {
       if (status === 'completed') {
         logNotification(order.customerPhone, `Agizo lako la Lipa Pole Pole #${order.trackingCode} limewekwa kama limekamilika na muuzaji. Asante!`, 'sms');
@@ -12034,7 +12616,7 @@ try {
         logNotification(order.customerPhone, `Tahadhari: Malipo ya Lipa Pole Pole #${order.trackingCode} yamechelewa. Tafadhali wasiliana na muuzaji kuepuka kughairiwa.`, 'sms');
       }
     }
-    logAction('Installment Order Status Updated', `Order #${orderId} status changed to ${status}.`);
+    logAction('Installment Order Status Updated', `Order #${orderId} status changed to ${status}. Synced to Marketplace Orders.`);
   };
 
   // ---------- 6. LIVE SHOPPING (TikTok-style) ----------
@@ -16167,16 +16749,28 @@ try {
             onDeleteContactMessage={handleDeleteContactMessage}
           />
         );
-      case 'seller-wallet':
+      case 'seller-wallet': {
+        const walletComp = (currentUser?.companyId ? companies.find(c => c.id === currentUser.companyId) : null) ||
+          (currentCompanyId ? companies.find(c => c.id === currentCompanyId) : null) ||
+          companies[0] || null;
+        const targetCompanyId = walletComp?.id || 0;
         return (
           <SellerWalletPanel
-            company={currentUser?.companyId ? companies.find(c => c.id === currentUser.companyId) || null : null}
-            wallet={getWalletForCompany(currentUser?.companyId || 0)}
-            transactions={(walletTransactions || []).filter(t => t.companyId === currentUser?.companyId)}
+            company={walletComp}
+            companies={companies}
+            currentUser={currentUser}
+            wallet={getWalletForCompany(targetCompanyId)}
+            transactions={(walletTransactions || []).filter(t => sameId(t.companyId, targetCompanyId))}
+            withdrawals={withdrawals || []}
             translate={t}
             onRequestWithdrawal={requestSellerWithdrawal}
+            onApproveWithdrawal={(wId) => decideSellerWithdrawal(wId, 'approved')}
+            onRejectWithdrawal={(wId, note) => decideSellerWithdrawal(wId, 'rejected', note)}
+            onCreditWallet={(cid, amt, desc) => creditSellerWallet(cid, amt, desc)}
+            onSelectCompany={(cid) => setCurrentCompanyId(cid)}
           />
         );
+      }
       case 'seller-phase2c': {
         const sellerComp = (currentUser?.companyId ? companies.find(c => c.id === currentUser.companyId) : null) ||
           (currentCompanyId ? companies.find(c => c.id === currentCompanyId) : null) ||
@@ -16222,6 +16816,8 @@ try {
             onStartLiveStream={startLiveStream}
             onEndLiveStream={endLiveStream}
             onAddLiveComment={addLiveComment}
+            onCompleteOfferSale={completeOfferSale}
+            onRecordSmartSale={recordSmartDirectSale}
           />
         );
       }
@@ -16250,6 +16846,7 @@ try {
           <AffiliateProgramPanel
             user={currentUser}
             affiliate={currentUser ? getOrCreateAffiliateForUser(currentUser) : undefined}
+            affiliates={affiliates}
             clicks={affiliateClicks}
             sales={affiliateSales}
             withdrawals={affiliateWithdrawals}
@@ -16257,6 +16854,10 @@ try {
             commissionPercent={settings.affiliateCommissionPercent ?? defaultAffiliateCommissionPercent}
             translate={t}
             onRequestWithdrawal={requestAffiliateWithdrawal}
+            onCreateAgent={createAffiliateAgent}
+            onUpdateAgent={updateAffiliateAgent}
+            onDeleteAgent={deleteAffiliateAgent}
+            onDecideWithdrawal={decideAffiliateWithdrawal}
           />
         );
       case 'marketplace-orders':
@@ -16304,8 +16905,16 @@ try {
             products={msProducts}
             stores={(() => {
               const coIdStr = msCompanyId != null ? String(msCompanyId) : (currentUser?.companyId != null ? String(currentUser.companyId) : null);
-              const companyBranchIds = new Set(branches.filter(b => String(b.companyId ?? (b as any).company_id ?? '') === coIdStr).map(b => b.id));
-              return stores.filter(s => !s.isDeleted && companyBranchIds.has(s.branchId));
+              const companyBranchIds = new Set(branches.filter(b => String(b.companyId ?? (b as any).company_id ?? '') === coIdStr).map(b => String(b.id)));
+              return stores.filter(s => {
+                if (s.isDeleted) return false;
+                if (!coIdStr) return true;
+                if (String((s as any).companyId ?? (s as any).company_id ?? '') === coIdStr) return true;
+                if (s.branchId != null && companyBranchIds.has(String(s.branchId))) return true;
+                const b = branches.find(br => String(br.id) === String(s.branchId));
+                if (b && String(b.companyId ?? (b as any).company_id ?? '') === coIdStr) return true;
+                return false;
+              });
             })()}
             clicks={marketplaceClicks}
             reviews={reviews}
@@ -16318,6 +16927,7 @@ try {
             onDeletePaymentMethod={deleteMarketplacePaymentMethod}
             onSaveProduct={saveMarketplaceProduct}
             onDeleteProduct={deleteMarketplaceProduct}
+            onSaveStore={saveStore}
             // --- MEGA BUILD: 7 ultimate features company panel props ---
             flashSales={flashSales.filter(fs => fs.companyId === (msCompanyId ?? currentUser?.companyId))}
             flashSalesHandlers={{ onSave: saveFlashSale, onDelete: deleteFlashSale }}
@@ -16604,7 +17214,9 @@ try {
             onAddLiveComment: (streamId, input) => addLiveComment(streamId, input),
             onLikeLiveStream: (streamId) => likeLiveStream(streamId),
             onRedeemLoyalty: (phone) => redeemLoyaltyPoints(phone),
-            onWhatsappMessage: (phone, message) => handleWhatsappMessage(phone, message)
+            onWhatsappMessage: (phone, message) => handleWhatsappMessage(phone, message),
+            onUpdateDeliveryStatus: (delivId, status, note) => updateDeliveryStatus(delivId, status, note),
+            onUpdateDeliveryLocation: (delivId, lat, lng) => updateDeliveryLocation(delivId, lat, lng)
           }}
           // --- MEGA ULTIMATE: MFUMO WA WAKALA · TAFTA KWA SAUTI · QR CODE YA DUKA ---
           affiliates={affiliates}
@@ -16638,7 +17250,13 @@ try {
           chatHandlers={{
             onSend: (convId, input) => sendChatMessage(convId, 'buyer', localStorage.getItem('tradecore_chat_name') || 'Mteja', input),
             onMarkRead: (convId) => markChatRead(convId, 'buyer'),
-            onStartConversation: (companyId, buyerName, buyerPhone, productId) => startChatConversation(companyId, buyerName, buyerPhone, productId)
+            onStartConversation: (companyId, buyerName, buyerPhone, productId) => startChatConversation(companyId, buyerName, buyerPhone, productId),
+            onUpdateConversationProduct: (convId, prodId) => {
+              const cur = dbStateRef.current;
+              saveAllData({
+                chatConversations: (cur.chatConversations || []).map(c => c.id === convId ? { ...c, productId: prodId } : c)
+              });
+            }
           }}
           appNotifications={appNotifications}
           notificationHandlers={{ onMarkAllRead: () => markAllNotificationsRead(localStorage.getItem('tradecore_buyer_phone') || null) }}

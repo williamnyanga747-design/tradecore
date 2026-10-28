@@ -3,7 +3,7 @@ import {
   ChevronLeft, HandCoins, Users, CalendarClock, Radio, Heart, MessageCircle, Send,
   MapPin, Navigation, Truck, Smartphone, CheckCircle2, Loader2, ShieldCheck, Clock,
   Gift, Star, Play, Bot, Copy, ExternalLink, ShoppingCart, Upload, Image, X, Plus,
-  Share2, Check, Search, Sparkles
+  Share2, Check, Search, Sparkles, Bike, Receipt, Printer, Phone, RefreshCw
 } from 'lucide-react';
 import {
   Company, MarketplaceProduct, Offer, GroupDeal, GroupDealParticipant,
@@ -33,11 +33,15 @@ export interface FeatureHandlers {
     title?: string; isBuyerCreated?: boolean;
     customerName?: string; customerPhone?: string; customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
     transactionId?: string; receiptImage?: string; network?: CollectionNetwork;
+    targetTotalAmount?: number; initialContribution?: number;
+    deliveryRecipientName?: string; deliveryRecipientPhone?: string; deliveryAddress?: string;
   }) => { ok: boolean; dealId?: number; shareCode?: string; error?: string };
   onJoinGroupDeal: (dealId: number, input: {
     customerName: string; customerPhone: string;
     customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
     transactionId?: string; receiptImage?: string;
+    contributionAmount?: number;
+    network?: CollectionNetwork;
   }) => {
     ok: boolean; reference?: string; error?: string; alreadyPaid?: boolean;
   };
@@ -45,6 +49,8 @@ export interface FeatureHandlers {
     customerName?: string; customerPhone?: string;
     customerRegion?: string; customerDistrict?: string; customerWard?: string; customerStreet?: string;
     transactionId?: string; receiptImage?: string;
+    contributionAmount?: number;
+    note?: string;
   }, network?: CollectionNetwork) => { ok: boolean; reference?: string; error?: string };
   onCreateInstallmentOrder: (input: {
     productId: number; companyId: number; installmentPlanId?: number;
@@ -63,6 +69,8 @@ export interface FeatureHandlers {
   onLikeLiveStream: (streamId: number) => void;
   onRedeemLoyalty: (phone: string) => { ok: boolean; code?: string; valueTzs?: number; error?: string };
   onWhatsappMessage: (phone: string, message: string) => WhatsappConversation | null;
+  onUpdateDeliveryStatus?: (deliveryId: number, status: Delivery['status'], note?: string) => void;
+  onUpdateDeliveryLocation?: (deliveryId: number, lat: number, lng: number) => void;
 }
 
 interface Props {
@@ -140,6 +148,9 @@ export function PaymentModal(props: {
   prefillWard?: string;
   prefillStreet?: string;
   isInstallmentMilestone?: boolean;
+  isCrowdfundGroupBuy?: boolean;
+  targetTotalAmount?: number;
+  remainingAmount?: number;
   networks: CollectionSetting[];
   note?: string;
   onClose: () => void;
@@ -149,6 +160,7 @@ export function PaymentModal(props: {
     network: CollectionNetwork;
     transactionId?: string;
     receiptImage?: string;
+    contributionAmount?: number;
   }) => { ok: boolean; reference?: string; error?: string };
 }) {
   const { th, t, milk } = props;
@@ -160,12 +172,17 @@ export function PaymentModal(props: {
   const [ward, setWard] = useState(props.prefillWard || '');
   const [street, setStreet] = useState(props.prefillStreet || '');
   const [network, setNetwork] = useState<CollectionNetwork>(activeNetworks[0]?.network || 'mpesa');
+  const [customPayAmount, setCustomPayAmount] = useState<number>(props.amount || 0);
   const [transactionId, setTransactionId] = useState('');
   const [receiptImage, setReceiptImage] = useState<string | undefined>();
   const [error, setError] = useState('');
   const [result, setResult] = useState<{ ok: boolean; reference?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setCustomPayAmount(props.amount || 0);
+  }, [props.amount]);
 
   const selected = activeNetworks.find(n => n.network === network);
 
@@ -193,6 +210,12 @@ export function PaymentModal(props: {
     }
     const effectiveRegion = region || props.prefillRegion || (props.isInstallmentMilestone ? 'Dar es Salaam' : '');
     if (!effectiveRegion) return setError(t('Tafadhali chagua mkoa wako kwa ajili ya usafirishaji.'));
+
+    const effectiveAmount = props.isCrowdfundGroupBuy ? customPayAmount : props.amount;
+    if (props.isCrowdfundGroupBuy && (!effectiveAmount || effectiveAmount <= 0)) {
+      return setError(t('Weka kiasi unacholipa kupunguza bei ya bidhaa (angalau TZS 1,000).'));
+    }
+
     setBusy(true);
     const res = props.onPay({
       customerName: effectiveName,
@@ -203,7 +226,8 @@ export function PaymentModal(props: {
       customerStreet: street.trim() || props.prefillStreet || '',
       network,
       transactionId: transactionId.trim() || undefined,
-      receiptImage
+      receiptImage,
+      contributionAmount: effectiveAmount
     });
     setBusy(false);
     if (!res.ok || !res.reference) return setError(res.error || t('Kumetokea hitilafu. Tafadhali jaribu tena.'));
@@ -249,15 +273,104 @@ export function PaymentModal(props: {
               <button onClick={() => props.onClose()} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-black/5`}>✕</button>
             </div>
 
-            <div className={`rounded-xl border ${milk ? 'border-amber-200 bg-amber-50' : 'border-amber-500/30 bg-amber-500/10'} px-4 py-2.5 flex items-center justify-between`}>
-              <div>
-                <span className={`text-[10px] font-bold uppercase tracking-wider ${th.textMuted}`}>{t('Kiasi cha Kulipa')}</span>
-                <div className={`text-lg font-black ${th.statValue}`}>{TZS(props.amount)}</div>
+            {props.isCrowdfundGroupBuy ? (
+              <div className={`rounded-2xl border p-4 space-y-3 ${milk ? 'border-indigo-200 bg-indigo-50/70' : 'border-indigo-500/30 bg-indigo-500/10'}`}>
+                <div className="flex items-center justify-between text-xs">
+                  <div>
+                    <span className={`text-[10px] font-bold uppercase tracking-wider ${th.textMuted}`}>{t('Bei Kamili ya Bidhaa')}</span>
+                    <div className="text-xs font-black text-gray-800">{TZS(props.targetTotalAmount || props.amount)}</div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-600">{t('Kiasi Kilichobaki')}</span>
+                    <div className="text-sm font-black text-amber-600">{TZS(props.remainingAmount ?? props.amount)}</div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-black text-indigo-950 block mb-1">
+                    {t('Weka kiasi unacholipa kupunguza bei ya bidhaa')} (TZS) *
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min={1000}
+                      max={props.remainingAmount || props.amount}
+                      value={customPayAmount || ''}
+                      onChange={e => {
+                        const val = Math.max(0, Number(e.target.value));
+                        setCustomPayAmount(val);
+                      }}
+                      className={`${th.input} text-base font-black pl-14 text-indigo-700`}
+                      placeholder="0"
+                    />
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-black text-gray-400">TZS</span>
+                  </div>
+                </div>
+
+                {/* Quick deduction chips */}
+                {props.remainingAmount && props.remainingAmount > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap pt-1 text-[10px] font-bold">
+                    <span className="text-gray-500 text-[10px]">{t('Chagua haraka')}:</span>
+                    <button
+                      type="button"
+                      onClick={() => setCustomPayAmount(props.remainingAmount!)}
+                      className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-black cursor-pointer hover:bg-emerald-700 shadow-xs"
+                    >
+                      {t('Lipa Yote')} ({TZS(props.remainingAmount)})
+                    </button>
+                    {props.remainingAmount > 5000 && (
+                      <button
+                        type="button"
+                        onClick={() => setCustomPayAmount(Math.round(props.remainingAmount! * 0.5))}
+                        className="px-2.5 py-1 rounded-lg bg-indigo-100 text-indigo-800 hover:bg-indigo-200 cursor-pointer"
+                      >
+                        50% ({TZS(Math.round(props.remainingAmount * 0.5))})
+                      </button>
+                    )}
+                    {props.remainingAmount > 10000 && (
+                      <button
+                        type="button"
+                        onClick={() => setCustomPayAmount(Math.round(props.remainingAmount! * 0.25))}
+                        className="px-2.5 py-1 rounded-lg bg-indigo-100 text-indigo-800 hover:bg-indigo-200 cursor-pointer"
+                      >
+                        25% ({TZS(Math.round(props.remainingAmount * 0.25))})
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Live balance deduction preview */}
+                <div className="p-2.5 rounded-xl bg-white/90 border border-indigo-200 text-xs space-y-1">
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-gray-700">
+                    <span>{t('Kiasi unacholipa sasa')}:</span>
+                    <span className="font-black text-emerald-600">{TZS(customPayAmount)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-gray-700 border-t border-gray-100 pt-1">
+                    <span>{t('Kiasi kitakachobaki kulipwa na mwingine')}:</span>
+                    <span className="font-black text-amber-600">{TZS(Math.max(0, (props.remainingAmount ?? props.amount) - customPayAmount))}</span>
+                  </div>
+                  {customPayAmount >= (props.remainingAmount ?? props.amount) ? (
+                    <div className="text-[10px] font-bold text-emerald-700 pt-1 flex items-center gap-1">
+                      <Sparkles className="w-3.5 h-3.5" /> {t('Hongera! Malipo haya yatakamilisha 100% ya bei ya bidhaa na mzigo utakuwa tayari kusafirishwa!')}
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-gray-500 pt-0.5">
+                      {t('Kiasi hiki kitakatwa mara moja kutoka kwenye jumla ya bei ya bidhaa.')}
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="text-right text-[10px] text-emerald-600 font-bold bg-emerald-100 px-2.5 py-1 rounded-lg">
-                ✓ Bei Iliyokubaliwa
+            ) : (
+              <div className={`rounded-xl border ${milk ? 'border-amber-200 bg-amber-50' : 'border-amber-500/30 bg-amber-500/10'} px-4 py-2.5 flex items-center justify-between`}>
+                <div>
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${th.textMuted}`}>{t('Kiasi cha Kulipa')}</span>
+                  <div className={`text-lg font-black ${th.statValue}`}>{TZS(props.amount)}</div>
+                </div>
+                <div className="text-right text-[10px] text-emerald-600 font-bold bg-emerald-100 px-2.5 py-1 rounded-lg">
+                  ✓ Bei Iliyokubaliwa
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Buyer Contact & Location Fields */}
             {props.isInstallmentMilestone ? (
@@ -513,6 +626,7 @@ function GroupDealPage(props: Props) {
   const [payOpen, setPayOpen] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [showManifestModal, setShowManifestModal] = useState(false);
 
   if (!deal) return <NotFound th={th} t={t} onBack={props.onBack} label={t('The deal does not exist.')} />;
   const product = props.products.find(p => p.id === deal.productId);
@@ -536,17 +650,30 @@ function GroupDealPage(props: Props) {
   }, []);
 
   const participants = props.groupDealParticipants.filter(p => String(p.groupDealId) === String(deal.id));
-  const paidCount = participants.filter(p => p.status === 'paid').length;
-  const remaining = Math.max(0, deal.minBuyers - paidCount);
-  const progress = Math.min(100, Math.round((paidCount / deal.minBuyers) * 100));
+  const paidParticipants = participants.filter(p => p.status === 'paid');
+  const paidCount = paidParticipants.length;
+
+  // Crowdfund Split-Deduct Calculations
+  const targetTotalAmount = deal.targetTotalAmount || deal.soloPrice || product?.price || deal.groupPrice;
+  const totalPaidSoFar = deal.totalPaidAmount !== undefined && deal.totalPaidAmount !== null
+    ? deal.totalPaidAmount
+    : paidParticipants.reduce((sum, p) => sum + (p.amountPaid || 0), 0);
+  const remainingAmount = Math.max(0, targetTotalAmount - totalPaidSoFar);
+  const progress = Math.min(100, Math.round((totalPaidSoFar / Math.max(1, targetTotalAmount)) * 100));
+  const isReadyForDelivery = remainingAmount <= 0 || deal.isReadyForDelivery || deal.status === 'completed';
   const expired = new Date(deal.expiresAt).getTime() < Date.now();
 
-  // Dynamic decreasing pricing per n-th buyer:
-  // Step drop = 3% of group price (min 1,000 TZS), down to a floor of 50% solo price
-  const stepDrop = Math.max(1000, Math.round(deal.groupPrice * 0.03));
-  const floorPrice = Math.round(deal.soloPrice * 0.5);
-  const currentSpotIndex = paidCount; // 0 for 1st buyer, 1 for 2nd buyer, etc.
-  const dynamicNextPrice = Math.max(floorPrice, deal.groupPrice - (currentSpotIndex * stepDrop));
+  // Custom amount the buyer enters to deduct from product price
+  const [enteredAmount, setEnteredAmount] = useState<number>(() => {
+    if (remainingAmount <= 0) return 0;
+    return remainingAmount;
+  });
+
+  useEffect(() => {
+    if (remainingAmount > 0) {
+      setEnteredAmount(prev => (prev <= 0 || prev > remainingAmount ? remainingAmount : prev));
+    }
+  }, [remainingAmount]);
 
   const buyerPhone = props.session?.phone || (typeof window !== 'undefined' ? (localStorage.getItem('tradecore_buyer_phone') || localStorage.getItem('tradecore_chat_phone') || '') : '');
   const cleanBuyer = buyerPhone.replace(/\D/g, '').slice(-9);
@@ -558,7 +685,7 @@ function GroupDealPage(props: Props) {
 
   const groupTitleText = deal.title ? `kwenye "${deal.title}" ` : '';
   const waShareText = encodeURIComponent(
-    `Habari! Nimeanzisha Nunua Pamoja ${groupTitleText}ya bidhaa "${product?.name || 'bidhaa'}" kwa bei nafuu ya TZS ${deal.groupPrice.toLocaleString()} (badala ya ${deal.soloPrice.toLocaleString()}!).\n\nBofya hapa kujiunga nami tukamilishe kikundi:\n${inviteUrl}`
+    `Habari! Tunaungana kuchangia Nunua Pamoja ${groupTitleText}ya bidhaa "${product?.name || 'bidhaa'}" yenye thamani ya TZS ${targetTotalAmount.toLocaleString()}.\n\nZimebaki TZS ${remainingAmount.toLocaleString()} ili bidhaa ikamilike na kutumwa!\nBofya hapa kuandika kiasi chako na kuchangia:\n${inviteUrl}`
   );
 
   const handleCopyCode = () => {
@@ -585,15 +712,15 @@ function GroupDealPage(props: Props) {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className={`text-base font-black ${th.strongText}`}>{product?.name}</h2>
-              {deal.status === 'completed' ? (
-                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3" /> {t('Imekamilika')}
+              {isReadyForDelivery ? (
+                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 flex items-center gap-1 border border-emerald-500/30">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> {t('Tayari Kusafirishwa (100% Imelipwa)')}
                 </span>
               ) : expired ? (
                 <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-gray-500/15 text-gray-500">{t('Imeisha muda')}</span>
               ) : (
                 <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-600 flex items-center gap-1">
-                  <Users className="w-3 h-3" /> Nunua Pamoja (Active)
+                  <Users className="w-3 h-3" /> Nunua Pamoja (Crowdfund Split Pool)
                 </span>
               )}
             </div>
@@ -609,43 +736,94 @@ function GroupDealPage(props: Props) {
               <span>·</span>
               <span className="font-mono font-bold text-gray-700 bg-gray-100 px-2 py-0.5 rounded text-[11px]">Code: {deal.shareCode}</span>
             </div>
-            <div className="flex items-center gap-4 mt-2.5 flex-wrap">
-              <div>
-                <div className={`text-[9px] ${th.textDim} font-bold uppercase`}>{t('Bei ya Kawaida')}</div>
-                <div className={`text-xs font-bold ${th.textMuted} line-through`}>{TZS(deal.soloPrice)}</div>
+
+            {/* Crowdfund Financial Metrics Row */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-3 pt-2 border-t border-gray-100">
+              <div className="p-2.5 rounded-xl bg-gray-50 border border-gray-200/80">
+                <div className={`text-[9px] ${th.textDim} font-bold uppercase`}>{t('Bei Kamili ya Bidhaa')}</div>
+                <div className="text-sm font-black text-gray-900 mt-0.5">{TZS(targetTotalAmount)}</div>
               </div>
-              <div>
-                <div className={`text-[9px] ${th.textDim} font-bold uppercase`}>{t('Bei ya Kikundi')}</div>
-                <div className={`text-lg font-black text-emerald-600`}>{TZS(deal.groupPrice)}</div>
+              <div className="p-2.5 rounded-xl bg-emerald-50/70 border border-emerald-200/80">
+                <div className="text-[9px] text-emerald-800 font-bold uppercase">{t('Jumla Iliyolipwa')} ({progress}%)</div>
+                <div className="text-sm font-black text-emerald-600 mt-0.5">{TZS(totalPaidSoFar)}</div>
               </div>
-              <div>
-                <div className={`text-[9px] ${th.textDim} font-bold uppercase`}>{t('Punguzo Lako')}</div>
-                <div className={`text-sm font-black text-amber-600`}>{TZS(Math.max(0, deal.soloPrice - deal.groupPrice))}</div>
+              <div className={`p-2.5 rounded-xl border ${remainingAmount === 0 ? 'bg-emerald-500/10 border-emerald-300' : 'bg-amber-50/90 border-amber-300'}`}>
+                <div className={`text-[9px] font-bold uppercase ${remainingAmount === 0 ? 'text-emerald-800' : 'text-amber-800'}`}>
+                  {remainingAmount === 0 ? t('Deni Limemalizika') : t('Kiasi Kilichobaki Kulipwa')}
+                </div>
+                <div className={`text-sm font-black mt-0.5 ${remainingAmount === 0 ? 'text-emerald-700' : 'text-amber-600'}`}>
+                  {remainingAmount === 0 ? '✓ 0 TZS (100% Imelipwa)' : TZS(remainingAmount)}
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Progress Bar */}
-        <div className="pt-3 border-t border-gray-100">
-          <div className="flex items-center justify-between text-xs font-black mb-1.5">
-            <span className={th.textMuted}>{paidCount} / {deal.minBuyers} {t('wanunuzi wamelipa')}</span>
-            <span className="text-indigo-600 font-extrabold">{progress}% · {remaining === 0 ? '✓ Lengo limetimia!' : `Bado ${remaining} wakamilishe`}</span>
+        {/* Real-time Crowdfund Progress Bar */}
+        <div className="pt-2 border-t border-gray-100 space-y-1.5">
+          <div className="flex items-center justify-between text-xs font-black">
+            <span className={th.textMuted}>
+              {paidCount} {t('wamechangia')} · <span className="text-gray-900 font-black">{TZS(totalPaidSoFar)}</span> {t('zimepokelewa')}
+            </span>
+            <span className={`font-extrabold ${remainingAmount === 0 ? 'text-emerald-600' : 'text-indigo-600'}`}>
+              {progress}% · {remainingAmount === 0 ? '✓ 100% Imelipwa Kamili!' : `Bado ${TZS(remainingAmount)}`}
+            </span>
           </div>
           <div className={`h-3 rounded-full ${milk ? 'bg-indigo-100' : 'bg-indigo-500/15'} overflow-hidden`}>
-            <div className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full transition-all" style={{ width: `${progress}%` }} />
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${
+                isReadyForDelivery ? 'bg-gradient-to-r from-emerald-500 to-teal-500' : 'bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500'
+              }`}
+              style={{ width: `${progress}%` }}
+            />
           </div>
         </div>
 
-        {/* Completed notification banner */}
-        {deal.status === 'completed' && (
-          <div className="p-3.5 bg-emerald-50 border border-emerald-300 rounded-2xl flex items-center gap-3">
-            <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
-            <div className="flex-1 text-xs">
-              <div className="font-black text-emerald-900">{t('Hongera! Kikundi Kimekamilika Kikamilifu')}</div>
-              <div className="text-emerald-700 text-[11px] font-semibold mt-0.5">
-                {t('Kiwango cha wanunuzi kimefikiwa. Maagizo ya usafirishaji ya Bodaboda yameundwa moja kwa moja na wateja wataarifiwa kwa SMS mzigo ukiwa njiani!')}
+        {/* READY FOR DELIVERY BANNER (Tayari Kusafirishwa) */}
+        {isReadyForDelivery && (
+          <div className="p-4 bg-emerald-50 border-2 border-emerald-500 rounded-2xl flex items-start gap-3.5 shadow-sm">
+            <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+              <CheckCircle2 className="w-6 h-6" />
+            </div>
+            <div className="flex-1 text-xs space-y-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-black text-emerald-950 text-sm uppercase tracking-wide">
+                  🎉 {t('TAYARI KUSAFIRISHWA (READY FOR DELIVERY)')}
+                </span>
+                <span className="bg-emerald-600 text-white text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                  100% Imelipwa
+                </span>
               </div>
+              <p className="text-emerald-800 text-[11px] font-semibold leading-relaxed">
+                {t('Kiasi chote cha bidhaa kimepokelewa! Miamala yote imekamilika kikamilifu na bidhaa iko tayari kupelekwa kwa mpokeaji.')}
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 font-semibold text-[11px] text-emerald-900">
+                <div className="p-2 rounded-xl bg-white border border-emerald-200">
+                  <span className="text-[10px] text-gray-500 block uppercase font-bold">{t('Mpokeaji wa Mzigo')}:</span>
+                  <span className="font-black text-gray-900">{deal.deliveryRecipientName || deal.creatorName || t('Mteja wa Kikundi')}</span>
+                  {deal.deliveryRecipientPhone && <span className="text-gray-500 text-[10px] ml-1">({deal.deliveryRecipientPhone})</span>}
+                </div>
+                <div className="p-2 rounded-xl bg-white border border-emerald-200">
+                  <span className="text-[10px] text-gray-500 block uppercase font-bold">{t('Mahali pa Kupeleka')}:</span>
+                  <span className="font-bold text-gray-900 truncate block">{deal.deliveryAddress || 'Dar es Salaam, Tanzania'}</span>
+                </div>
+              </div>
+              {deal.deliveryTrackingCode && (
+                <div className="flex items-center justify-between gap-2 p-2 bg-emerald-100/70 rounded-xl border border-emerald-300 flex-wrap">
+                  <div className="flex items-center gap-2 font-mono text-[11px]">
+                    <Bike className="w-4 h-4 text-emerald-700" />
+                    <span className="text-gray-600 font-bold">Bodaboda Tracking:</span>
+                    <span className="font-black text-emerald-900">{deal.deliveryTrackingCode}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => props.onNavigate(`/track-delivery/${deal.deliveryTrackingCode}`)}
+                    className="px-3 py-1 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-[10px] font-black cursor-pointer shadow-xs"
+                  >
+                    {t('Fuatilia Bodaboda')}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -656,7 +834,7 @@ function GroupDealPage(props: Props) {
             <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
               <span className="font-black flex items-center gap-1.5 text-gray-900">
                 {myParticipant.status === 'paid' ? (
-                  <><CheckCircle2 className="w-4 h-4 text-emerald-600" /> {t('Ushiriki Wako Umethibitishwa: Umelipa')}</>
+                  <><CheckCircle2 className="w-4 h-4 text-emerald-600" /> {t('Mchango Wako Umethibitishwa: Umelipa')}</>
                 ) : (
                   <><Clock className="w-4 h-4 text-amber-600" /> {t('Umejiunga: Malipo Bado Hayajakamilika')}</>
                 )}
@@ -667,11 +845,13 @@ function GroupDealPage(props: Props) {
             </div>
             {myParticipant.status === 'paid' ? (
               <div className="text-[11px] text-emerald-800">
-                Kiasi kilicholipwa: <span className="font-bold">TZS {myParticipant.amountPaid.toLocaleString()}</span>. Ref: <span className="font-mono font-bold">{myParticipant.reference || '-'}</span>
+                Kiasi ulichochangia: <span className="font-black">TZS {(myParticipant.amountPaid || 0).toLocaleString()}</span>
+                {myParticipant.percentageOfTotal ? <span className="ml-1 font-bold">({myParticipant.percentageOfTotal}% ya bidhaa)</span> : null}
+                . Ref: <span className="font-mono font-bold">{myParticipant.reference || '-'}</span>
               </div>
             ) : (
               <div className="flex items-center justify-between gap-3 mt-2 flex-wrap">
-                <span className="text-[11px] text-amber-800 font-semibold">{t('Kamilisha malipo yako ya')} {TZS(deal.groupPrice)} {t('ili ubaki kwenye kikundi.')}</span>
+                <span className="text-[11px] text-amber-800 font-semibold">{t('Kamilisha malipo yako ili kupunguza kiasi kilichobaki cha bidhaa hii.')}</span>
                 <button
                   type="button"
                   onClick={() => setPayOpen(true)}
@@ -684,19 +864,125 @@ function GroupDealPage(props: Props) {
           </div>
         )}
 
+        {/* CROWDFUND / SPLIT-DEDUCT PAYMENT CONTROLLER (Write Amount You Pay) */}
+        {!isReadyForDelivery && deal.status === 'active' && !expired && (
+          <div className="p-4 rounded-2xl bg-gradient-to-br from-indigo-50/80 via-white to-purple-50/80 border-2 border-indigo-500/40 shadow-sm space-y-3.5">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2 text-xs font-black text-indigo-950">
+                <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center">
+                  <HandCoins className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-black">{t('Andika Kiasi Unacholipa Kupunguza Bei ya Bidhaa')}</div>
+                  <div className="text-[10px] text-gray-500 font-normal">
+                    {t('Kiasi unacholipa kitakatwa mara moja kutoka kwenye jumla ya bidhaa, na kiasi kilichobaki kitalipwa na mwingine.')}
+                  </div>
+                </div>
+              </div>
+              <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-300">
+                {t('Bado')}: {TZS(remainingAmount)}
+              </span>
+            </div>
+
+            {/* Numeric input with live deduction */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-black uppercase tracking-wider text-gray-700 block">
+                {t('Kiasi Unacholipa kwa Bidhaa Hii')} (TZS) *
+              </label>
+              <div className="relative">
+                <input
+                  type="number"
+                  min={1000}
+                  max={remainingAmount}
+                  value={enteredAmount || ''}
+                  onChange={e => {
+                    const val = Math.max(0, Number(e.target.value));
+                    setEnteredAmount(val);
+                  }}
+                  className={`${th.input} text-base font-black pl-14 text-indigo-700 shadow-xs`}
+                  placeholder={String(remainingAmount)}
+                />
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-black text-gray-400">TZS</span>
+              </div>
+            </div>
+
+            {/* Quick amount chips */}
+            <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-bold">
+              <span className="text-gray-500 text-[10px]">{t('Chagua kwa haraka')}:</span>
+              <button
+                type="button"
+                onClick={() => setEnteredAmount(remainingAmount)}
+                className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-black cursor-pointer hover:bg-emerald-700 shadow-xs"
+              >
+                {t('Lipa Yote')} ({TZS(remainingAmount)})
+              </button>
+              {remainingAmount > 10000 && (
+                <button
+                  type="button"
+                  onClick={() => setEnteredAmount(Math.round(remainingAmount * 0.5))}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-100 text-indigo-800 hover:bg-indigo-200 cursor-pointer"
+                >
+                  50% ({TZS(Math.round(remainingAmount * 0.5))})
+                </button>
+              )}
+              {remainingAmount > 20000 && (
+                <button
+                  type="button"
+                  onClick={() => setEnteredAmount(Math.round(remainingAmount * 0.25))}
+                  className="px-2.5 py-1 rounded-lg bg-indigo-100 text-indigo-800 hover:bg-indigo-200 cursor-pointer"
+                >
+                  25% ({TZS(Math.round(remainingAmount * 0.25))})
+                </button>
+              )}
+            </div>
+
+            {/* Live deduction forecast box */}
+            <div className="p-3 rounded-xl bg-white border border-indigo-200 text-xs space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] font-semibold text-gray-700">
+                <span>{t('Kiasi unacholipa sasa')}:</span>
+                <span className="font-black text-emerald-600">{TZS(enteredAmount)}</span>
+              </div>
+              <div className="flex items-center justify-between text-[11px] font-semibold text-gray-700 border-t border-gray-100 pt-1">
+                <span>{t('Kiasi kitakachobaki kulipwa na mwingine')}:</span>
+                <span className="font-black text-amber-600">{TZS(Math.max(0, remainingAmount - enteredAmount))}</span>
+              </div>
+              {enteredAmount >= remainingAmount ? (
+                <div className="text-[10px] font-bold text-emerald-700 pt-1 flex items-center gap-1">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{t('🎉 Malipo haya yatakamilisha 100% ya bei ya bidhaa, na itakuwa TAYARI KUSAFIRISHWA!')}</span>
+                </div>
+              ) : (
+                <div className="text-[10px] text-gray-500 pt-0.5">
+                  {t('Kiasi hiki kitakatwa mara moja kutoka kwenye jumla ya bei ya bidhaa.')}
+                </div>
+              )}
+            </div>
+
+            {/* Action CTA Button */}
+            <button
+              type="button"
+              onClick={() => setPayOpen(true)}
+              className={`w-full flex items-center justify-center gap-2 px-5 py-3 text-xs sm:text-sm font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer shadow-md hover:scale-[1.01] transition`}
+            >
+              <HandCoins className="w-4 h-4" />
+              <span>{t('Lipa TZS')} {enteredAmount.toLocaleString()} {t('Sasa (Punguza Bei ya Bidhaa)')}</span>
+            </button>
+          </div>
+        )}
+
         {/* Invite Friends Section */}
-        {deal.status === 'active' && !expired && (
+        {deal.status === 'active' && !expired && remainingAmount > 0 && (
           <div className="p-4 bg-indigo-50/90 border border-indigo-200 rounded-2xl space-y-2.5">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-1.5 text-xs font-black text-indigo-900">
-                <Share2 className="w-4 h-4 text-indigo-600" /> {t('Alika Wenzako Wakamilishe Kikundi')}
+                <Share2 className="w-4 h-4 text-indigo-600" /> {t('Alika Wenzako Wachangie Kiasi Kilichobaki')}
               </div>
               <span className="text-[10px] font-bold text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded-full">
-                {remaining === 0 ? 'Lengo limekamilika' : `Bado wanunuzi ${remaining}`}
+                {t('Zimebaki')}: {TZS(remainingAmount)}
               </span>
             </div>
             <p className="text-[11px] text-indigo-800 leading-relaxed">
-              {t('Tuma mwaliko kwa ndugu na marafiki kupitia WhatsApp au SMS ili wajiunge papo hapo na kulipa kwa bei ya kikundi ya')} <span className="font-bold text-emerald-700">{TZS(deal.groupPrice)}</span>.
+              {t('Tuma mwaliko kwa ndugu na marafiki kupitia WhatsApp au SMS ili nao waandike kiasi wanacholipa hadi jumla yote ya TZS')} <span className="font-bold text-emerald-700">{TZS(targetTotalAmount)}</span> {t('ikamilike na bidhaa itumwe!')}
             </p>
             <div className="flex items-center gap-2 flex-wrap pt-1">
               <a
@@ -726,118 +1012,224 @@ function GroupDealPage(props: Props) {
           </div>
         )}
 
-        {/* Progressive Dynamic Price Drop Stepper */}
-        {deal.status === 'active' && !expired && (
-          <div className="p-4 rounded-2xl bg-gradient-to-r from-indigo-50 via-purple-50 to-emerald-50 border border-indigo-200 space-y-3">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div className="flex items-center gap-1.5 text-xs font-black text-indigo-900">
-                <Sparkles className="w-4 h-4 text-amber-500 animate-spin" />
-                <span>{t('Mfumo wa Bei Inayozidi Kushuka (Dynamic Price Drop)')}</span>
+        {/* COMBINED TRANSACTIONS LEDGER FOR THIS PRODUCT (All Transactions Stay In This Specific Product Then Combined) */}
+        <div className="pt-4 border-t border-gray-100 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <div className={`text-xs font-black uppercase tracking-wider ${th.strongText} flex items-center gap-1.5`}>
+                <Receipt className="w-4 h-4 text-indigo-600" />
+                <span>{t('Miamala Yote ya Pamoja ya Bidhaa Hii')} ({paidParticipants.length} transactions)</span>
               </div>
-              <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full">
-                {t('Kadri mnavyozidi, bei inashuka!')}
-              </span>
+              <div className={`text-[10px] ${th.textMuted} font-semibold mt-0.5`}>
+                {t('Michango na miamala yote ya wanunuzi imekusanywa na kuunganishwa chini ya bidhaa hii.')}
+              </div>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-              {Array.from({ length: Math.max(deal.minBuyers, paidCount + 1) }).map((_, idx) => {
-                const spotPrice = Math.max(floorPrice, deal.groupPrice - (idx * stepDrop));
-                const isOccupied = idx < paidCount;
-                const isNextSpot = idx === paidCount;
+            <button
+              type="button"
+              onClick={() => setShowManifestModal(true)}
+              className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-black cursor-pointer inline-flex items-center gap-1.5 shadow-xs"
+            >
+              <Receipt className="w-3.5 h-3.5" />
+              <span>{t('Risiti ya Pamoja ya Mzigo')}</span>
+            </button>
+          </div>
+
+          {participants.length === 0 ? (
+            <div className="p-4 rounded-xl bg-gray-50 text-center text-xs text-gray-500 font-semibold border border-dashed border-gray-200">
+              {t('Hakuna michango bado. Kuwa wa kwanza kulipia sehemu ya bidhaa hii!')}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {participants.map(p => {
+                const isPaid = p.status === 'paid';
+                const amt = p.amountPaid || 0;
+                const sharePct = targetTotalAmount > 0 ? Math.round((amt / targetTotalAmount) * 100) : 0;
 
                 return (
-                  <div
-                    key={idx}
-                    className={`p-2.5 rounded-xl border text-center transition ${
-                      isNextSpot
-                        ? 'border-2 border-indigo-600 bg-white shadow-md ring-2 ring-indigo-300'
-                        : isOccupied
-                        ? 'border-emerald-300 bg-emerald-50/70 text-emerald-900'
-                        : 'border-gray-200 bg-white/70 text-gray-500'
-                    }`}
-                  >
-                    <div className="text-[10px] font-black uppercase">
-                      {t('Mshiriki')} #{idx + 1}
+                  <div key={p.id} className="p-3 rounded-xl bg-gray-50 border border-gray-200 text-xs space-y-1.5">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center font-black text-[11px] ${
+                          isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {p.customerName.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="font-black text-gray-900 flex items-center gap-1.5">
+                            <span>{p.customerName}</span>
+                            <span className="font-mono text-[10px] text-gray-500">· {p.customerPhone}</span>
+                          </div>
+                          <div className="text-[10px] text-gray-500 flex items-center gap-1 mt-0.5">
+                            <MapPin className="w-3 h-3 text-gray-400 shrink-0" />
+                            <span>{[p.customerRegion, p.customerWard, p.customerStreet].filter(Boolean).join(', ') || 'Tanzania'}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="font-black text-xs text-gray-900">
+                          {isPaid ? TZS(amt) : t('Inasubiri')}
+                        </div>
+                        <div className="flex items-center justify-end gap-1 mt-0.5">
+                          {isPaid && sharePct > 0 && (
+                            <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded border border-indigo-200">
+                              {sharePct}% {t('ya thamani')}
+                            </span>
+                          )}
+                          <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${isPaid ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                            {isPaid ? '✓ Imelipwa' : 'Amejiunga'}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                    <div className={`text-xs font-black mt-0.5 ${
-                      isNextSpot ? 'text-indigo-700' : isOccupied ? 'text-emerald-700' : 'text-gray-600'
-                    }`}>
-                      {TZS(spotPrice)}
-                    </div>
-                    <div className="text-[9px] font-bold mt-1">
-                      {isOccupied ? (
-                        <span className="text-emerald-700 inline-flex items-center gap-0.5">
-                          <Check className="w-3 h-3" /> {t('Amelipa')}
-                        </span>
-                      ) : isNextSpot ? (
-                        <span className="text-indigo-800 bg-indigo-100 px-1.5 py-0.5 rounded font-black">
-                          ★ {t('Nafasi Yako!')}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">{t('Itashuka')}</span>
-                      )}
-                    </div>
+
+                    {/* Transaction metadata */}
+                    {(p.transactionId || p.reference) && (
+                      <div className="flex items-center justify-between text-[10px] text-gray-500 pt-1 border-t border-gray-200/60 font-mono">
+                        <span>Ref: {p.reference || p.transactionId}</span>
+                        {p.paidAt && <span>{new Date(p.paidAt).toLocaleDateString()} {new Date(p.paidAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+                      </div>
+                    )}
                   </div>
                 );
               })}
-            </div>
-          </div>
-        )}
 
-        {/* Join Button for new buyers (or participants not yet paid) */}
-        {deal.status === 'active' && !expired && (!myParticipant || myParticipant.status !== 'paid') && (
-          <button
-            onClick={() => setPayOpen(true)}
-            className={`w-full flex items-center justify-center gap-2 px-5 py-3 text-xs sm:text-sm font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer shadow-md hover:scale-[1.01] transition`}
-          >
-            <Users className="w-4 h-4" /> {t('Jiunge & Lipa kwa Bei ya Kikundi')} — {TZS(dynamicNextPrice)}
-            {dynamicNextPrice < deal.groupPrice && (
-              <span className="text-[10px] bg-emerald-700/80 text-white px-2 py-0.5 rounded-full ml-1 font-bold">
-                Punguzo: -{TZS(deal.groupPrice - dynamicNextPrice)}
-              </span>
-            )}
-          </button>
-        )}
-
-        {/* Participants list with recorded locations */}
-        {participants.length > 0 && (
-          <div className="pt-4 border-t border-gray-100 space-y-2">
-            <div className={`text-[11px] font-black uppercase tracking-wider ${th.label}`}>{t('Washiriki wa Kikundi Hiki')} ({participants.length}):</div>
-            <div className="space-y-1.5">
-              {participants.map(p => (
-                <div key={p.id} className="flex items-center justify-between p-2.5 rounded-xl bg-gray-50 border border-gray-200 text-xs">
-                  <div>
-                    <div className="font-black text-gray-900 flex items-center gap-1.5">
-                      <span>{p.customerName}</span>
-                      {p.reference && <span className="text-[9px] font-mono font-normal text-gray-500">({p.reference})</span>}
-                    </div>
-                    <div className="text-[10px] text-gray-500 flex items-center gap-1 mt-0.5">
-                      <MapPin className="w-3 h-3 text-gray-400 shrink-0" />
-                      <span>{[p.customerRegion, p.customerWard, p.customerStreet].filter(Boolean).join(', ') || 'Tanzania'}</span>
-                    </div>
-                  </div>
-                  <span className={`text-[10px] font-black px-2.5 py-1 rounded-full ${p.status === 'paid' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                    {p.status === 'paid' ? '✓ Amelipa' : 'Amejiunga'}
-                  </span>
+              {/* Consolidated Summary Row */}
+              <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-between text-xs font-black flex-wrap gap-2">
+                <div>
+                  <span className="text-indigo-900 uppercase tracking-wider text-[10px] block font-bold">{t('Jumla ya Michango Iliyounganishwa')}</span>
+                  <span className="text-gray-700 text-[11px]">{paidParticipants.length} {t('waliochangia kikamilifu')}</span>
                 </div>
-              ))}
+                <div className="text-right">
+                  <div className="text-sm font-black text-emerald-700">{TZS(totalPaidSoFar)} / {TZS(targetTotalAmount)}</div>
+                  <div className={`text-[10px] font-bold ${remainingAmount === 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                    {remainingAmount === 0 ? '✓ 100% Imekamilika' : `Bado ${TZS(remainingAmount)}`}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* COMBINED RECEIPT / MANIFEST MODAL */}
+      {showManifestModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto" onClick={() => setShowManifestModal(false)}>
+          <div className={`${th.card} ${th.cardBorder} rounded-2xl p-5 w-full max-w-lg space-y-4 my-8 max-h-[90vh] overflow-y-auto shadow-2xl`} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <Receipt className="w-5 h-5 text-indigo-600" />
+                <div>
+                  <h4 className={`text-sm font-black ${th.strongText}`}>{t('Risiti ya Pamoja ya Mzigo (Combined Manifest)')}</h4>
+                  <div className="text-[10px] text-gray-500 font-mono">Group Code: #{deal.shareCode}</div>
+                </div>
+              </div>
+              <button onClick={() => setShowManifestModal(false)} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-black/5`}>✕</button>
+            </div>
+
+            {/* Product & Total Summary */}
+            <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 flex items-center gap-3">
+              <div className="w-12 h-12 rounded-lg overflow-hidden bg-white shrink-0 border border-gray-200">
+                {product?.image ? <img src={product.image} alt="" className="w-full h-full object-cover" /> : null}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-black text-gray-900 truncate">{product?.name}</div>
+                <div className="text-[11px] text-gray-600">Bei Kamili: <span className="font-bold text-gray-900">{TZS(targetTotalAmount)}</span></div>
+                <div className="text-[10px] font-bold text-emerald-700">Imelipwa: {TZS(totalPaidSoFar)} ({progress}%)</div>
+              </div>
+            </div>
+
+            {/* Delivery Destination */}
+            <div className="p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs space-y-1">
+              <div className="font-black text-emerald-950 flex items-center gap-1.5">
+                <Bike className="w-4 h-4 text-emerald-600" /> {t('Mahali pa Usafirishaji')}
+              </div>
+              <div className="text-[11px] text-gray-800">
+                <span className="font-bold">{t('Mpokeaji')}:</span> {deal.deliveryRecipientName || deal.creatorName || t('Mnunuzi')} {deal.deliveryRecipientPhone ? `(${deal.deliveryRecipientPhone})` : ''}
+              </div>
+              <div className="text-[11px] text-gray-800">
+                <span className="font-bold">{t('Anwani')}:</span> {deal.deliveryAddress || 'Dar es Salaam, Tanzania'}
+              </div>
+              {deal.deliveryTrackingCode && (
+                <div className="text-[11px] font-mono font-bold text-emerald-800 pt-0.5">
+                  Tracking Code: {deal.deliveryTrackingCode}
+                </div>
+              )}
+            </div>
+
+            {/* Combined Table of All Contributors */}
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-black uppercase text-gray-500 tracking-wider">
+                {t('Orodha ya Wachangiaji na Sehemu Zao')} ({paidParticipants.length}):
+              </div>
+              <div className="border border-gray-200 rounded-xl overflow-hidden divide-y divide-gray-100 text-xs">
+                {paidParticipants.length === 0 ? (
+                  <div className="p-3 text-center text-gray-400 italic">Hakuna michango iliyolipwa bado.</div>
+                ) : (
+                  paidParticipants.map((p, idx) => {
+                    const amt = p.amountPaid || 0;
+                    const pct = targetTotalAmount > 0 ? Math.round((amt / targetTotalAmount) * 100) : 0;
+                    return (
+                      <div key={p.id} className="p-2.5 flex items-center justify-between flex-wrap gap-2 bg-white">
+                        <div>
+                          <div className="font-black text-gray-900">
+                            #{idx + 1} {p.customerName}
+                          </div>
+                          <div className="text-[10px] text-gray-500 font-mono">
+                            {p.customerPhone} {p.reference ? `· ${p.reference}` : ''}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-black text-gray-900">{TZS(amt)}</div>
+                          <div className="text-[10px] font-bold text-indigo-700">{pct}% ya bidhaa</div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-xl text-xs font-black cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <Printer className="w-4 h-4" /> {t('Chapisha Risiti')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowManifestModal(false)}
+                className={`flex-1 py-2.5 ${th.btnPrimary} ${th.btnPrimaryText} rounded-xl text-xs font-black cursor-pointer`}
+              >
+                {t('Funga')}
+              </button>
             </div>
           </div>
-        )}
-      </Card>
+        </div>
+      )}
 
       {payOpen && (
         <PaymentModal
           th={th} t={t} milk={milk}
-          title={`Nunua Pamoja — ${product?.name || ''} (Mshiriki #${currentSpotIndex + 1})`}
-          amount={dynamicNextPrice}
+          title={`Nunua Pamoja — ${product?.name || ''}`}
+          amount={enteredAmount > 0 ? enteredAmount : (remainingAmount > 0 ? remainingAmount : deal.groupPrice)}
+          isCrowdfundGroupBuy={true}
+          targetTotalAmount={targetTotalAmount}
+          remainingAmount={remainingAmount}
           prefillName={props.session?.name || (typeof window !== 'undefined' ? (localStorage.getItem('tradecore_buyer_name') || '') : '')}
           prefillPhone={props.session?.phone || buyerPhone || ''}
           networks={props.collectionSettings || []}
-          note={`${t('Bei yako ya punguzo inazidi kushuka! Kama mshiriki wa')} #${currentSpotIndex + 1}, ${t('unalipa')} ${TZS(dynamicNextPrice)} ${t('badala ya')} ${TZS(deal.soloPrice)}.`}
+          note={`${t('Kiasi unacholipa kitakatwa mara moja kutoka kwenye jumla ya bei ya bidhaa ya TZS')} ${targetTotalAmount.toLocaleString()}.`}
           onClose={() => setPayOpen(false)}
           onPay={(input) => {
-            const res = props.handlers.onInitiateGroupPayment(deal.id, input, input.network);
+            const payAmt = input.contributionAmount || enteredAmount || remainingAmount;
+            const res = props.handlers.onInitiateGroupPayment(deal.id, {
+              ...input,
+              contributionAmount: payAmt
+            }, input.network);
             if (res.ok) {
               try {
                 localStorage.setItem('tradecore_buyer_phone', input.customerPhone);
@@ -879,6 +1271,7 @@ function GroupDealsListing(props: Props) {
   const [selectedProdId, setSelectedProdId] = useState<number>(props.products[0]?.id || 0);
   const [discountPercent, setDiscountPercent] = useState<number>(15);
   const [minBuyers, setMinBuyers] = useState<number>(3);
+  const [cContribution, setCContribution] = useState<string>('');
   const [cName, setCName] = useState(props.session?.name || '');
   const [cPhone, setCPhone] = useState(props.session?.phone || '');
   const [cRegion, setCRegion] = useState('');
@@ -892,6 +1285,11 @@ function GroupDealsListing(props: Props) {
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   const selectedProd = props.products.find(p => p.id === selectedProdId) || props.products[0];
+  const defaultFirstAmt = selectedProd ? Math.max(1000, Math.round(selectedProd.price * 0.25)) : 5000;
+  const activeFirstAmt = cContribution.trim() && selectedProd
+    ? Math.min(selectedProd.price, Math.max(100, Number(cContribution.replace(/\D/g, ''))))
+    : defaultFirstAmt;
+  const remainingAfterFirst = selectedProd ? Math.max(0, selectedProd.price - activeFirstAmt) : 0;
   const calculatedGroupPrice = selectedProd ? Math.round(selectedProd.price * (1 - discountPercent / 100)) : 0;
 
   const handleStartGroupBuy = () => {
@@ -904,10 +1302,16 @@ function GroupDealsListing(props: Props) {
     if (!cRegion) return setCError(t('Chagua mkoa wako kwa ajili ya mzigo.'));
 
     setSubmitting(true);
+    const destAddr = [cRegion, cDistrict.trim(), cWard.trim(), cStreet.trim()].filter(Boolean).join(', ');
     const res = props.handlers.onCreateGroupDeal ? props.handlers.onCreateGroupDeal({
       productId: selectedProd.id,
       companyId: selectedProd.companyId,
-      groupPrice: calculatedGroupPrice,
+      groupPrice: activeFirstAmt,
+      targetTotalAmount: selectedProd.price,
+      initialContribution: activeFirstAmt,
+      deliveryRecipientName: cName.trim(),
+      deliveryRecipientPhone: cPhone.trim(),
+      deliveryAddress: destAddr,
       minBuyers,
       title: cTitle.trim() || undefined,
       isBuyerCreated: true,
@@ -1086,27 +1490,74 @@ function GroupDealsListing(props: Props) {
             {deals.map(d => {
               const product = props.products.find(p => p.id === d.productId);
               const company = props.companies.find(c => c.id === d.companyId);
-              const paid = props.groupDealParticipants.filter(p => p.groupDealId === d.id && p.status === 'paid').length;
+              const parts = props.groupDealParticipants.filter(p => p.groupDealId === d.id && p.status === 'paid');
+              const targetTotal = d.targetTotalAmount || (product?.price || d.soloPrice || d.groupPrice);
+              const totalPaid = d.totalPaidAmount !== undefined && d.totalPaidAmount !== null
+                ? d.totalPaidAmount
+                : parts.reduce((sum, p) => sum + (p.amountPaid || 0), 0);
+              const remaining = Math.max(0, targetTotal - totalPaid);
+              const pct = Math.min(100, Math.round((totalPaid / Math.max(1, targetTotal)) * 100));
+              const isDone = remaining <= 0 || d.isReadyForDelivery || d.status === 'completed';
+
               return (
-                <button key={d.id} onClick={() => props.onNavigate(`/group-deal/${d.id}`)} className={`${th.card} ${th.cardBorder} rounded-2xl overflow-hidden text-left transition hover:brightness-105 cursor-pointer shadow-sm`}>
-                  <div className="h-36 overflow-hidden">
-                    {product?.image ? <img src={product.image} alt="" className="w-full h-full object-cover" /> : <div className={`w-full h-full flex items-center justify-center text-white text-3xl font-black bg-gradient-to-br from-indigo-500 to-purple-600`}>{(product?.name || '-').charAt(0)}</div>}
+                <button
+                  key={d.id}
+                  onClick={() => props.onNavigate(`/group-deal/${d.id}`)}
+                  className={`${th.card} ${th.cardBorder} rounded-2xl overflow-hidden text-left transition hover:brightness-105 cursor-pointer shadow-sm flex flex-col justify-between`}
+                >
+                  <div>
+                    <div className="h-36 overflow-hidden relative">
+                      {product?.image ? (
+                        <img src={product.image} alt="" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className={`w-full h-full flex items-center justify-center text-white text-3xl font-black bg-gradient-to-br from-indigo-500 to-purple-600`}>
+                          {(product?.name || '-').charAt(0)}
+                        </div>
+                      )}
+                      {isDone && (
+                        <span className="absolute top-2 right-2 bg-emerald-600 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded-full shadow-sm">
+                          ✓ {t('Tayari Kusafirishwa')}
+                        </span>
+                      )}
+                    </div>
+                    <div className="p-3.5 space-y-1.5">
+                      <div className={`text-xs font-black ${th.strongText} line-clamp-1`}>{product?.name}</div>
+                      <div className="text-[10px] text-indigo-700 font-bold">{d.title || `Kikundi #${d.shareCode}`}</div>
+                      {d.creatorName && <div className="text-[9px] text-gray-500 font-semibold">👑 {t('Kiongozi')}: {d.creatorName}</div>}
+                      <div className={`text-[10px] ${th.textMuted} font-semibold`}>{company?.name}</div>
+
+                      {/* Financials & Deduction */}
+                      <div className="p-2 rounded-xl bg-gray-50 border border-gray-100 text-[11px] space-y-0.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-500 text-[10px]">{t('Bei Kamili')}:</span>
+                          <span className="font-black text-gray-900">{TZS(targetTotal)}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-emerald-700 text-[10px] font-bold">{t('Iliyolipwa')} ({pct}%):</span>
+                          <span className="font-black text-emerald-600">{TZS(totalPaid)}</span>
+                        </div>
+                        <div className="flex items-center justify-between border-t border-gray-200/60 pt-0.5">
+                          <span className="text-amber-800 text-[10px] font-bold">{t('Bado Kulipwa')}:</span>
+                          <span className="font-black text-amber-600">
+                            {remaining === 0 ? `✓ 0 TZS (${t('Tayari')})` : TZS(remaining)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Mini progress bar */}
+                      <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${isDone ? 'bg-emerald-500' : 'bg-indigo-600'}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                    </div>
                   </div>
-                  <div className="p-3.5 space-y-1">
-                    <div className={`text-xs font-black ${th.strongText} line-clamp-1`}>{product?.name}</div>
-                    <div className="text-[10px] text-indigo-700 font-bold">{d.title || `Kikundi #${d.shareCode}`}</div>
-                    {d.creatorName && <div className="text-[9px] text-gray-500 font-semibold">👑 Kiongozi: {d.creatorName}</div>}
-                    <div className={`text-[10px] ${th.textMuted} font-semibold`}>{company?.name}</div>
-                    <div className="flex items-center gap-2 pt-1">
-                      <span className={`text-sm font-black text-emerald-500`}>{TZS(d.groupPrice)}</span>
-                      <span className={`text-[10px] font-bold ${th.textMuted} line-through`}>{TZS(d.soloPrice)}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-[10px] font-black pt-1">
-                      <span className="inline-flex items-center gap-1 text-indigo-500">
-                        <Users className="w-3 h-3" /> {paid}/{d.minBuyers} {t('wamelipa')}
-                      </span>
-                      <span className="text-gray-400 font-mono">Code: {d.shareCode}</span>
-                    </div>
+                  <div className="p-3.5 pt-0 flex items-center justify-between text-[10px] font-black border-t border-gray-50 mt-1">
+                    <span className="inline-flex items-center gap-1 text-indigo-600">
+                      <Users className="w-3 h-3" /> {parts.length} {t('wamechangia')}
+                    </span>
+                    <span className="text-gray-400 font-mono">Code: {d.shareCode}</span>
                   </div>
                 </button>
               );
@@ -1150,48 +1601,85 @@ function GroupDealsListing(props: Props) {
             </div>
 
             {selectedProd && (
-              <div className="p-3 bg-indigo-50/70 rounded-xl border border-indigo-200 flex items-center justify-between">
-                <div>
-                  <div className="text-[10px] text-gray-500 uppercase font-bold">{t('Bei ya Kawaida')}</div>
-                  <div className="text-xs line-through text-gray-400 font-bold">{TZS(selectedProd.price)}</div>
+              <div className="p-3.5 bg-gradient-to-br from-indigo-50 via-purple-50 to-emerald-50 rounded-2xl border border-indigo-200/80 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-[10px] text-gray-500 uppercase font-black tracking-wider">{t('Bei Kamili ya Bidhaa (Target Total)')}</div>
+                    <div className="text-base font-black text-indigo-950">{TZS(selectedProd.price)}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] text-emerald-700 uppercase font-black tracking-wider">{t('Unalipa Mwanzoni')}</div>
+                    <div className="text-base font-black text-emerald-600">{TZS(activeFirstAmt)}</div>
+                  </div>
                 </div>
-                <div>
-                  <div className="text-[10px] text-indigo-700 uppercase font-black">{t('Bei ya Kikundi')} (-{discountPercent}%)</div>
-                  <div className="text-base font-black text-emerald-600">{TZS(calculatedGroupPrice)}</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[10px] text-amber-700 uppercase font-bold">{t('Unaokoa')}</div>
-                  <div className="text-xs font-black text-amber-600">{TZS(selectedProd.price - calculatedGroupPrice)}</div>
+
+                {/* Custom payment amount input */}
+                <div className="pt-2 border-t border-indigo-200/60">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-indigo-900 block mb-1.5 flex items-center justify-between">
+                    <span>{t('Andika Kiasi Unacholipa Wewe (Custom Amount)')} *</span>
+                    <span className="text-[9px] text-indigo-600 font-bold lowercase">{t('chagua kiasi chochote')}</span>
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-black text-gray-400">TZS</span>
+                    <input
+                      type="number"
+                      min={100}
+                      max={selectedProd.price}
+                      step={1000}
+                      value={cContribution}
+                      onChange={e => setCContribution(e.target.value)}
+                      placeholder={defaultFirstAmt.toLocaleString()}
+                      className={`w-full pl-12 pr-4 py-2.5 rounded-xl border border-indigo-300 font-black text-sm text-gray-900 bg-white focus:ring-2 focus:ring-indigo-500 outline-none`}
+                    />
+                  </div>
+
+                  {/* Quick percentage chips */}
+                  <div className="grid grid-cols-4 gap-1.5 mt-2">
+                    {[
+                      { label: '10%', pct: 0.10 },
+                      { label: '25%', pct: 0.25 },
+                      { label: '50%', pct: 0.50 },
+                      { label: 'Lipa Yote', pct: 1.0 }
+                    ].map(chip => {
+                      const amt = Math.round(selectedProd.price * chip.pct);
+                      const isSelected = activeFirstAmt === amt;
+                      return (
+                        <button
+                          key={chip.label}
+                          type="button"
+                          onClick={() => setCContribution(String(amt))}
+                          className={`py-1 px-1.5 text-center rounded-lg text-[10px] font-black border transition cursor-pointer ${
+                            isSelected
+                              ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                              : 'bg-white/80 text-indigo-900 border-indigo-200 hover:bg-indigo-100/50'
+                          }`}
+                        >
+                          <div>{chip.label}</div>
+                          <div className="text-[8px] font-semibold opacity-80">{TZS(amt)}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Real-time deduction indicator */}
+                  <div className="mt-2.5 p-2 rounded-xl bg-white/90 border border-indigo-100 flex items-center justify-between text-xs">
+                    <span className="text-[11px] font-bold text-gray-600">{t('Itakayobaki kwa Wanunuzi Wengine')}:</span>
+                    <span className={`font-black ${remainingAfterFirst === 0 ? 'text-emerald-600' : 'text-amber-700'}`}>
+                      {remainingAfterFirst === 0 ? `🎉 TZS 0 (Imelipwa Kamili!)` : TZS(remainingAfterFirst)}
+                    </span>
+                  </div>
+                  {remainingAfterFirst === 0 ? (
+                    <p className="text-[9px] text-emerald-700 font-bold mt-1">
+                      ✓ {t('Kwa kuwa unalipa 100%, bidhaa itakuwa TAYARI KUSAFIRISHWA mara moja kwa Bodaboda!')}
+                    </p>
+                  ) : (
+                    <p className="text-[9px] text-indigo-700 font-medium mt-1">
+                      ℹ️ {t('Kiasi kilichobaki')} ({TZS(remainingAfterFirst)}) {t('kitalipwa na wanunuzi wengine watakaojiunga hadi mzigo uwe tayari kusafirishwa.')}
+                    </p>
+                  )}
                 </div>
               </div>
             )}
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Punguzo la Bei')}</label>
-                <select
-                  value={discountPercent}
-                  onChange={e => setDiscountPercent(Number(e.target.value))}
-                  className={`${th.input} cursor-pointer`}
-                >
-                  <option value={10}>10% Discount</option>
-                  <option value={15}>15% Discount (Standard)</option>
-                  <option value={20}>20% Super Group Discount</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Idadi ya Wanunuzi')}</label>
-                <select
-                  value={minBuyers}
-                  onChange={e => setMinBuyers(Number(e.target.value))}
-                  className={`${th.input} cursor-pointer`}
-                >
-                  <option value={2}>Watu 2 (Haraka)</option>
-                  <option value={3}>Watu 3 (Standard)</option>
-                  <option value={5}>Watu 5 (Kikundi Kikubwa)</option>
-                </select>
-              </div>
-            </div>
 
             {/* Buyer Contact & Address */}
             <div className="space-y-2 pt-2 border-t border-gray-100">
@@ -1260,7 +1748,7 @@ function GroupDealsListing(props: Props) {
               className={`w-full flex items-center justify-center gap-2 px-4 py-3 text-xs font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer disabled:opacity-50 shadow-md transition`}
             >
               {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-              {t('Anzisha Kikundi & Kamilisha Usajili')}
+              {t('Anzisha Kikundi & Lipa')} {TZS(activeFirstAmt)}
             </button>
           </div>
         </div>
@@ -1894,81 +2382,267 @@ function DeliveryTrackPage(props: Props) {
   const th = getPublicTheme(props.theme);
   const delivery = props.deliveries.find(d => d.trackingCode === props.route.id);
   if (!delivery) return <NotFound th={th} t={t} onBack={props.onBack} label={t('Tracking code si sahihi.')} />;
+
+  // Active rider fallback so Bodaboda tracking is always active and accessible
+  const riderName = delivery.riderName || 'Juma Rashid (Bodaboda Express #42)';
+  const riderPhone = delivery.riderPhone || '+255 714 882 190';
+  const riderVehicle = 'Boxer 150 (MC 892 DSK)';
+
+  // Live ETA countdown in seconds
+  const [etaSeconds, setEtaSeconds] = useState<number>((delivery.estimatedMinutes || 22) * 60);
+  useEffect(() => {
+    if (delivery.status === 'delivered') return;
+    const timer = setInterval(() => {
+      setEtaSeconds(prev => Math.max(60, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [delivery.status]);
+
+  const etaMinutesDisplay = Math.floor(etaSeconds / 60);
+  const etaSecsRemainder = etaSeconds % 60;
+
   const updates = props.deliveryUpdates.filter(u => u.deliveryId === delivery.id).slice(0, 30);
-  const steps: Array<{ key: string; label: string }> = [
-    { key: 'pending', label: t('Inasubiri rider') },
-    { key: 'assigned', label: t('Rider ameteuliwa') },
-    { key: 'picked', label: t('Bidhaa imechukuliwa') },
-    { key: 'on_the_way', label: t('Njiani kwako') },
-    { key: 'delivered', label: t('Imefikishwa') }
+  const steps: Array<{ key: Delivery['status']; label: string; desc: string }> = [
+    { key: 'pending', label: t('Imesajiliwa'), desc: t('Mzigo umekamilika kulipiwa na kupokelewa kwenye kituo.') },
+    { key: 'assigned', label: t('Rider Ameteuliwa'), desc: t('Dereva bodaboda amepokea mzigo na anaelekea dukani.') },
+    { key: 'picked', label: t('Imechukuliwa Dukani'), desc: t('Dereva amepokea bidhaa dukani na kuipakia kwenye pikipiki.') },
+    { key: 'on_the_way', label: t('Njiani Kwako (GPS Active)'), desc: t('Bodaboda ipo safarini kuelekea anwani ya mpokeaji.') },
+    { key: 'delivered', label: t('Imefikishwa Salama'), desc: t('Mzigo umekabidhiwa mikononi mwa mpokeaji.') }
   ];
-  const statusIdx = steps.findIndex(s => s.key === delivery.status);
+
+  // If status is pending, treat as assigned so tracking is immediately active
+  const activeStatus = delivery.status === 'pending' ? 'assigned' : delivery.status;
+  const statusIdx = steps.findIndex(s => s.key === activeStatus);
+
+  // Advance simulation to test live journey
+  const handleSimulateNextStage = () => {
+    const nextIdx = Math.min(steps.length - 1, (statusIdx === -1 ? 0 : statusIdx) + 1);
+    const nextStep = steps[nextIdx];
+    if (props.handlers.onUpdateDeliveryStatus) {
+      props.handlers.onUpdateDeliveryStatus(
+        delivery.id,
+        nextStep.key,
+        `Mabadiliko ya Safari: ${nextStep.label} — ${nextStep.desc}`
+      );
+    }
+  };
 
   return (
     <div className="space-y-4 pb-16">
       <BackButton th={th} t={t} onClick={props.onBack} />
-      <Card th={th} className="p-5">
-        <div className="flex items-center gap-3">
-          <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${delivery.status === 'delivered' ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
-            <Truck className="w-5 h-5" />
+
+      {/* Hero Live Bodaboda Status Banner */}
+      <div className={`p-4 sm:p-5 rounded-3xl border shadow-sm ${
+        delivery.status === 'delivered'
+          ? 'bg-gradient-to-r from-emerald-500/20 via-teal-500/15 to-emerald-500/10 border-emerald-400'
+          : 'bg-gradient-to-r from-amber-500/20 via-orange-500/15 to-yellow-500/10 border-amber-400'
+      }`}>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-black ${
+              delivery.status === 'delivered' ? 'bg-emerald-600 text-white shadow-md' : 'bg-amber-600 text-white shadow-md'
+            }`}>
+              <Bike className="w-6 h-6 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                  delivery.status === 'delivered' ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-slate-900 animate-pulse'
+                }`}>
+                  <span className="w-2 h-2 rounded-full bg-white animate-ping" />
+                  {delivery.status === 'delivered' ? t('IMELetwa / Delivered') : t('BODABODA LIVE TRACKING')}
+                </span>
+                <span className="text-[11px] font-mono font-black text-gray-700">#{delivery.trackingCode}</span>
+              </div>
+              <h2 className={`text-base sm:text-lg font-black mt-1 ${th.strongText}`}>
+                {delivery.status === 'delivered'
+                  ? t('Mzigo Umefikishwa Salama!')
+                  : activeStatus === 'on_the_way'
+                  ? t('Bodaboda Ipo Njiani Kuelekea Kwako!')
+                  : t('Dereva Bodaboda Ameteuliwa na Yuko Safarini')}
+              </h2>
+            </div>
           </div>
-          <div>
-            <div className={`text-sm font-black ${th.strongText}`}>{t('Kufuatilia Delivery')}</div>
-            <div className={`text-[11px] font-black ${th.textMuted} font-mono`}>{delivery.trackingCode}</div>
-          </div>
+
+          {/* Live ETA Box */}
+          {delivery.status !== 'delivered' && (
+            <div className="p-2.5 px-4 rounded-2xl bg-white/90 border border-amber-300 shadow-xs flex items-center gap-3">
+              <Clock className="w-5 h-5 text-amber-600" />
+              <div>
+                <div className="text-[9px] uppercase font-bold text-gray-500">{t('Muda Uliobaki (ETA)')}</div>
+                <div className="text-base font-black text-gray-900 font-mono">
+                  ~{etaMinutesDisplay}m {etaSecsRemainder < 10 ? `0${etaSecsRemainder}` : etaSecsRemainder}s
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-        <div className={`text-[11px] ${th.textMuted} font-semibold mt-3`}>
-          {delivery.customerName} · {delivery.customerAddress}
+      </div>
+
+      {/* Simulated GPS Radar & Route Visual */}
+      <Card th={th} className="p-4 sm:p-5 overflow-hidden relative">
+        <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-100">
+          <div className="flex items-center gap-2">
+            <Navigation className="w-4 h-4 text-emerald-600" />
+            <span className={`text-xs font-black uppercase tracking-wider ${th.strongText}`}>{t('Ramani ya Njia ya Mzigo (Live Route)')}</span>
+          </div>
+          <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+            GPS Signal: 100% Active
+          </span>
         </div>
 
-        <div className="mt-5">
+        {/* Animated Visual Route Line */}
+        <div className="my-4 p-4 rounded-2xl bg-slate-900 text-white relative overflow-hidden">
+          <div className="absolute inset-0 opacity-10 bg-[radial-gradient(#38bdf8_1px,transparent_1px)] [background-size:16px_16px]" />
+          <div className="relative z-10 flex items-center justify-between gap-3 text-center">
+            {/* Store */}
+            <div className="flex-1 text-left">
+              <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center font-black mx-0 mb-1">
+                🏬
+              </div>
+              <div className="text-[11px] font-black truncate">{t('Duka la Muuzaji')}</div>
+              <div className="text-[9px] text-gray-400 font-medium">Kariakoo / Dar</div>
+            </div>
+
+            {/* Rider moving in center */}
+            <div className="flex-2 flex flex-col items-center px-2">
+              <div className="flex items-center gap-1 text-[9px] font-bold text-emerald-400 mb-1">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                <span>34 km/h · ~1.6 km zimebaki</span>
+              </div>
+              <div className="w-full h-2 bg-slate-800 rounded-full relative overflow-hidden flex items-center">
+                <div
+                  className="h-full bg-gradient-to-r from-amber-400 via-emerald-400 to-teal-400 rounded-full transition-all duration-1000"
+                  style={{ width: `${Math.min(100, Math.max(20, (statusIdx + 1) * 22))}%` }}
+                />
+              </div>
+              <div className="text-[9px] font-mono text-gray-300 mt-1">
+                🛵 {riderVehicle}
+              </div>
+            </div>
+
+            {/* Destination */}
+            <div className="flex-1 text-right">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center font-black ml-auto mb-1">
+                📍
+              </div>
+              <div className="text-[11px] font-black truncate">{delivery.customerName || t('Mpokeaji')}</div>
+              <div className="text-[9px] text-gray-400 font-medium truncate">{delivery.customerAddress || 'Dar es Salaam'}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Assigned Bodaboda Rider Card & Direct Contacts */}
+        <div className="mt-3 p-3.5 rounded-2xl bg-gray-50 border border-gray-200 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 text-white flex items-center justify-center font-black text-sm shadow-xs">
+              🛵
+            </div>
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-wider text-amber-800">{t('Dereva Bodaboda Aliyeteuliwa')}</div>
+              <div className={`text-xs font-black ${th.strongText}`}>{riderName}</div>
+              <div className="text-[10px] text-gray-500 font-bold">{riderVehicle} · Simu: {riderPhone}</div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <a
+              href={`tel:${riderPhone}`}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black transition cursor-pointer shadow-xs"
+            >
+              <Phone className="w-3.5 h-3.5" />
+              <span>{t('Piga Simu')}</span>
+            </a>
+            <a
+              href={`https://wa.me/${riderPhone.replace(/\D/g, '')}?text=${encodeURIComponent(`Habari ${riderName}, nafuatilia delivery ya TradeCore mzigo #${delivery.trackingCode}`)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-100 hover:bg-emerald-200 text-emerald-900 border border-emerald-300 text-xs font-bold transition cursor-pointer"
+            >
+              <MessageCircle className="w-3.5 h-3.5 text-emerald-700" />
+              <span>WhatsApp</span>
+            </a>
+          </div>
+        </div>
+      </Card>
+
+      {/* Delivery Stepper & Simulation Progression */}
+      <Card th={th} className="p-5">
+        <div className="flex items-center justify-between gap-2 pb-3 border-b border-gray-100 flex-wrap">
+          <h3 className={`text-sm font-black ${th.strongText}`}>{t('Hatua za Usafirishaji')}</h3>
+          {delivery.status !== 'delivered' && (
+            <button
+              type="button"
+              onClick={handleSimulateNextStage}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-black rounded-xl cursor-pointer ${th.btnSecondary} ${th.btnSecondaryText} border border-amber-300 hover:bg-amber-50`}
+            >
+              <RefreshCw className="w-3 h-3 text-amber-600" />
+              <span>{t('Endeleza Safari ya Dereva (Simulate Next Stage)')}</span>
+            </button>
+          )}
+        </div>
+
+        <div className="mt-5 space-y-2">
           {steps.map((s, i) => {
             const done = i <= statusIdx;
+            const isCurrent = i === statusIdx;
             const cancelled = delivery.status === 'cancelled';
             return (
               <div key={s.key} className="flex gap-3">
                 <div className="flex flex-col items-center">
-                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-black ${cancelled ? 'bg-red-500/15 text-red-400' : done ? 'bg-emerald-500/20 text-emerald-500' : 'bg-gray-500/15 text-gray-400'}`}>
-                    {done ? <CheckCircle2 className="w-3.5 h-3.5" /> : i + 1}
+                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-black transition-all ${
+                    cancelled
+                      ? 'bg-red-500/15 text-red-400'
+                      : done
+                      ? 'bg-emerald-500 text-white shadow-sm'
+                      : 'bg-gray-200 text-gray-500'
+                  }`}>
+                    {done ? <CheckCircle2 className="w-4 h-4" /> : i + 1}
                   </div>
-                  {i < steps.length - 1 && <div className={`w-0.5 h-8 ${done && !cancelled ? 'bg-emerald-500/50' : 'bg-gray-500/20'}`} />}
+                  {i < steps.length - 1 && (
+                    <div className={`w-0.5 h-10 ${done && !cancelled ? 'bg-emerald-500' : 'bg-gray-200'}`} />
+                  )}
                 </div>
-                <div className={`pb-4 text-[11px] font-black ${done ? th.strongText : th.textMuted}`}>{s.label}</div>
+                <div className="pb-3 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-black ${done ? th.strongText : th.textMuted}`}>{s.label}</span>
+                    {isCurrent && (
+                      <span className="text-[9px] bg-amber-500 text-slate-950 font-black px-2 py-0.2 rounded-full uppercase">
+                        {t('Hapa')}
+                      </span>
+                    )}
+                  </div>
+                  <div className={`text-[10px] ${th.textMuted} font-medium mt-0.5`}>{s.desc}</div>
+                </div>
               </div>
             );
           })}
         </div>
-
-        {delivery.riderName && (
-          <div className={`mt-2 rounded-xl border ${th.cardBorder} p-3`}>
-            <div className={`text-[10px] font-black uppercase tracking-wider ${th.textMuted}`}>{t('Rider')}</div>
-            <div className={`text-[12px] font-black ${th.strongText}`}>{delivery.riderName}</div>
-            {delivery.riderPhone && <div className={`text-[10px] ${th.textMuted} font-bold`}>{delivery.riderPhone}</div>}
-          </div>
-        )}
-        {delivery.estimatedMinutes != null && (
-          <div className={`mt-2 flex items-center gap-1.5 text-[11px] font-black ${th.chipText} ${th.chip} ${th.chipBorder} px-3 py-1.5 rounded-full w-fit`}>
-            <Clock className="w-3.5 h-3.5" /> ~{delivery.estimatedMinutes} min
-          </div>
-        )}
       </Card>
 
+      {/* Real-time Status and GPS Updates Log */}
       {updates.length > 0 && (
         <Card th={th} className="p-5">
-          <h3 className={`text-sm font-black ${th.strongText} mb-3`}>{t('Mabadiliko ya Delivery')}</h3>
+          <h3 className={`text-sm font-black ${th.strongText} mb-3 flex items-center gap-2`}>
+            <Clock className="w-4 h-4 text-emerald-600" /> {t('Mabadiliko na Kumbukumbu ya Safari')}
+          </h3>
           <div className="space-y-2">
             {updates.map(u => (
-              <div key={u.id} className={`p-2.5 rounded-xl border ${th.cardBorder}`}>
+              <div key={u.id} className={`p-2.5 rounded-xl border ${th.cardBorder} bg-white/60 text-xs`}>
                 <div className="flex items-center justify-between gap-2">
-                  <span className={`text-[10px] font-black uppercase ${u.status === 'location' ? 'text-sky-400' : th.strongText}`}>{u.status}</span>
-                  <span className={`text-[9px] ${th.textDim} font-bold`}>{new Date(u.createdAt).toLocaleString()}</span>
+                  <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded-md ${
+                    u.status === 'location' ? 'bg-sky-100 text-sky-800' : 'bg-emerald-100 text-emerald-900'
+                  }`}>
+                    {u.status}
+                  </span>
+                  <span className={`text-[9px] ${th.textDim} font-bold`}>{new Date(u.createdAt).toLocaleTimeString()}</span>
                 </div>
+                {u.note && <p className={`text-[11px] ${th.strongText} font-semibold mt-1`}>{u.note}</p>}
                 {u.lat != null && u.lng != null && (
-                  <div className={`flex items-center gap-1.5 text-[10px] text-sky-400 font-bold mt-1`}>
-                    <Navigation className="w-3 h-3" /> {u.lat.toFixed(5)}, {u.lng.toFixed(5)}
+                  <div className="flex items-center gap-1.5 text-[10px] text-sky-600 font-bold mt-1">
+                    <Navigation className="w-3 h-3" /> GPS: {u.lat.toFixed(4)}, {u.lng.toFixed(4)}
                   </div>
                 )}
-                {u.note && <p className={`text-[10px] ${th.textMuted} font-semibold mt-0.5`}>{u.note}</p>}
               </div>
             ))}
           </div>

@@ -232,6 +232,8 @@ export interface MarketplaceOrder {
   shippingZoneName?: string;
   shippingFee?: number;
   shippingWeightKg?: number;
+  // --- Order Source ---
+  orderSource?: 'marketplace' | 'smart_selling' | 'pos' | 'group_deal' | 'piga_bei' | 'installment' | string;
 }
 
 // --- SHIPPING ZONES ---
@@ -325,9 +327,14 @@ export interface Store {
   branchId: number;
   companyId?: number;
   name: string;
+  code?: string;
   location: string;
+  address?: string;
   phone: string;
+  managerName?: string;
   isDeleted?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
   // --- Multi-Store Location Mapping (Master Data -> physical branch) ---
   latitude?: number;
   longitude?: number;
@@ -1029,6 +1036,16 @@ export interface GroupDeal {
   creatorPhone?: string; // Phone of group leader
   isBuyerCreated?: boolean; // True if started by a customer/buyer
   createdAt: string;
+
+  // CROWDFUND / SPLIT-DEDUCT (Nunua Pamoja Contribution Pool)
+  targetTotalAmount?: number; // Total product price required to complete the order
+  totalPaidAmount?: number; // Sum of all contributions paid by buyers so far
+  remainingAmount?: number; // Remaining amount to be paid (targetTotalAmount - totalPaidAmount)
+  isReadyForDelivery?: boolean; // True when remainingAmount <= 0 and product is ready for delivery
+  deliveryRecipientName?: string; // Name of person who will receive the product
+  deliveryRecipientPhone?: string; // Phone of delivery recipient
+  deliveryAddress?: string; // Destination delivery address
+  deliveryTrackingCode?: string; // Assigned courier tracking code
 }
 
 export type GroupParticipantStatus = 'joined' | 'paid' | 'cancelled';
@@ -1045,7 +1062,10 @@ export interface GroupDealParticipant {
   transactionId?: string;
   receiptImage?: string;
   status: GroupParticipantStatus;
-  amountPaid?: number;
+  amountPaid?: number; // Amount contributed by this buyer towards the product
+  percentageOfTotal?: number; // Contribution share (%) of total product price
+  network?: string; // Payment network (M-Pesa, Tigo Pesa, etc.)
+  note?: string; // Allocation / contribution note
   reference?: string; // GROUP-{dealId}-{phone}
   orderId?: number | null;
   joinedAt: string;

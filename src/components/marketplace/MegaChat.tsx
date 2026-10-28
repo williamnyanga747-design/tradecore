@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, Send, ImagePlus, Package, Search, MessageCircle, ArrowLeft, Languages, ShieldAlert } from 'lucide-react';
+import { ChevronLeft, Send, ImagePlus, Package, Search, MessageCircle, ArrowLeft, Languages, ShieldAlert, RefreshCw } from 'lucide-react';
 import { ChatConversation, ChatMessage, Company, MarketplaceProduct } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TZS, TFunc } from './MarketplaceShared';
@@ -23,6 +23,7 @@ interface Props {
   onSend: (conversationId: number, input: { text?: string; messageType: 'text' | 'image' | 'product'; imageData?: string; productId?: number }) => void;
   onMarkRead: (conversationId: number) => void;
   onOpenProduct?: (product: MarketplaceProduct) => void;
+  onUpdateProduct?: (conversationId: number, productId: number) => void;
 }
 
 /**
@@ -32,12 +33,13 @@ interface Props {
  */
 export default function MegaChat({
   theme, t, mode, conversations, messages, products, companies,
-  buyerIdentity, companyId, initialConversationId, onSend, onMarkRead, onOpenProduct
+  buyerIdentity, companyId, initialConversationId, onSend, onMarkRead, onOpenProduct, onUpdateProduct
 }: Props) {
   const th = getPublicTheme(theme);
   const [activeId, setActiveId] = useState<number | null>(initialConversationId || null);
   const [draft, setDraft] = useState('');
   const [search, setSearch] = useState('');
+  const [showProductPicker, setShowProductPicker] = useState(false);
   const [, setTick] = useState(0);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -205,6 +207,7 @@ export default function MegaChat({
     const company = companies.find(x => x.id === active.companyId);
     const title = mode === 'buyer' ? (company?.name || t('Muuzaji')) : active.buyerName;
     const sharedProduct = active.productId ? products.find(p => p.id === active.productId) : null;
+    const companyProducts = products.filter(p => p.companyId === active.companyId);
 
     return (
       <div className={`flex-1 flex flex-col ${th.card} ${th.cardBorder} rounded-2xl overflow-hidden`}>
@@ -227,21 +230,70 @@ export default function MegaChat({
         </div>
 
         {/* product context card */}
-        {sharedProduct && (
-          <div className={`mx-3 mt-3 p-2.5 rounded-xl flex items-center gap-2.5 border ${th.cardBorder}`}>
-            <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0">
-              {sharedProduct.image
-                ? <img src={sharedProduct.image} alt="" className="w-full h-full object-cover" />
-                : <Package className={`w-5 h-5 m-auto ${th.textDim}`} />}
+        {(sharedProduct || companyProducts.length > 0) && (
+          <div className={`mx-3 mt-3 p-2.5 rounded-xl border ${th.cardBorder} bg-white/5`}>
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-lg overflow-hidden shrink-0 border border-black/10">
+                {sharedProduct?.image
+                  ? <img src={sharedProduct.image} alt="" className="w-full h-full object-cover" />
+                  : <Package className={`w-5 h-5 m-auto ${th.textDim}`} />}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className={`text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded ${theme === 'milk' ? 'bg-amber-100 text-amber-800' : 'bg-amber-500/20 text-amber-300'}`}>
+                    {t('Bidhaa Inayojadiliwa')}
+                  </span>
+                </div>
+                <div className={`text-[11px] font-black truncate ${th.strongText}`}>{sharedProduct ? sharedProduct.name : t('Chagua bidhaa ya kuulizia')}</div>
+                {sharedProduct && <div className={`text-[10px] font-bold ${th.brandText}`}>{TZS(sharedProduct.price)}</div>}
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {sharedProduct && onOpenProduct && (
+                  <button type="button" onClick={() => onOpenProduct(sharedProduct)} className={`text-[9px] font-black px-2 py-1 rounded-lg cursor-pointer ${th.btnPrimary} ${th.btnPrimaryText}`}>
+                    {t('Tazama')}
+                  </button>
+                )}
+                {companyProducts.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowProductPicker(prev => !prev)}
+                    className={`text-[9px] font-black px-2 py-1 rounded-lg border cursor-pointer ${th.btnSecondary} ${th.btnSecondaryText} flex items-center gap-1`}
+                    title={t('Badilisha bidhaa unayoulizia')}
+                  >
+                    <RefreshCw className="w-2.5 h-2.5" />
+                    <span>{showProductPicker ? t('Funga') : t('Badilisha')}</span>
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <div className={`text-[10px] font-black truncate ${th.strongText}`}>{sharedProduct.name}</div>
-              <div className={`text-[10px] font-bold ${th.brandText}`}>{TZS(sharedProduct.price)}</div>
-            </div>
-            {onOpenProduct && (
-              <button onClick={() => onOpenProduct(sharedProduct)} className={`text-[9px] font-black px-2.5 py-1.5 rounded-lg cursor-pointer ${th.btnPrimary} ${th.btnPrimaryText}`}>
-                {t('Tazama')}
-              </button>
+
+            {/* Product switcher dropdown */}
+            {showProductPicker && (
+              <div className="mt-2.5 pt-2 border-t border-gray-200/50 space-y-1 max-h-44 overflow-y-auto">
+                <div className={`text-[9px] font-black uppercase tracking-wider ${th.textMuted}`}>
+                  {t('Chagua bidhaa unayotaka kuongelea na muuzaji huyu')}:
+                </div>
+                {companyProducts.map(cp => {
+                  const isSelected = cp.id === active.productId;
+                  return (
+                    <button
+                      key={cp.id}
+                      type="button"
+                      onClick={() => {
+                        if (onUpdateProduct) onUpdateProduct(active.id, cp.id);
+                        send({ messageType: 'text', text: `💬 Naulizia kuhusu: ${cp.name} (${TZS(cp.price)})`, productId: cp.id });
+                        setShowProductPicker(false);
+                      }}
+                      className={`w-full p-1.5 rounded-lg text-left flex items-center justify-between gap-2 transition cursor-pointer text-xs ${
+                        isSelected ? 'bg-amber-500/20 border border-amber-400 font-black' : 'hover:bg-black/5 font-semibold'
+                      }`}
+                    >
+                      <span className="truncate">{cp.name}</span>
+                      <span className="font-bold text-amber-600 shrink-0">{TZS(cp.price)}</span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
         )}

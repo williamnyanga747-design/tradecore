@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Store as StoreIcon, CreditCard, Package, Plus, Pencil, Trash2, Save, ImagePlus, X, Check, Upload, Video, Play, AlertTriangle, MessageCircle, BarChart3, Sparkles, MapPin, Loader2, ShieldCheck } from 'lucide-react';
+import { Store as StoreIcon, CreditCard, Package, Plus, Pencil, Trash2, Save, ImagePlus, X, Check, Upload, Video, Play, AlertTriangle, MessageCircle, BarChart3, Sparkles, MapPin, Loader2, ShieldCheck, ExternalLink } from 'lucide-react';
 import { compressImageFile, formatByteSize } from '../utils/imageCompression';
 import { Company, CompanyPaymentMethod, MarketplaceProduct, MarketplaceClick, Review, ProductView, FlashSale, Story, ChatConversation, ChatMessage, ProductReturn, Dispute, DisputeMessage, BulkUploadJob, ShippingZone, Store } from '../types';
 import { PublicTheme, getPublicTheme } from '../utils/publicTheme';
@@ -16,6 +16,7 @@ import MegaChat from './marketplace/MegaChat';
 import MegaBulkUpload from './marketplace/MegaBulkUpload';
 import { CompanyReturnsPanel, AdminDisputeCenter } from './marketplace/MegaReturns';
 import ProductMediaStudioModal from './marketplace/ProductMediaStudioModal';
+import { getPhpConfig } from '../utils/api';
 
 interface Props {
   company: Company | null;
@@ -32,6 +33,7 @@ interface Props {
   onDeletePaymentMethod: (companyId: number, methodId: number) => void;
   onSaveProduct: (product: MarketplaceProduct) => void;
   onDeleteProduct: (productId: number) => void;
+  onSaveStore?: (store: Store) => void;
   // --- MEGA BUILD: 7 ultimate features company panel ---
   flashSales?: FlashSale[];
   flashSalesHandlers?: { onSave: (sale: FlashSale) => void; onDelete: (id: number) => void };
@@ -61,13 +63,13 @@ const METHOD_TYPES: Array<{ key: CompanyPaymentMethod['methodType']; label: stri
 ];
 
 export default function MarketplaceSettingsPanel({
-  company, products, stores, clicks, reviews, productViews, regions, theme: themeProp, translate: t, onSaveProfile, onSavePaymentMethod, onDeletePaymentMethod, onSaveProduct, onDeleteProduct,
+  company, products, stores, clicks, reviews, productViews, regions, theme: themeProp, translate: t, onSaveProfile, onSavePaymentMethod, onDeletePaymentMethod, onSaveProduct, onDeleteProduct, onSaveStore,
   flashSales, flashSalesHandlers, stories, storiesHandlers, chatConversations, chatMessages, chatHandlers,
   productReturns, returnHandlers, disputes, disputeMessages, disputeHandlers, bulkUploadJobs, bulkUploadHandlers, shippingZones, shippingZoneHandlers
 }: Props) {
   const th = getPublicTheme(themeProp || 'milk');
   const regionList = regions && regions.length > 0 ? regions : TANZANIA_REGIONS;
-  const [tab, setTab] = useState<'profile' | 'payments' | 'products' | 'analytics' | 'flash-sales' | 'stories' | 'chat' | 'returns' | 'disputes' | 'bulk-upload' | 'shipping'>('profile');
+  const [tab, setTab] = useState<'profile' | 'stores' | 'payments' | 'products' | 'analytics' | 'flash-sales' | 'stories' | 'chat' | 'returns' | 'disputes' | 'bulk-upload' | 'shipping'>('profile');
 
   // Profile form state
   const [profile, setProfile] = useState<Partial<Company>>({
@@ -130,6 +132,82 @@ export default function MarketplaceSettingsPanel({
   // Payment method form state
   const [editingMethod, setEditingMethod] = useState<CompanyPaymentMethod | null>(null);
   const [methodForm, setMethodForm] = useState<Partial<CompanyPaymentMethod>>({});
+
+  // Store management state
+  const [storeModalOpen, setStoreModalOpen] = useState(false);
+  const [editingStore, setEditingStore] = useState<Store | null>(null);
+  const [storeForm, setStoreForm] = useState<Partial<Store>>({
+    name: '',
+    location: '',
+    phone: '',
+    latitude: undefined,
+    longitude: undefined,
+    operatingHours: '',
+    isMarketplaceVisible: true,
+  });
+  const [deleteStoreId, setDeleteStoreId] = useState<number | null>(null);
+
+  const startNewStore = () => {
+    setEditingStore(null);
+    setStoreForm({
+      name: '',
+      location: profile.addressText || '',
+      phone: profile.phone || '',
+      latitude: profile.latitude,
+      longitude: profile.longitude,
+      operatingHours: 'Mon-Sat 08:00 - 18:00',
+      isMarketplaceVisible: true
+    });
+    setStoreModalOpen(true);
+  };
+
+  const startEditStore = (s: Store) => {
+    setEditingStore(s);
+    setStoreForm({
+      ...s,
+      isMarketplaceVisible: s.isMarketplaceVisible !== false
+    });
+    setStoreModalOpen(true);
+  };
+
+  const handleSaveStore = () => {
+    if (!company) return;
+    if (!storeForm.name?.trim()) {
+      toast.error(t('Jina la duka linahitajika (Store name is required).'));
+      return;
+    }
+    const payload: Store = {
+      id: editingStore?.id ?? Date.now(),
+      branchId: editingStore?.branchId ?? 1,
+      companyId: company.id,
+      name: storeForm.name.trim(),
+      location: (storeForm.location || '').trim(),
+      phone: (storeForm.phone || '').trim(),
+      latitude: storeForm.latitude != null ? Number(storeForm.latitude) : undefined,
+      longitude: storeForm.longitude != null ? Number(storeForm.longitude) : undefined,
+      operatingHours: (storeForm.operatingHours || '').trim() || undefined,
+      isMarketplaceVisible: storeForm.isMarketplaceVisible !== false,
+      isDeleted: false,
+      ...(storeForm as any)
+    };
+    if (onSaveStore) {
+      onSaveStore(payload);
+    } else {
+      toast.error(t('Store save handler not available.'));
+      return;
+    }
+    setStoreModalOpen(false);
+    setEditingStore(null);
+  };
+
+  const handleDeleteStore = (sId: number) => {
+    const target = (stores || []).find(s => s.id === sId);
+    if (target && onSaveStore) {
+      onSaveStore({ ...target, isDeleted: true });
+      toast.success(t('Duka limefutwa.'));
+    }
+    setDeleteStoreId(null);
+  };
 
   // Product form state
   const [productFormOpen, setProductFormOpen] = useState(false);
@@ -196,7 +274,6 @@ export default function MarketplaceSettingsPanel({
       setProductForm(p => ({ ...p, description: lines.join('\n') }));
     };
     try {
-      const { getPhpConfig } = await import('../utils/api');
       const { apiUrl } = getPhpConfig();
       const res = await fetch(`${apiUrl}?action=ai_product_description&name=${encodeURIComponent(name)}&category=${encodeURIComponent(category)}&price=${price}&company=${encodeURIComponent(company?.name || '')}`, { cache: 'no-store' });
       if (res.ok) {
@@ -431,9 +508,10 @@ export default function MarketplaceSettingsPanel({
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1.5 bg-gray-100 rounded-xl p-1 w-fit">
+      <div className="flex gap-1.5 bg-gray-100 rounded-xl p-1 overflow-x-auto max-w-full no-scrollbar">
         {([
           { key: 'profile', label: t('Store Profile'), icon: StoreIcon },
+          { key: 'stores', label: t('Maduka (Stores)'), icon: MapPin },
           { key: 'payments', label: t('Payment Methods'), icon: CreditCard },
           { key: 'products', label: t('Products'), icon: Package },
           { key: 'analytics', label: t('Analytics'), icon: BarChart3 },
@@ -448,9 +526,9 @@ export default function MarketplaceSettingsPanel({
           <button
             key={tb.key}
             onClick={() => setTab(tb.key)}
-            className={`flex items-center gap-1.5 px-4 py-2 text-[11px] font-bold rounded-lg transition cursor-pointer ${tab === tb.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            className={`flex items-center gap-1.5 px-4 py-2 text-[11px] font-bold rounded-lg transition shrink-0 cursor-pointer ${tab === tb.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
           >
-            <tb.icon className="w-3.5 h-3.5" /> {tb.label}
+            <tb.icon className="w-3.5 h-3.5 shrink-0" /> {tb.label}
           </button>
         ))}
       </div>
@@ -692,6 +770,285 @@ export default function MarketplaceSettingsPanel({
         </div>
       )}
 
+      {/* STORES TAB — Physical Branch Stores & In-Store Pickup */}
+      {tab === 'stores' && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">{t('Maduka na Matawi ya Kimwili (Stores & Pickup Locations)')}</h3>
+              <p className="text-xs text-gray-500 font-medium">
+                {t('Maduka haya kutoka Master Data Store Management hutumika kuwezesha wateja kuona tawi la karibu, kutembelea dukani ("Njoo Dukani"), na kutenga bidhaa maalum kwa kila duka.')}
+              </p>
+            </div>
+            <button
+              onClick={startNewStore}
+              className="flex items-center gap-1.5 px-4 py-2 text-[11px] font-bold text-white bg-brand hover:opacity-90 rounded-lg transition cursor-pointer shadow-xs"
+            >
+              <Plus className="w-3.5 h-3.5" /> {t('Ongeza Duka Jipya')}
+            </button>
+          </div>
+
+          {(() => {
+            const companyStores = (stores || []).filter(s => !s.isDeleted);
+            if (companyStores.length === 0) {
+              return (
+                <div className="bg-white border border-gray-100 rounded-xl p-8 text-center space-y-3">
+                  <div className="w-12 h-12 mx-auto rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
+                    <MapPin className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-gray-800">{t('Hakuna maduka yaliyosajiliwa bado')}</div>
+                    <div className="text-xs text-gray-400 font-medium max-w-md mx-auto mt-1">
+                      {t('Ongeza duka la kimwili au tawi lenye GPS coordinates ili wateja waweze kuchagua kuchukua mzigo dukani ("In-Store Pickup") au kutembelea moja kwa moja.')}
+                    </div>
+                  </div>
+                  <button
+                    onClick={startNewStore}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-brand rounded-lg shadow-sm hover:opacity-90 transition cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" /> {t('Sajili Duka la Kwanza')}
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {companyStores.map(st => {
+                  const hasGps = st.latitude != null && st.longitude != null;
+                  const isVisible = st.isMarketplaceVisible !== false;
+                  const allocatedProductCount = (products || []).filter(p => (p.storeIds && p.storeIds.includes(st.id)) || (p as any).storeId === st.id).length;
+
+                  return (
+                    <div key={st.id} className="bg-white border border-gray-100 rounded-xl p-4 flex flex-col justify-between hover:shadow-md transition">
+                      <div className="space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="p-2.5 rounded-lg bg-amber-50 text-amber-600 shrink-0">
+                              <StoreIcon className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0">
+                              <h4 className="text-xs font-bold text-gray-900 truncate">{st.name}</h4>
+                              <span className="text-[10px] text-gray-400 font-medium block truncate">
+                                {st.phone || t('Hakuna simu')}
+                              </span>
+                            </div>
+                          </div>
+                          <span className={`text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border shrink-0 ${isVisible ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-gray-100 text-gray-400 border-gray-200'}`}>
+                            {isVisible ? t('Live Marketplace') : t('Hidden')}
+                          </span>
+                        </div>
+
+                        <div className="space-y-1.5 text-xs text-gray-600">
+                          <div className="flex items-start gap-1.5">
+                            <MapPin className="w-3.5 h-3.5 text-gray-400 shrink-0 mt-0.5" />
+                            <span className="text-[11px] font-medium leading-tight">
+                              {st.location || (st as any).address || t('Hakuna anuani iliyoandikwa')}
+                            </span>
+                          </div>
+
+                          {hasGps ? (
+                            <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-600 bg-emerald-50/70 border border-emerald-100 rounded-md px-2 py-1">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                              <span>GPS: {st.latitude?.toFixed(4)}, {st.longitude?.toFixed(4)}</span>
+                              <a
+                                href={`https://www.google.com/maps/search/?api=1&query=${st.latitude},${st.longitude}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="ml-auto text-emerald-700 hover:underline inline-flex items-center gap-0.5 text-[9px] font-black"
+                              >
+                                Maps <ExternalLink className="w-2.5 h-2.5" />
+                              </a>
+                            </div>
+                          ) : (
+                            <div className="text-[10px] text-amber-600 bg-amber-50 rounded-md px-2 py-1 border border-amber-100 font-semibold">
+                              ⚠️ {t('Hakuna GPS coordinates — hariri kuweka ramani')}
+                            </div>
+                          )}
+
+                          {st.operatingHours && (
+                            <div className="text-[10px] text-gray-500 font-medium">
+                              🕒 {st.operatingHours}
+                            </div>
+                          )}
+
+                          <div className="text-[10px] text-gray-500 font-medium pt-1 border-t border-gray-50 flex items-center justify-between">
+                            <span>{t('Bidhaa zilizotengwa')}:</span>
+                            <span className="font-bold text-gray-800">{allocatedProductCount} {t('bidhaa')}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-3 mt-3 border-t border-gray-100">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (onSaveStore) {
+                              onSaveStore({ ...st, isMarketplaceVisible: !isVisible });
+                              toast.success(isVisible ? t('Duka limefichwa kwenye Marketplace.') : t('Duka sasa linaonekana kwenye Marketplace!'));
+                            }
+                          }}
+                          className={`text-[10px] font-bold px-2 py-1 rounded-md transition cursor-pointer ${isVisible ? 'text-amber-700 bg-amber-50 hover:bg-amber-100' : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'}`}
+                        >
+                          {isVisible ? t('Ficha') : t('Weka Live')}
+                        </button>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => startEditStore(st)}
+                            className="p-1.5 rounded-lg text-gray-400 hover:text-brand hover:bg-gray-50 transition cursor-pointer"
+                            title={t('Hariri duka')}
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => setDeleteStoreId(st.id)}
+                            className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition cursor-pointer"
+                            title={t('Futa duka')}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          {/* Store Modal (Add / Edit) */}
+          {storeModalOpen && (
+            <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+              <div className="bg-white rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl my-8">
+                <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                  <div className="flex items-center gap-2">
+                    <StoreIcon className="w-5 h-5 text-brand" />
+                    <h3 className="text-sm font-bold text-gray-900">
+                      {editingStore ? t('Hariri Duka la Mauzo') : t('Ongeza Duka Jipya la Mauzo')}
+                    </h3>
+                  </div>
+                  <button onClick={() => { setStoreModalOpen(false); setEditingStore(null); }} className="p-1 text-gray-400 hover:text-gray-700 rounded-lg">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="space-y-3.5">
+                  <div>
+                    <label className={labelCls}>{t('Jina la Duka / Tawi (Store Name)')} *</label>
+                    <input
+                      value={storeForm.name || ''}
+                      onChange={(e) => setStoreForm(p => ({ ...p, name: e.target.value }))}
+                      placeholder={t('mf. Duka Kuu Kariakoo, Mlimani City Branch, n.k.')}
+                      className={inputCls}
+                    />
+                  </div>
+
+                  <div className="grid sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className={labelCls}>{t('Nambari ya Simu ya Duka')}</label>
+                      <input
+                        value={storeForm.phone || ''}
+                        onChange={(e) => setStoreForm(p => ({ ...p, phone: e.target.value }))}
+                        placeholder="+255 7..."
+                        className={inputCls}
+                      />
+                    </div>
+                    <div>
+                      <label className={labelCls}>{t('Masaa ya Kazi (Operating Hours)')}</label>
+                      <input
+                        value={storeForm.operatingHours || ''}
+                        onChange={(e) => setStoreForm(p => ({ ...p, operatingHours: e.target.value }))}
+                        placeholder="mf. Jtt - Jms: 08:00 - 18:00"
+                        className={inputCls}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className={labelCls}>{t('Eneo la Duka / Mtaa (Address/Location)')}</label>
+                    <input
+                      value={storeForm.location || ''}
+                      onChange={(e) => setStoreForm(p => ({ ...p, location: e.target.value }))}
+                      placeholder={t('mf. Kariakoo mtaa wa Narung\'ombe & Congo, Dar es Salaam')}
+                      className={inputCls}
+                    />
+                  </div>
+
+                  {/* GPS & Location Picker */}
+                  <div className="border border-gray-100 rounded-xl p-3 bg-gray-50/60 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className={labelCls + ' mb-0'}>{t('Weka Ramani / GPS Coordinates (Njoo Dukani Pickup)')}</label>
+                      {storeForm.latitude != null && storeForm.longitude != null && (
+                        <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                          {storeForm.latitude.toFixed(4)}, {storeForm.longitude.toFixed(4)}
+                        </span>
+                      )}
+                    </div>
+                    <LocationPicker
+                      lat={storeForm.latitude}
+                      lng={storeForm.longitude}
+                      onChange={(lat, lng) => {
+                        setStoreForm(p => ({
+                          ...p,
+                          latitude: lat,
+                          longitude: lng
+                        }));
+                      }}
+                      t={t}
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
+                    <input
+                      type="checkbox"
+                      checked={storeForm.isMarketplaceVisible !== false}
+                      onChange={(e) => setStoreForm(p => ({ ...p, isMarketplaceVisible: e.target.checked }))}
+                      className="w-4 h-4 accent-brand rounded"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-gray-800">{t('Onyesha duka hili kwenye ramani ya Marketplace')}</span>
+                      <p className="text-[10px] text-gray-400 font-medium">{t('Wateja wataona duka hili kwenye ramani ya bidhaa zilizotengwa na wanaweza kuchagua kulitembelea.')}</p>
+                    </div>
+                  </label>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => { setStoreModalOpen(false); setEditingStore(null); }}
+                    className="px-4 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100 rounded-lg transition cursor-pointer"
+                  >
+                    {t('Ghairi')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveStore}
+                    className="flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white bg-brand rounded-lg shadow-sm hover:opacity-90 transition cursor-pointer"
+                  >
+                    <Save className="w-3.5 h-3.5" /> {t('Hifadhi Duka')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Confirm Delete Store Modal */}
+          {deleteStoreId !== null && (
+            <ConfirmActionModal
+              isOpen={true}
+              title={t('Futa Duka')}
+              message={t('Una uhakika unataka kufuta duka hili? Bidhaa zilizotengwa duka hili zitarudi kwenye HQ kuu.')}
+              confirmLabel={t('Futa')}
+              cancelLabel={t('Ghairi')}
+              isDestructive={true}
+              onConfirm={() => handleDeleteStore(deleteStoreId)}
+              onCancel={() => setDeleteStoreId(null)}
+            />
+          )}
+        </div>
+      )}
+
       {/* PAYMENTS TAB */}
       {tab === 'payments' && (
         <div className="space-y-4">
@@ -805,6 +1162,7 @@ export default function MarketplaceSettingsPanel({
                     <th className="px-4 py-3">{t('Product')}</th>
                     <th className="px-4 py-3">{t('Price')}</th>
                     <th className="px-4 py-3">{t('Stock')}</th>
+                    <th className="px-4 py-3">{t('Duka lililowekwa (Store Allocation)')}</th>
                     <th className="px-4 py-3">{t('WhatsApp Clicks')}</th>
                     <th className="px-4 py-3">{t('Status')}</th>
                     <th className="px-4 py-3 text-right">{t('Actions')}</th>
@@ -828,6 +1186,33 @@ export default function MarketplaceSettingsPanel({
                       </td>
                       <td className="px-4 py-3 text-xs font-bold text-gray-900">{TZS(p.price)}</td>
                       <td className="px-4 py-3 text-xs font-semibold text-gray-600">{p.stockQuantity}</td>
+                      <td className="px-4 py-3">
+                        {(() => {
+                          const allocatedStores = (stores || []).filter(s => (p.storeIds && p.storeIds.includes(s.id)) || (p as any).storeId === s.id);
+                          if (allocatedStores.length === 0) {
+                            return (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200" title={t('Inapatikana maduka yote au makao makuu')}>
+                                <StoreIcon className="w-3 h-3 text-slate-400 shrink-0" />
+                                <span>{t('HQ / Yote (Main)')}</span>
+                              </span>
+                            );
+                          }
+                          return (
+                            <div className="flex flex-wrap gap-1 max-w-[200px]">
+                              {allocatedStores.map(s => (
+                                <span
+                                  key={s.id}
+                                  className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200"
+                                  title={`${s.location || ''} ${s.latitude != null && s.longitude != null ? `(${s.latitude.toFixed(4)}, ${s.longitude.toFixed(4)})` : ''}`}
+                                >
+                                  <MapPin className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                                  <span className="truncate max-w-[120px]">{s.name}</span>
+                                </span>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="px-4 py-3">
                         <span className={`inline-flex items-center gap-1 text-[11px] font-black rounded-full px-2.5 py-1 ${whatsappClicksFor(p.id) > 0 ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-gray-50 text-gray-400 border border-gray-100'}`}>
                           <MessageCircle className="w-3 h-3" /> {whatsappClicksFor(p.id)}

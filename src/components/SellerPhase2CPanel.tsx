@@ -15,6 +15,7 @@ import {
 import { TZS } from './marketplace/MarketplaceShared';
 import { sameId } from '../utils/idUtils';
 import { timeAgo } from '../utils/megaHelpers';
+import InstallmentVisualSchedule from './marketplace/InstallmentVisualSchedule';
 
 interface SellerPhase2CPanelProps {
   company: Company | null;
@@ -63,6 +64,19 @@ interface SellerPhase2CPanelProps {
   onStartLiveStream?: (streamId: number) => void;
   onEndLiveStream?: (streamId: number) => void;
   onAddLiveComment?: (streamId: number, input: { customerName: string; customerPhone?: string; message: string; type?: LiveCommentType; productId?: number }) => void;
+  onCompleteOfferSale?: (offerId: number, paymentMethod?: string, transactionId?: string) => { ok: boolean; error?: string };
+  onRecordSmartSale?: (input: {
+    companyId: number;
+    productId: number;
+    quantity: number;
+    unitPrice: number;
+    customerName: string;
+    customerPhone: string;
+    customerAddress?: string;
+    paymentMethod: string;
+    transactionId?: string;
+    note?: string;
+  }) => { ok: boolean; orderId?: number; orderNumber?: string; error?: string };
   currentUser?: any;
 }
 
@@ -103,7 +117,8 @@ export default function SellerPhase2CPanel({
   chatConversations = [], chatMessages = [], chatHandlers,
   onCreateGroupDeal, onVerifyParticipantPayment, onCloseGroupDeal,
   onCreateInstallmentPlan, onToggleInstallmentPlan, onRecordManualInstallmentPayment, onUpdateInstallmentOrderStatus,
-  onCreateLiveStream, onStartLiveStream, onEndLiveStream, onAddLiveComment
+  onCreateLiveStream, onStartLiveStream, onEndLiveStream, onAddLiveComment,
+  onCompleteOfferSale, onRecordSmartSale
 }: SellerPhase2CPanelProps) {
   const companyId = company?.id || 0;
   const isAdmin = Boolean(
@@ -136,6 +151,17 @@ export default function SellerPhase2CPanel({
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
 
   // Creation Modals
+  const [quickSaleModal, setQuickSaleModal] = useState(false);
+  const [quickSaleProdId, setQuickSaleProdId] = useState<number>(products[0]?.id || 0);
+  const [quickSaleQty, setQuickSaleQty] = useState('1');
+  const [quickSalePrice, setQuickSalePrice] = useState('');
+  const [quickSaleCustName, setQuickSaleCustName] = useState('');
+  const [quickSaleCustPhone, setQuickSaleCustPhone] = useState('');
+  const [quickSaleMethod, setQuickSaleMethod] = useState('cash');
+  const [quickSaleTxId, setQuickSaleTxId] = useState('');
+  const [quickSaleNote, setQuickSaleNote] = useState('');
+  const [quickSaleMsg, setQuickSaleMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
   const [dealModal, setDealModal] = useState(false);
   const [dealProductId, setDealProductId] = useState<number>(products[0]?.id || 0);
   const [dealPrice, setDealPrice] = useState('');
@@ -164,6 +190,7 @@ export default function SellerPhase2CPanel({
   const [manualPayNote, setManualPayNote] = useState('');
   const [manualPaySubmitting, setManualPaySubmitting] = useState(false);
   const [manualPayError, setManualPayError] = useState('');
+  const [scheduleModalOrder, setScheduleModalOrder] = useState<InstallmentOrder | null>(null);
 
   // Live Stream state
   const [streamModal, setStreamModal] = useState(false);
@@ -366,35 +393,42 @@ export default function SellerPhase2CPanel({
               {/* Action buttons if Pending */}
               {offer.status === 'pending' && (
                 <div className="space-y-2 mt-3 pt-3 border-t border-gray-100">
-                  <div className="flex gap-2 flex-wrap items-center">
-                    <button
-                      onClick={() => onDecideOffer(offer.id, true)}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-green-600 text-white rounded-xl text-xs font-black hover:bg-green-700 cursor-pointer shadow-sm active:scale-95 transition"
-                    >
-                      <CheckCircle2 className="w-4 h-4" /> {t('Kubali Ofa Hii')} ({TZS(offer.offeredPrice)})
-                    </button>
-                    <button
-                      onClick={() => {
-                        setCounterFor(counterFor === offer.id ? null : offer.id);
-                        setCounterPrice(String(Math.round(offer.offeredPrice * 1.15)));
-                        setCounterMsg('');
-                        setRejectFor(null);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 text-white rounded-xl text-xs font-black hover:bg-blue-700 cursor-pointer shadow-sm active:scale-95 transition"
-                    >
-                      <Repeat className="w-4 h-4" /> {t('Toa Bei Nyingine (Counter)')}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setRejectFor(rejectFor === offer.id ? null : offer.id);
-                        setRejectReason('');
-                        setCounterFor(null);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-xl text-xs font-black cursor-pointer border border-red-200 transition"
-                    >
-                      <XCircle className="w-4 h-4" /> {t('Kataa')}
-                    </button>
-                  </div>
+                  {isAdmin ? (
+                    <div className="flex gap-2 flex-wrap items-center">
+                      <button
+                        onClick={() => onDecideOffer(offer.id, true)}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-green-600 text-white rounded-xl text-xs font-black hover:bg-green-700 cursor-pointer shadow-sm active:scale-95 transition"
+                      >
+                        <CheckCircle2 className="w-4 h-4" /> {t('Kubali Ofa Hii')} ({TZS(offer.offeredPrice)})
+                      </button>
+                      <button
+                        onClick={() => {
+                          setCounterFor(counterFor === offer.id ? null : offer.id);
+                          setCounterPrice(String(Math.round(offer.offeredPrice * 1.15)));
+                          setCounterMsg('');
+                          setRejectFor(null);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 text-white rounded-xl text-xs font-black hover:bg-blue-700 cursor-pointer shadow-sm active:scale-95 transition"
+                      >
+                        <Repeat className="w-4 h-4" /> {t('Toa Bei Nyingine (Counter)')}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setRejectFor(rejectFor === offer.id ? null : offer.id);
+                          setRejectReason('');
+                          setCounterFor(null);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 bg-gray-100 text-red-600 hover:bg-red-50 hover:text-red-700 rounded-xl text-xs font-black cursor-pointer border border-red-200 transition"
+                      >
+                        <XCircle className="w-4 h-4" /> {t('Kataa')}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="text-xs font-semibold text-gray-400 italic bg-gray-50 border border-gray-100 px-3 py-1.5 rounded-xl inline-flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5 text-gray-400" />
+                      {t('Uamuzi wa ofa unaruhusiwa kwa Admin pekee (Read-only).')}
+                    </div>
+                  )}
 
                   {counterFor === offer.id && (
                     <div className="rounded-xl border border-blue-200 p-3.5 space-y-2.5 bg-blue-50/50 mt-2">
@@ -485,16 +519,31 @@ export default function SellerPhase2CPanel({
               {offer.status === 'accepted' && (
                 <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-xs flex-wrap gap-2">
                   <span className="font-bold text-emerald-700 inline-flex items-center gap-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> {t('Mteja anaweza kulipa sasa kupitia M-Pesa / Tigo / Airtel. Inasubiri uthibitisho.')}
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" /> {t('Ofa imekubaliwa! Unaweza kuthibitisha malipo hapa au kusubiri mteja alipe mtandaoni:')}
                   </span>
-                  <a
-                    href={`https://wa.me/${offer.customerPhone.replace(/\D/g, '')}?text=${encodeURIComponent(`Habari ${offer.customerName}, tumekubali ofa yako ya TZS ${(offer.finalPrice || offer.offeredPrice).toLocaleString()}! Unaweza kukamilisha malipo yako sasa.`)}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 cursor-pointer"
-                  >
-                    <MessageCircle className="w-3.5 h-3.5" /> Mjulishe Mteja Kulipa
-                  </a>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {isAdmin && onCompleteOfferSale && (
+                      <button
+                        onClick={() => {
+                          const res = onCompleteOfferSale(offer.id);
+                          if (res?.ok) {
+                            alert(t('Malipo yamethibitishwa na mauzo yameingizwa kiotomatiki kwenye Marketplace Orders na Ripoti ya Kifedha (P&L)!'));
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-[11px] font-black hover:bg-emerald-700 cursor-pointer shadow-sm active:scale-95 transition"
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" /> ⚡ {t('Thibitisha Malipo Dukani (Kamilisha Mauzo)')}
+                      </button>
+                    )}
+                    <a
+                      href={`https://wa.me/${offer.customerPhone.replace(/\D/g, '')}?text=${encodeURIComponent(`Habari ${offer.customerName}, tumekubali ofa yako ya TZS ${(offer.finalPrice || offer.offeredPrice).toLocaleString()}! Unaweza kukamilisha malipo yako sasa.`)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-[11px] font-bold px-3 py-1.5 bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg cursor-pointer"
+                    >
+                      <MessageCircle className="w-3.5 h-3.5 text-emerald-600" /> Mjulishe Mteja
+                    </a>
+                  </div>
                 </div>
               )}
 
@@ -821,9 +870,17 @@ export default function SellerPhase2CPanel({
         {displayedDeals.map(deal => {
           const product = products.find(p => p.id === deal.productId);
           const participants = groupDealParticipants.filter(p => p.groupDealId === deal.id);
-          const paid = participants.filter(p => p.status === 'paid').length;
-          const progress = Math.min(100, Math.round((paid / Math.max(1, deal.minBuyers)) * 100));
-          const isDone = deal.status === 'completed';
+          const paidParticipants = participants.filter(p => p.status === 'paid');
+          const paid = paidParticipants.length;
+
+          // Crowdfund Split-Deduct Calculations
+          const targetTotal = deal.targetTotalAmount || (product?.price || deal.soloPrice || deal.groupPrice);
+          const totalPaid = deal.totalPaidAmount !== undefined && deal.totalPaidAmount !== null
+            ? deal.totalPaidAmount
+            : paidParticipants.reduce((sum, p) => sum + (p.amountPaid || 0), 0);
+          const remainingAmount = Math.max(0, targetTotal - totalPaid);
+          const progress = Math.min(100, Math.round((totalPaid / Math.max(1, targetTotal)) * 100));
+          const isDone = remainingAmount <= 0 || deal.isReadyForDelivery || deal.status === 'completed';
 
           return (
             <div key={deal.id} className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 hover:border-gray-300 transition space-y-3">
@@ -834,22 +891,20 @@ export default function SellerPhase2CPanel({
                   </div>
                   <div>
                     <div className="text-xs font-black text-gray-900">{product ? product.name : `${t('Bidhaa')} #${deal.productId}`}</div>
-                    <div className="text-[11px] text-gray-600 mt-0.5">
-                      <span className="line-through text-gray-400">{TZS(deal.soloPrice)}</span> → <span className="font-extrabold text-indigo-600">{TZS(deal.groupPrice)}</span>
-                      <span className="ml-2 text-emerald-600 font-bold bg-emerald-50 px-1.5 py-0.5 rounded text-[10px]">
-                        Okoa {TZS(Math.max(0, deal.soloPrice - deal.groupPrice))} ({Math.round(((deal.soloPrice - deal.groupPrice) / Math.max(1, deal.soloPrice)) * 100)}%)
-                      </span>
+                    <div className="text-[11px] text-gray-600 mt-0.5 flex items-center gap-2 flex-wrap">
+                      <span className="font-bold text-gray-900">{deal.title || `Kikundi #${deal.shareCode}`}</span>
+                      {deal.creatorName && <span className="text-[10px] text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded font-bold">Kiongozi: {deal.creatorName}</span>}
                     </div>
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    isDone ? 'bg-emerald-100 text-emerald-800 font-black border border-emerald-300' :
                     deal.status === 'active' ? 'bg-indigo-100 text-indigo-700' :
-                    deal.status === 'completed' ? 'bg-emerald-100 text-emerald-700 font-black' :
                     'bg-gray-100 text-gray-700'
                   }`}>
-                    {deal.status === 'active' ? t('● Inaendelea') : deal.status === 'completed' ? t('✓ Imekamilika') : deal.status}
+                    {isDone ? t('✓ TAYARI KUSAFIRISHWA (100% Imelipwa)') : deal.status === 'active' ? t('● Inakusanya Michango') : deal.status}
                   </span>
                   <button
                     onClick={() => copyCode(deal.shareCode)}
@@ -861,11 +916,33 @@ export default function SellerPhase2CPanel({
                 </div>
               </div>
 
+              {/* Financial Summary & Split-Deduct Metrics */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 p-2.5 rounded-xl bg-gray-50 border border-gray-100 text-[11px]">
+                <div>
+                  <span className="text-gray-500 text-[10px] uppercase font-bold block">{t('Bei Kamili ya Bidhaa')}</span>
+                  <span className="font-black text-gray-900 text-xs">{TZS(targetTotal)}</span>
+                </div>
+                <div>
+                  <span className="text-emerald-700 text-[10px] uppercase font-bold block">{t('Jumla Iliyolipwa')} ({progress}%)</span>
+                  <span className="font-black text-emerald-600 text-xs">{TZS(totalPaid)}</span>
+                </div>
+                <div>
+                  <span className={`text-[10px] uppercase font-bold block ${remainingAmount === 0 ? 'text-emerald-700' : 'text-amber-800'}`}>
+                    {remainingAmount === 0 ? t('Deni Limemalizika') : t('Bado Kulipwa')}
+                  </span>
+                  <span className={`font-black text-xs ${remainingAmount === 0 ? 'text-emerald-700' : 'text-amber-600'}`}>
+                    {remainingAmount === 0 ? '✓ 0 TZS (100%)' : TZS(remainingAmount)}
+                  </span>
+                </div>
+              </div>
+
               {/* Progress and target */}
               <div>
                 <div className="flex justify-between text-[11px] font-bold text-gray-600 mb-1">
-                  <span>{paid} / {deal.minBuyers} {t('wanunuzi wamelipa')}</span>
-                  <span>{progress}%</span>
+                  <span>{paid} {t('wanunuzi wamechangia')}</span>
+                  <span className={remainingAmount === 0 ? 'text-emerald-600 font-extrabold' : 'text-indigo-600 font-bold'}>
+                    {progress}% {remainingAmount === 0 ? '· ✓ Tayari Kusafirishwa!' : `· Bado TZS ${remainingAmount.toLocaleString()}`}
+                  </span>
                 </div>
                 <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
                   <div
@@ -876,39 +953,57 @@ export default function SellerPhase2CPanel({
               </div>
 
               {/* Deal Status Banner & Seller Controls */}
-              {deal.status === 'active' && (
+              {deal.status === 'active' && !isDone && (
                 <div className="flex items-center justify-between gap-2 p-2.5 bg-indigo-50/70 border border-indigo-100 rounded-xl flex-wrap">
                   <div className="text-[11px] text-indigo-900 font-semibold flex items-center gap-1.5">
                     <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
-                    <span>{paid >= deal.minBuyers ? 'Idadi imetimia! Deal itakamilika kiotomatiki au unaweza kufunga sasa.' : `Bado wanunuzi ${Math.max(0, deal.minBuyers - paid)} ili kukamilisha.`}</span>
+                    <span>{remainingAmount === 0 ? 'Kiasi kamili kimetimia! Deal imekamilika.' : `Bado TZS ${remainingAmount.toLocaleString()} ili bidhaa iwe tayari kusafirishwa.`}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => onCloseGroupDeal?.(deal.id, 'completed')}
-                      className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-black cursor-pointer shadow-sm transition inline-flex items-center gap-1"
-                    >
-                      <Check className="w-3 h-3" /> Kamilisha Deal Sasa
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm('Una uhakika unataka kughairi kikundi hiki cha Nunua Pamoja?')) {
-                          onCloseGroupDeal?.(deal.id, 'cancelled');
-                        }
-                      }}
-                      className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-[11px] font-bold cursor-pointer transition inline-flex items-center gap-1"
-                    >
-                      <X className="w-3 h-3" /> Ghairi
-                    </button>
-                  </div>
+                  {isAdmin ? (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => onCloseGroupDeal?.(deal.id, 'completed')}
+                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-black cursor-pointer shadow-sm transition inline-flex items-center gap-1"
+                      >
+                        <Check className="w-3 h-3" /> Kamilisha Deal Sasa
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm('Una uhakika unataka kughairi kikundi hiki cha Nunua Pamoja?')) {
+                            onCloseGroupDeal?.(deal.id, 'cancelled');
+                          }
+                        }}
+                        className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-[11px] font-bold cursor-pointer transition inline-flex items-center gap-1"
+                      >
+                        <X className="w-3 h-3" /> Ghairi
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-[10px] text-gray-500 font-bold bg-white px-2 py-1 rounded border border-gray-200">
+                      Usimamizi wa Deal: Wasimamizi Pekee
+                    </span>
+                  )}
                 </div>
               )}
 
-              {deal.status === 'completed' && (
-                <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-[11px] font-semibold flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>🎉 Nunua Pamoja imekamilika! Maagizo ya Bodaboda yametengenezwa kiotomatiki kwa wanunuzi wote waliolipia.</span>
+              {isDone && (
+                <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-900 text-[11px] font-semibold space-y-1.5">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="font-black flex items-center gap-1.5 text-xs text-emerald-950">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                      🎉 TAYARI KUSAFIRISHWA — Bei ya Bidhaa Imelipwa 100%!
+                    </span>
+                    {deal.deliveryTrackingCode && (
+                      <span className="font-mono bg-white px-2 py-0.5 rounded border border-emerald-300 font-bold text-emerald-800">
+                        {deal.deliveryTrackingCode}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-emerald-800">
+                    <span className="font-bold">Mpokeaji:</span> {deal.deliveryRecipientName || deal.creatorName || 'Mteja'} · <span className="font-bold">Anwani:</span> {deal.deliveryAddress || 'Dar es Salaam'}
+                  </div>
                 </div>
               )}
 
@@ -917,12 +1012,15 @@ export default function SellerPhase2CPanel({
                 <div className="pt-2 border-t border-gray-100 space-y-2">
                   <div className="text-[10px] font-black uppercase text-gray-400 tracking-wider flex items-center justify-between">
                     <span>{t('Washiriki wa Kikundi Hiki')} ({participants.length}):</span>
-                    <span>{paid} waliolipia</span>
+                    <span>{paid} waliolipia · Jumla: {TZS(totalPaid)}</span>
                   </div>
                   <div className="space-y-2">
                     {participants.map(p => {
                       const partDelivery = deliveries.find(d => d.customerPhone === p.customerPhone && (d.orderId === p.orderId || d.trackingCode.includes(`GRP-${deal.id}-${p.id}`)));
                       const cleanPhone = (p.customerPhone || '').replace(/[^0-9]/g, '');
+                      const isPaid = p.status === 'paid';
+                      const amtPaid = p.amountPaid || 0;
+                      const sharePct = targetTotal > 0 ? Math.round((amtPaid / targetTotal) * 100) : 0;
 
                       return (
                         <div key={p.id} className="p-3 rounded-xl bg-gray-50 border border-gray-200 text-xs space-y-2">
@@ -949,9 +1047,9 @@ export default function SellerPhase2CPanel({
                                 <MessageSquare className="w-3 h-3 text-emerald-600" /> WhatsApp
                               </a>
                               <span className={`font-black px-2 py-0.5 rounded text-[10px] ${
-                                p.status === 'paid' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-amber-100 text-amber-800 border border-amber-200'
+                                isPaid ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-amber-100 text-amber-800 border border-amber-200'
                               }`}>
-                                {p.status === 'paid' ? `✓ Amelipa (${TZS(deal.groupPrice)})` : t('Inasubiri Malipo')}
+                                {isPaid ? `✓ Amelipa (${TZS(amtPaid)}${sharePct > 0 ? ` · ${sharePct}%` : ''})` : t('Inasubiri Malipo')}
                               </span>
                             </div>
                           </div>
@@ -989,13 +1087,17 @@ export default function SellerPhase2CPanel({
                             </div>
 
                             {p.status !== 'paid' && onVerifyParticipantPayment && (
-                              <button
-                                type="button"
-                                onClick={() => onVerifyParticipantPayment(p.id)}
-                                className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-black text-[11px] cursor-pointer shadow-sm transition inline-flex items-center gap-1"
-                              >
-                                <CheckCheck className="w-3.5 h-3.5" /> Thibitisha Malipo
-                              </button>
+                              isAdmin ? (
+                                <button
+                                  type="button"
+                                  onClick={() => onVerifyParticipantPayment(p.id)}
+                                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-black text-[11px] cursor-pointer shadow-sm transition inline-flex items-center gap-1"
+                                >
+                                  <CheckCheck className="w-3.5 h-3.5" /> Thibitisha Malipo
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-gray-400 italic">Inasubiri uthibitisho wa Admin</span>
+                              )
                             )}
                           </div>
                         </div>
@@ -1227,34 +1329,48 @@ export default function SellerPhase2CPanel({
                     </a>
                   </div>
 
-                  {/* Status switches */}
+                  {/* Status switches & Visual Schedule */}
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    {order.status !== 'completed' && onUpdateInstallmentOrderStatus && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateInstallmentOrderStatus(order.id, 'completed')}
-                        className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-black cursor-pointer shadow-sm transition inline-flex items-center gap-1"
-                      >
-                        <Check className="w-3 h-3" /> Weka Imekamilika
-                      </button>
-                    )}
-                    {order.status !== 'defaulted' && order.status !== 'completed' && onUpdateInstallmentOrderStatus && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateInstallmentOrderStatus(order.id, 'defaulted')}
-                        className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-[11px] font-bold cursor-pointer transition"
-                      >
-                        ⚠️ Weka Defaulted
-                      </button>
-                    )}
-                    {order.status === 'defaulted' && onUpdateInstallmentOrderStatus && (
-                      <button
-                        type="button"
-                        onClick={() => onUpdateInstallmentOrderStatus(order.id, 'active')}
-                        className="px-2 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-lg text-[11px] font-bold cursor-pointer transition"
-                      >
-                        Rejesha Active
-                      </button>
+                    <button
+                      type="button"
+                      onClick={() => setScheduleModalOrder(order)}
+                      className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold cursor-pointer transition inline-flex items-center gap-1 shadow-2xs"
+                    >
+                      <CalendarClock className="w-3.5 h-3.5 text-indigo-600" />
+                      📅 Ratiba Kamili
+                    </button>
+                    {isAdmin ? (
+                      <>
+                        {order.status !== 'completed' && onUpdateInstallmentOrderStatus && (
+                          <button
+                            type="button"
+                            onClick={() => onUpdateInstallmentOrderStatus(order.id, 'completed')}
+                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-black cursor-pointer shadow-sm transition inline-flex items-center gap-1"
+                          >
+                            <Check className="w-3 h-3" /> Weka Imekamilika
+                          </button>
+                        )}
+                        {order.status !== 'defaulted' && order.status !== 'completed' && onUpdateInstallmentOrderStatus && (
+                          <button
+                            type="button"
+                            onClick={() => onUpdateInstallmentOrderStatus(order.id, 'defaulted')}
+                            className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-[11px] font-bold cursor-pointer transition"
+                          >
+                            ⚠️ Weka Defaulted
+                          </button>
+                        )}
+                        {order.status === 'defaulted' && onUpdateInstallmentOrderStatus && (
+                          <button
+                            type="button"
+                            onClick={() => onUpdateInstallmentOrderStatus(order.id, 'active')}
+                            className="px-2 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 rounded-lg text-[11px] font-bold cursor-pointer transition"
+                          >
+                            Rejesha Active
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <span className="text-[10px] text-gray-400 font-semibold bg-gray-100 px-2 py-0.5 rounded">Admin pekee kubadili hali</span>
                     )}
                   </div>
                 </div>
@@ -1379,7 +1495,7 @@ export default function SellerPhase2CPanel({
                             </div>
                           )}
 
-                          {!isPaid && order.status !== 'completed' && onRecordManualInstallmentPayment && (
+                          {isAdmin && !isPaid && order.status !== 'completed' && onRecordManualInstallmentPayment && (
                             <button
                               type="button"
                               onClick={() => {
@@ -1405,8 +1521,16 @@ export default function SellerPhase2CPanel({
                   </div>
 
                   {/* Main Action Bar for order */}
-                  {order.status !== 'completed' && onRecordManualInstallmentPayment && (
-                    <div className="pt-2 flex items-center justify-end">
+                  <div className="pt-2 flex items-center justify-between flex-wrap gap-2 border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => setScheduleModalOrder(order)}
+                      className="px-3.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-bold cursor-pointer transition inline-flex items-center gap-1.5 shadow-2xs"
+                    >
+                      <CalendarClock className="w-4 h-4 text-indigo-600" />
+                      📅 Kagua Ratiba ya Awamu (Visual Milestone Schedule)
+                    </button>
+                    {isAdmin && order.status !== 'completed' && onRecordManualInstallmentPayment && (
                       <button
                         type="button"
                         onClick={() => {
@@ -1424,10 +1548,10 @@ export default function SellerPhase2CPanel({
                         }}
                         className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-black cursor-pointer shadow-sm transition inline-flex items-center gap-1.5"
                       >
-                        <Plus className="w-3.5 h-3.5" /> {t('Rekodi / Thibitisha Malipo ya Awamu')}
+                        <Receipt className="w-3.5 h-3.5" /> {t('Rekodi / Thibitisha Malipo ya Awamu')} (#{Math.min(order.installmentsCount, done + 1)})
                       </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -1471,56 +1595,68 @@ export default function SellerPhase2CPanel({
             </div>
 
             {delivery.status === 'pending' && (
-              <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-2">
-                <input
-                  value={rider.name}
-                  onChange={e => setRiders({ ...riders, [delivery.id]: { ...rider, name: e.target.value } })}
-                  placeholder={t('Jina la rider wa bodaboda')}
-                  className="px-3 py-2 border border-gray-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand"
-                />
-                <div className="flex gap-2">
+              isAdmin ? (
+                <div className="mt-3 pt-3 border-t border-gray-100 grid grid-cols-1 md:grid-cols-2 gap-2">
                   <input
-                    value={rider.phone}
-                    onChange={e => setRiders({ ...riders, [delivery.id]: { ...rider, phone: e.target.value } })}
-                    placeholder="07XX XXX XXX"
-                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand"
+                    value={rider.name}
+                    onChange={e => setRiders({ ...riders, [delivery.id]: { ...rider, name: e.target.value } })}
+                    placeholder={t('Jina la rider wa bodaboda')}
+                    className="px-3 py-2 border border-gray-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand"
                   />
-                  <button
-                    onClick={() => {
-                      if (rider.name.trim() && rider.phone.trim()) {
-                        onAssignDeliveryRider(delivery.id, rider.name.trim(), rider.phone.trim());
-                        setRiders({ ...riders, [delivery.id]: { name: '', phone: '' } });
-                      }
-                    }}
-                    className="px-3.5 py-2 bg-brand text-white rounded-lg text-xs font-bold hover:bg-brand/90 cursor-pointer inline-flex items-center gap-1.5 transition"
-                  >
-                    <Send className="w-3.5 h-3.5" /> {t('Kabidhi')}
-                  </button>
+                  <div className="flex gap-2">
+                    <input
+                      value={rider.phone}
+                      onChange={e => setRiders({ ...riders, [delivery.id]: { ...rider, phone: e.target.value } })}
+                      placeholder="07XX XXX XXX"
+                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand"
+                    />
+                    <button
+                      onClick={() => {
+                        if (rider.name.trim() && rider.phone.trim()) {
+                          onAssignDeliveryRider(delivery.id, rider.name.trim(), rider.phone.trim());
+                          setRiders({ ...riders, [delivery.id]: { name: '', phone: '' } });
+                        }
+                      }}
+                      className="px-3.5 py-2 bg-brand text-white rounded-lg text-xs font-bold hover:bg-brand/90 cursor-pointer inline-flex items-center gap-1.5 transition"
+                    >
+                      <Send className="w-3.5 h-3.5" /> {t('Kabidhi')}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="mt-2 text-[11px] text-gray-500 italic bg-gray-50 p-2 rounded-xl">
+                  {t('Inasubiri Admin kukabidhi rider wa bodaboda.')}
+                </div>
+              )
             )}
 
             {(delivery.status === 'assigned' || delivery.status === 'picked' || delivery.status === 'on_the_way') && (
-              <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
-                <button
-                  onClick={() => onUpdateDeliveryStatus(delivery.id, 'picked', t('Rider amechukua mzigo ghalani'))}
-                  className="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-bold hover:bg-sky-700 cursor-pointer transition"
-                >
-                  {t('Amechukua Mzigo')}
-                </button>
-                <button
-                  onClick={() => onUpdateDeliveryStatus(delivery.id, 'on_the_way', t('Rider yupo njiani kumpelekea mteja'))}
-                  className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 cursor-pointer transition"
-                >
-                  {t('Yupo Njiani')}
-                </button>
-                <button
-                  onClick={() => onUpdateDeliveryStatus(delivery.id, 'delivered', t('Mzigo umekabidhiwa salama kwa mteja'))}
-                  className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-black hover:bg-emerald-700 cursor-pointer transition"
-                >
-                  {t('Imefikishwa (Delivered)')}
-                </button>
-              </div>
+              isAdmin ? (
+                <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-gray-100">
+                  <button
+                    onClick={() => onUpdateDeliveryStatus(delivery.id, 'picked', t('Rider amechukua mzigo ghalani'))}
+                    className="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-bold hover:bg-sky-700 cursor-pointer transition"
+                  >
+                    {t('Amechukua Mzigo')}
+                  </button>
+                  <button
+                    onClick={() => onUpdateDeliveryStatus(delivery.id, 'on_the_way', t('Rider yupo njiani kumpelekea mteja'))}
+                    className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs font-bold hover:bg-indigo-700 cursor-pointer transition"
+                  >
+                    {t('Yupo Njiani')}
+                  </button>
+                  <button
+                    onClick={() => onUpdateDeliveryStatus(delivery.id, 'delivered', t('Mzigo umekabidhiwa salama kwa mteja'))}
+                    className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-black hover:bg-emerald-700 cursor-pointer transition"
+                  >
+                    {t('Imefikishwa (Delivered)')}
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-2 text-[11px] text-gray-500 italic bg-gray-50 p-2 rounded-xl">
+                  {t('Masasisho ya safari ya bodaboda yanasimamiwa na Admin.')}
+                </div>
+              )
             )}
 
             {delivery.riderName && (
@@ -1615,28 +1751,34 @@ export default function SellerPhase2CPanel({
                 </span>
 
                 {/* Live Stream Controls */}
-                {stream.status === 'scheduled' && onStartLiveStream && (
-                  <button
-                    type="button"
-                    onClick={() => onStartLiveStream(stream.id)}
-                    className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-black text-xs cursor-pointer shadow-sm transition inline-flex items-center gap-1"
-                  >
-                    <Play className="w-3 h-3" /> Anza Live Sasa
-                  </button>
-                )}
+                {isAdmin ? (
+                  <>
+                    {stream.status === 'scheduled' && onStartLiveStream && (
+                      <button
+                        type="button"
+                        onClick={() => onStartLiveStream(stream.id)}
+                        className="px-3 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-black text-xs cursor-pointer shadow-sm transition inline-flex items-center gap-1"
+                      >
+                        <Play className="w-3 h-3" /> Anza Live Sasa
+                      </button>
+                    )}
 
-                {stream.status === 'live' && onEndLiveStream && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (confirm('Una uhakika unataka kusimamisha kipindi hiki cha Live?')) {
-                        onEndLiveStream(stream.id);
-                      }
-                    }}
-                    className="px-3 py-1 bg-gray-800 hover:bg-gray-900 text-white rounded-lg font-black text-xs cursor-pointer shadow-sm transition inline-flex items-center gap-1"
-                  >
-                    <Square className="w-3 h-3" /> Maliza Live
-                  </button>
+                    {stream.status === 'live' && onEndLiveStream && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm('Una uhakika unataka kusimamisha kipindi hiki cha Live?')) {
+                            onEndLiveStream(stream.id);
+                          }
+                        }}
+                        className="px-3 py-1 bg-gray-800 hover:bg-gray-900 text-white rounded-lg font-black text-xs cursor-pointer shadow-sm transition inline-flex items-center gap-1"
+                      >
+                        <Square className="w-3 h-3" /> Maliza Live
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[10px] text-gray-400 italic">Udhibiti: Admin Pekee</span>
                 )}
               </div>
             </div>
@@ -1789,7 +1931,25 @@ export default function SellerPhase2CPanel({
             <div className="text-[11px] font-black uppercase tracking-widest text-white/80">{t('Smart Selling & Direct Commerce')} — {company?.name || ''}</div>
             <div className="text-lg font-black mt-1">{t('Piga Bei · Ask Seller Chat · Nunua Pamoja · Lipa Pole Pole · Bodaboda')}</div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {isAdmin && onRecordSmartSale && (
+              <button
+                onClick={() => {
+                  setQuickSaleProdId(products[0]?.id || 0);
+                  setQuickSalePrice(products[0]?.price ? String(products[0].price) : '');
+                  setQuickSaleQty('1');
+                  setQuickSaleCustName('');
+                  setQuickSaleCustPhone('');
+                  setQuickSaleNote('');
+                  setQuickSaleTxId('');
+                  setQuickSaleMsg(null);
+                  setQuickSaleModal(true);
+                }}
+                className="text-xs font-black bg-emerald-500 hover:bg-emerald-600 text-white px-3.5 py-1.5 rounded-full flex items-center gap-1.5 shadow-md active:scale-95 transition cursor-pointer"
+              >
+                <DollarSign className="w-3.5 h-3.5" /> ⚡ {t('Rekodi Mauzo ya Smart Selling (POS)')}
+              </button>
+            )}
             {isAdmin ? (
               <span className="text-xs font-black bg-emerald-500/80 text-white backdrop-blur px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-sm">
                 <ShieldCheck className="w-3.5 h-3.5" /> {t('Admin Mode (CRUD Active)')}
@@ -2236,6 +2396,255 @@ export default function SellerPhase2CPanel({
             <button onClick={() => setPreviewReceipt(null)} className="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-xl font-bold text-xs cursor-pointer">
               {t('Funga')}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Visual Schedule Modal for Lipa Pole Pole */}
+      {scheduleModalOrder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs overflow-y-auto" onClick={() => setScheduleModalOrder(null)}>
+          <div className="max-w-2xl w-full my-8 bg-white rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 bg-gray-50">
+              <div>
+                <h3 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                  <CalendarClock className="w-4 h-4 text-sky-600" />
+                  Ratiba Kamili ya Malipo · {scheduleModalOrder.customerName}
+                </h3>
+                <p className="text-[11px] text-gray-500 font-mono">Agizo: {scheduleModalOrder.trackingCode}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setScheduleModalOrder(null)}
+                className="p-1 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-200 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-5 max-h-[80vh] overflow-y-auto">
+              <InstallmentVisualSchedule
+                order={scheduleModalOrder}
+                payments={installmentPayments.filter(p => p.installmentOrderId === scheduleModalOrder.id)}
+                onRecordPayment={isAdmin && onRecordManualInstallmentPayment ? (instNum, amount) => {
+                  const targetOrder = scheduleModalOrder;
+                  setScheduleModalOrder(null);
+                  setManualPayModal({
+                    order: targetOrder,
+                    paymentIndex: instNum,
+                    suggestedAmount: amount
+                  });
+                  setManualPayAmount(String(amount));
+                  setManualPayTxId('');
+                  setManualPayReceipt('');
+                  setManualPayNote(`Malipo ya awamu #${instNum}`);
+                  setManualPayError('');
+                } : undefined}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QUICK SMART POS SALE MODAL */}
+      {quickSaleModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden border border-gray-100 animate-in fade-in zoom-in-95 duration-200">
+            <div className="bg-gradient-to-r from-emerald-600 via-teal-600 to-indigo-700 px-6 py-4 text-white flex items-center justify-between">
+              <div>
+                <h3 className="font-black text-sm flex items-center gap-1.5">
+                  <DollarSign className="w-4 h-4" /> ⚡ {t('Rekodi Mauzo ya Smart Selling (POS)')}
+                </h3>
+                <p className="text-[11px] text-white/80 mt-0.5">
+                  {t('Mauzo yatakamilika na kuwekwa kiotomatiki kwenye Marketplace Orders na Ripoti ya Kifedha (P&L).')}
+                </p>
+              </div>
+              <button
+                onClick={() => setQuickSaleModal(false)}
+                className="w-8 h-8 rounded-full bg-white/20 hover:bg-white/30 flex items-center justify-center text-white cursor-pointer transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!onRecordSmartSale) return;
+                const prod = products.find(p => p.id === quickSaleProdId) || products[0];
+                if (!prod) {
+                  setQuickSaleMsg({ text: 'Tafadhali chagua bidhaa.', ok: false });
+                  return;
+                }
+                const qty = parseInt(quickSaleQty) || 1;
+                const price = parseFloat(quickSalePrice) || prod.price;
+                const res = onRecordSmartSale({
+                  companyId: companyId || prod.companyId,
+                  productId: prod.id,
+                  quantity: qty,
+                  unitPrice: price,
+                  customerName: quickSaleCustName.trim() || 'Mteja wa Dukani',
+                  customerPhone: quickSaleCustPhone.trim() || '0700000000',
+                  paymentMethod: quickSaleMethod,
+                  transactionId: quickSaleTxId.trim() || undefined,
+                  note: quickSaleNote.trim() || undefined
+                });
+
+                if (res.ok) {
+                  setQuickSaleMsg({
+                    text: `🎉 Mauzo yamekamilika! Agizo #${res.orderNumber || ''} limewekwa kiotomatiki kwenye Marketplace Orders na Ripoti ya Kifedha.`,
+                    ok: true
+                  });
+                  setTimeout(() => {
+                    setQuickSaleModal(false);
+                    setQuickSaleMsg(null);
+                  }, 1800);
+                } else {
+                  setQuickSaleMsg({ text: res.error || 'Kulitokea hitilafu.', ok: false });
+                }
+              }}
+              className="p-6 space-y-4 text-xs font-semibold"
+            >
+              {quickSaleMsg && (
+                <div className={`p-3 rounded-xl border text-xs font-bold flex items-center gap-2 ${
+                  quickSaleMsg.ok ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-red-50 border-red-200 text-red-800'
+                }`}>
+                  {quickSaleMsg.ok ? <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" /> : <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />}
+                  <span>{quickSaleMsg.text}</span>
+                </div>
+              )}
+
+              {/* Product select */}
+              <div>
+                <label className="text-gray-700 font-bold block mb-1">{t('Bidhaa ya Kuuza')}</label>
+                <select
+                  value={quickSaleProdId}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    setQuickSaleProdId(id);
+                    const prod = products.find(p => p.id === id);
+                    if (prod) setQuickSalePrice(String(prod.price));
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-gray-800 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  {products.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} — {TZS(p.price)} (Baki Ghalani: {p.stockQuantity ?? 0})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Qty & Price */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-gray-700 font-bold block mb-1">{t('Idadi (Quantity)')}</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={quickSaleQty}
+                    onChange={(e) => setQuickSaleQty(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-gray-800 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-gray-700 font-bold block mb-1">{t('Bei kwa Kipimo (TZS)')}</label>
+                  <input
+                    type="number"
+                    value={quickSalePrice}
+                    onChange={(e) => setQuickSalePrice(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-gray-800 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Total Summary */}
+              <div className="bg-emerald-50/80 p-3 rounded-xl border border-emerald-200 flex items-center justify-between text-xs">
+                <span className="text-emerald-900 font-bold">{t('Jumla Kuu ya Mauzo (Total Amount)')}:</span>
+                <span className="text-base font-black text-emerald-800">
+                  {TZS((parseFloat(quickSalePrice) || 0) * (parseInt(quickSaleQty) || 1))}
+                </span>
+              </div>
+
+              {/* Customer Info */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-gray-700 font-bold block mb-1">{t('Jina la Mteja')}</label>
+                  <input
+                    type="text"
+                    placeholder="Mfano: Juma Rashid"
+                    value={quickSaleCustName}
+                    onChange={(e) => setQuickSaleCustName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs text-gray-800 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-gray-700 font-bold block mb-1">{t('Namba ya Simu')}</label>
+                  <input
+                    type="tel"
+                    placeholder="07XXXXXXXX"
+                    value={quickSaleCustPhone}
+                    onChange={(e) => setQuickSaleCustPhone(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs text-gray-800 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Payment Method & TxID */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-gray-700 font-bold block mb-1">{t('Njia ya Malipo')}</label>
+                  <select
+                    value={quickSaleMethod}
+                    onChange={(e) => setQuickSaleMethod(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold text-gray-800 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+                  >
+                    <option value="cash">Pesa Taslimu (Cash)</option>
+                    <option value="mpesa">M-Pesa</option>
+                    <option value="tigo_pesa">Tigo Pesa</option>
+                    <option value="airtel_money">Airtel Money</option>
+                    <option value="halopesa">HaloPesa</option>
+                    <option value="bank">Benki / Kadi</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-gray-700 font-bold block mb-1">{t('Namba ya Muamala (TxID)')}</label>
+                  <input
+                    type="text"
+                    placeholder="Hiari (Mfano: QWE12345)"
+                    value={quickSaleTxId}
+                    onChange={(e) => setQuickSaleTxId(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs text-gray-800 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                </div>
+              </div>
+
+              {/* Note */}
+              <div>
+                <label className="text-gray-700 font-bold block mb-1">{t('Maelezo ya Mauzo (Hiari)')}</label>
+                <input
+                  type="text"
+                  placeholder="Mfano: Mauzo ya kaunta dukani"
+                  value={quickSaleNote}
+                  onChange={(e) => setQuickSaleNote(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs text-gray-800 bg-white outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setQuickSaleModal(false)}
+                  className="px-4 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100 rounded-xl transition cursor-pointer"
+                >
+                  {t('Ghairi')}
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md flex items-center gap-1.5 transition cursor-pointer active:scale-95"
+                >
+                  <CheckCircle2 className="w-4 h-4" /> ⚡ {t('Kamilisha Mauzo Dukani')}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

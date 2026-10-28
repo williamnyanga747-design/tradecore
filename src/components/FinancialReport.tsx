@@ -123,23 +123,39 @@ export default function FinancialReport({
   const posCOGS = sales.reduce((sum, so) => sum + (so.items || []).reduce((acc, item) => acc + (item.qty * item.cost), 0), 0);
   const posCount = sales.length;
 
-  // Marketplace calculations
-  const mpRevenue = mpOrders.reduce((sum, o) => sum + o.totalAmount, 0);
-  const mpShipping = mpOrders.reduce((sum, o) => sum + ((o as any).shipping_cost || 0), 0);
-  const mpCOGS = mpOrders.reduce((sum, o) => sum + (o.items || []).reduce((acc: number, item: any) => acc + ((item.cost || 0) * (item.qty || item.quantity || 1)), 0), 0);
+  // Marketplace calculations — SEPARATING SHIPPING ZONE COSTS FROM PRODUCT SALES PRICE
+  // Product revenue reflects exact merchandise sales price only; shipping zone fees are treated as fulfillment logistics expenses.
+  const mpOrdersCalculated = mpOrders.map(o => {
+    const shipping = o.shippingFee || (o as any).shippingCost || (o as any).shipping_cost || 0;
+    const productPriceOnly = Math.max(0, o.totalAmount - shipping);
+    const cogs = (o.items || []).reduce((acc: number, item: any) => acc + ((item.cost || 0) * (item.qty || item.quantity || 1)), 0);
+    return { ...o, shippingFeeAmount: shipping, productPriceOnly, cogs };
+  });
+
+  const mpProductRevenue = mpOrdersCalculated.reduce((sum, o) => sum + o.productPriceOnly, 0);
+  const mpShipping = mpOrdersCalculated.reduce((sum, o) => sum + o.shippingFeeAmount, 0);
+  const mpCOGS = mpOrdersCalculated.reduce((sum, o) => sum + o.cogs, 0);
   const mpCount = mpOrders.length;
 
-  // Combined (respecting source filter)
-  const totalRevenue = (sourceFilter !== 'marketplace' ? posRevenue : 0) + (sourceFilter !== 'pos' ? mpRevenue + mpShipping : 0);
+  // Exact Sales Prices: Gross sales revenue includes pure product sales (without shipping markup)
+  const totalRevenue = (sourceFilter !== 'marketplace' ? posRevenue : 0) + (sourceFilter !== 'pos' ? mpProductRevenue : 0);
   const totalCOGS = (sourceFilter !== 'marketplace' ? posCOGS : 0) + (sourceFilter !== 'pos' ? mpCOGS : 0);
   const grossProfit = totalRevenue - totalCOGS;
   const grossMarginPercent = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
-  const totalExpenses = periodExpenses.reduce((sum, exp) => sum + exp.amount, 0);
+
+  // Operating Expenses: Standard expenses + Shipping Zone Delivery Logistics Expenses
+  const baseExpensesTotal = periodExpenses.reduce((sum, exp) => sum + exp.amount, 0);
+  const shippingLogisticsExpense = sourceFilter !== 'pos' ? mpShipping : 0;
+  const totalExpenses = baseExpensesTotal + shippingLogisticsExpense;
 
   const expensesByCategory = periodExpenses.reduce((acc, exp) => {
     acc[exp.category] = (acc[exp.category] || 0) + exp.amount;
     return acc;
   }, {} as Record<string, number>);
+
+  if (shippingLogisticsExpense > 0) {
+    expensesByCategory['Shipping & Delivery Logistics (Shipping Zones)'] = (expensesByCategory['Shipping & Delivery Logistics (Shipping Zones)'] || 0) + shippingLogisticsExpense;
+  }
 
   const netProfit = grossProfit - totalExpenses;
   const netMarginPercent = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
@@ -163,10 +179,20 @@ export default function FinancialReport({
         const dayExps = expenses.filter(exp => 
           matchesStore(exp.storeId) && exp.date === dayStr
         );
+        const dayMp = mpOrdersCalculated.filter(o => {
+          const dStr = new Date(o.createdAt).toISOString().split('T')[0];
+          return dStr === dayStr;
+        });
 
-        const rev = daySales.reduce((sum, so) => sum + so.total, 0);
-        const cogs = daySales.reduce((sum, so) => sum + (so.items || []).reduce((acc, item) => acc + (item.qty * item.cost), 0), 0);
-        const exp = dayExps.reduce((sum, e) => sum + e.amount, 0);
+        const posRev = daySales.reduce((sum, so) => sum + so.total, 0);
+        const posCost = daySales.reduce((sum, so) => sum + (so.items || []).reduce((acc, item) => acc + (item.qty * item.cost), 0), 0);
+        const mpRev = dayMp.reduce((sum, o) => sum + o.productPriceOnly, 0);
+        const mpCost = dayMp.reduce((sum, o) => sum + o.cogs, 0);
+        const mpShipExp = dayMp.reduce((sum, o) => sum + o.shippingFeeAmount, 0);
+
+        const rev = (sourceFilter !== 'marketplace' ? posRev : 0) + (sourceFilter !== 'pos' ? mpRev : 0);
+        const cogs = (sourceFilter !== 'marketplace' ? posCost : 0) + (sourceFilter !== 'pos' ? mpCost : 0);
+        const exp = dayExps.reduce((sum, e) => sum + e.amount, 0) + (sourceFilter !== 'pos' ? mpShipExp : 0);
 
         points.push({
           label: `${d}`,
@@ -190,10 +216,20 @@ export default function FinancialReport({
         const dayExps = expenses.filter(exp => 
           matchesStore(exp.storeId) && exp.date === dayStr
         );
+        const dayMp = mpOrdersCalculated.filter(o => {
+          const dStr = new Date(o.createdAt).toISOString().split('T')[0];
+          return dStr === dayStr;
+        });
 
-        const rev = daySales.reduce((sum, so) => sum + so.total, 0);
-        const cogs = daySales.reduce((sum, so) => sum + (so.items || []).reduce((acc, item) => acc + (item.qty * item.cost), 0), 0);
-        const exp = dayExps.reduce((sum, e) => sum + e.amount, 0);
+        const posRev = daySales.reduce((sum, so) => sum + so.total, 0);
+        const posCost = daySales.reduce((sum, so) => sum + (so.items || []).reduce((acc, item) => acc + (item.qty * item.cost), 0), 0);
+        const mpRev = dayMp.reduce((sum, o) => sum + o.productPriceOnly, 0);
+        const mpCost = dayMp.reduce((sum, o) => sum + o.cogs, 0);
+        const mpShipExp = dayMp.reduce((sum, o) => sum + o.shippingFeeAmount, 0);
+
+        const rev = (sourceFilter !== 'marketplace' ? posRev : 0) + (sourceFilter !== 'pos' ? mpRev : 0);
+        const cogs = (sourceFilter !== 'marketplace' ? posCost : 0) + (sourceFilter !== 'pos' ? mpCost : 0);
+        const exp = dayExps.reduce((sum, e) => sum + e.amount, 0) + (sourceFilter !== 'pos' ? mpShipExp : 0);
 
         points.push({
           label: dayLabel,
@@ -391,7 +427,7 @@ export default function FinancialReport({
           <td style="font-weight: bold; color: #1e293b; padding-top: 10px; font-size: 12px;" colspan="4">1. OPERATING REVENUES</td>
         </tr>
         <tr>
-          <td style="padding-left: 15px; border: 1px solid #e2e8f0;">Gross Sales Credit Revenue</td>
+          <td style="padding-left: 15px; border: 1px solid #e2e8f0;">Gross Merchandise Product Sales (Excluding Shipping Zone Fee)</td>
           <td style="border: 1px solid #e2e8f0;"></td>
           <td style="border: 1px solid #e2e8f0; text-align: right; color: #16a34a; font-weight: bold;">${formatMoney(totalRevenue, currency, exchangeRate)}</td>
           <td style="border: 1px solid #e2e8f0; text-align: right; font-weight: bold; color: #16a34a;">${formatMoney(totalRevenue, currency, exchangeRate)}</td>
@@ -732,21 +768,16 @@ export default function FinancialReport({
                 </div>
               )}
               {sourceFilter !== 'pos' && (
-                <>
-                  <div className="flex justify-between py-1 text-gray-700">
+                <div className="flex justify-between py-1 text-gray-700">
+                  <div>
                     <span>Gross Marketplace Sales (Online)</span>
-                    <span className="font-bold text-indigo-700">{formatMoney(mpRevenue, currency, exchangeRate)} <span className="text-[9px] text-gray-400">({mpCount})</span></span>
+                    <span className="block text-[9px] text-emerald-600 font-bold">✓ Bei Halisi ya Bidhaa (Shipping Zone excluded)</span>
                   </div>
-                  {mpShipping > 0 && (
-                    <div className="flex justify-between py-1 text-gray-700">
-                      <span>Shipping Income</span>
-                      <span className="font-bold text-indigo-600">{formatMoney(mpShipping, currency, exchangeRate)}</span>
-                    </div>
-                  )}
-                </>
+                  <span className="font-bold text-indigo-700">{formatMoney(mpProductRevenue, currency, exchangeRate)} <span className="text-[9px] text-gray-400">({mpCount})</span></span>
+                </div>
               )}
-              <div className="flex justify-between py-1 text-gray-800 font-bold border-t mt-1 text-gray-900 bg-gray-50 px-2 rounded">
-                <span>Total Revenue</span>
+              <div className="flex justify-between py-1 font-bold border-t mt-1 text-gray-900 bg-gray-50 px-2 rounded">
+                <span>Total Merchandise Sales Revenue</span>
                 <span>{formatMoney(totalRevenue, currency, exchangeRate)}</span>
               </div>
             </div>
@@ -777,12 +808,19 @@ export default function FinancialReport({
             <div>
               <div className="text-gray-400 font-bold tracking-widest uppercase border-b pb-1 mb-2 text-[10px]">Operating Expenditures</div>
               {Object.keys(expensesByCategory).length > 0 ? (
-                Object.entries(expensesByCategory).map(([cat, val]) => (
-                  <div key={cat} className="flex justify-between py-1 text-gray-700">
-                    <span>{cat} expenditure</span>
-                    <span className="font-mono text-gray-900">({formatMoney(val, currency, exchangeRate)})</span>
-                  </div>
-                ))
+                Object.entries(expensesByCategory).map(([cat, val]) => {
+                  const isShippingZone = cat.includes('Shipping & Delivery');
+                  return (
+                    <div key={cat} className={`flex justify-between py-1 text-gray-700 ${isShippingZone ? 'bg-amber-50/80 px-2 py-1.5 rounded border border-amber-200 text-amber-900 font-bold' : ''}`}>
+                      <span className="flex items-center gap-1.5">
+                        {isShippingZone && <span>🚚</span>}
+                        <span>{cat}{isShippingZone ? '' : ' expenditure'}</span>
+                        {isShippingZone && <span className="text-[9px] bg-amber-200/80 text-amber-900 font-extrabold px-1.5 py-0.5 rounded uppercase">Zone Opex</span>}
+                      </span>
+                      <span className={`font-mono ${isShippingZone ? 'text-amber-900 font-black' : 'text-gray-900'}`}>({formatMoney(val, currency, exchangeRate)})</span>
+                    </div>
+                  );
+                })
               ) : (
                 <div className="text-gray-400 italic py-1 pl-1 font-medium">No dynamic expenses logged during this statement period.</div>
               )}
@@ -959,7 +997,7 @@ export default function FinancialReport({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       <tr>
-                        <td className="px-3 py-2 font-semibold">1. Operating Sales Revenue</td>
+                        <td className="px-3 py-2 font-semibold">1. Merchandise Sales Revenue (Exact Product Prices)</td>
                         <td className="px-3 py-2"></td>
                         <td className="px-3 py-2 text-right text-green-600 font-bold">{formatMoney(totalRevenue, currency, exchangeRate)}</td>
                       </tr>
@@ -974,7 +1012,7 @@ export default function FinancialReport({
                         <td className="px-3 py-2 text-right text-slate-900">{formatMoney(grossProfit, currency, exchangeRate)}</td>
                       </tr>
                       <tr>
-                        <td className="px-3 py-2 font-semibold text-orange-700">4. General Operating Expenditures</td>
+                        <td className="px-3 py-2 font-semibold text-orange-700">4. Operating Expenditures (Incl. Shipping Zone Logistics)</td>
                         <td className="px-3 py-2 text-right text-orange-600">({formatMoney(totalExpenses, currency, exchangeRate)})</td>
                         <td className="px-3 py-2"></td>
                       </tr>

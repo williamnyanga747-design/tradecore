@@ -94,7 +94,9 @@ export default function MarketplaceOrdersPanel({
       active: base.filter(o => ['verified', 'processing', 'out_for_delivery'].includes(o.status)).length,
       delivered: base.filter(o => o.status === 'delivered').length,
       rejected: base.filter(o => o.status === 'rejected').length,
-      revenue: base.filter(o => o.status === 'delivered' || o.status === 'verified').reduce((s, o) => s + o.totalAmount, 0),
+      revenue: base.filter(o => o.status === 'delivered' || o.status === 'verified').reduce((s, o) => s + Math.max(0, o.totalAmount - (o.shippingFee || 0)), 0),
+      shippingCost: base.filter(o => o.status === 'delivered' || o.status === 'verified').reduce((s, o) => s + (o.shippingFee || 0), 0),
+      smartSellingCount: base.filter(o => o.orderSource === 'smart_selling' || (o.deliveryInstructions && o.deliveryInstructions.includes('Smart Selling'))).length,
       archived: base.filter(o => !!o.archivedAt).length
     };
   }, [orders, currentCompanyId]);
@@ -166,11 +168,14 @@ export default function MarketplaceOrdersPanel({
           { label: t('Active'), value: stats.active, cls: 'text-blue-600 bg-blue-50 border-blue-200' },
           { label: t('Delivered'), value: stats.delivered, cls: 'text-green-600 bg-green-50 border-green-200' },
           { label: t('Rejected'), value: stats.rejected, cls: 'text-red-600 bg-red-50 border-red-200' },
-          { label: t('Revenue'), value: stats.revenue, cls: 'text-emerald-700 bg-emerald-50 border-emerald-200', money: true }
+          { label: t('Product Sales (Exact)'), value: stats.revenue, cls: 'text-emerald-700 bg-emerald-50 border-emerald-200', money: true }
         ].map(s => (
           <div key={s.label} className={`rounded-xl border px-4 py-3 ${s.cls}`}>
             <div className="text-[10px] font-bold uppercase tracking-wider opacity-70">{s.label}</div>
             <div className="text-lg font-black mt-0.5">{s.money ? TZS(s.value) : s.value}</div>
+            {s.money && stats.shippingCost > 0 && (
+              <div className="text-[9px] text-amber-700 font-semibold mt-0.5">+ {TZS(stats.shippingCost)} {t('Shipping Zone Opex')}</div>
+            )}
           </div>
         ))}
       </div>
@@ -291,6 +296,11 @@ export default function MarketplaceOrdersPanel({
                         <span className={`text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full border ${trashed ? 'bg-gray-100 text-gray-500 border-gray-300' : STATUS_STYLE[o.status] || 'bg-gray-100 text-gray-600 border-gray-200'}`}>
                           {trashed ? t('Deleted — in Trash') : orderStatusLabel(o.status, t)}
                         </span>
+                        {(o.orderSource === 'smart_selling' || (o.deliveryInstructions && o.deliveryInstructions.includes('Smart Selling'))) && (
+                          <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border bg-purple-100 text-purple-800 border-purple-200 inline-flex items-center gap-1 shadow-2xs">
+                            ⚡ {t('Smart Selling POS')}
+                          </span>
+                        )}
                         {archivedRow && !trashed && (
                           <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full border bg-indigo-50 text-indigo-600 border-indigo-200 inline-flex items-center gap-1">
                             <Archive className="w-2.5 h-2.5" /> {t('Archived')}

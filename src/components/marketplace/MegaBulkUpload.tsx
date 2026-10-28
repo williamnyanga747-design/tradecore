@@ -5,6 +5,7 @@ import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TFunc } from './MarketplaceShared';
 import { BULK_TEMPLATE_HEADERS, buildBulkTemplateCsv, parseCsv } from '../../utils/megaHelpers';
 import { slugify } from '../../utils/haversine';
+import { getPhpConfig } from '../../utils/api';
 
 // ============================================================================
 // F6 — BULK UPLOAD + AI MAELEZO
@@ -22,7 +23,6 @@ export async function aiBilingualDescription(
     en: `${name} — a high-quality ${category || 'product'} available in ${region || 'Tanzania'}. Perfect for everyday use and great value for money. Buy from ${companyName} on GlobalTradeCore with fast, safe delivery.`
   });
   try {
-    const { getPhpConfig } = await import('../../utils/api');
     const { apiUrl } = getPhpConfig();
     const res = await fetch(`${apiUrl}?action=ai_product_description_bilingual&name=${encodeURIComponent(name)}&category=${encodeURIComponent(category)}&company=${encodeURIComponent(companyName)}`, { cache: 'no-store' });
     if (res.ok) {

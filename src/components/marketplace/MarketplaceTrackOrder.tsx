@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { ChevronLeft, Search, Package, Store, MapPin, Smartphone, Calendar, FileText, CalendarClock, Users, CheckCircle2, Clock, Share2, ArrowRight } from 'lucide-react';
-import { Company, MarketplaceOrder, MarketplaceProduct, InstallmentOrder, InstallmentPayment, GroupDeal, GroupDealParticipant } from '../../types';
+import { ChevronLeft, Search, Package, Store, MapPin, Smartphone, Calendar, FileText, CalendarClock, Users, CheckCircle2, Clock, Share2, ArrowRight, Bike, Truck } from 'lucide-react';
+import { Company, MarketplaceOrder, MarketplaceProduct, InstallmentOrder, InstallmentPayment, GroupDeal, GroupDealParticipant, Delivery, DeliveryUpdate } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { safeLower } from '../../utils/stateHelpers';
 import { TZS, VerifiedBadge, TFunc, orderStatusLabel } from './MarketplaceShared';
@@ -17,6 +17,8 @@ interface Props {
   installmentPayments?: InstallmentPayment[];
   groupDeals?: GroupDeal[];
   groupDealParticipants?: GroupDealParticipant[];
+  deliveries?: Delivery[];
+  deliveryUpdates?: DeliveryUpdate[];
   initialOrderNumber?: string;
   onBack: () => void;
   onViewCompany: (slug: string) => void;
@@ -27,13 +29,14 @@ export default function MarketplaceTrackOrder({
   theme, t, orders, companies, products = [],
   installmentOrders = [], installmentPayments = [],
   groupDeals = [], groupDealParticipants = [],
+  deliveries = [], deliveryUpdates = [],
   initialOrderNumber, onBack, onViewCompany, onNavigate
 }: Props) {
   const th = getPublicTheme(theme);
   const milk = theme === 'milk';
   const [q, setQ] = useState(initialOrderNumber || '');
   const [submitted, setSubmitted] = useState(Boolean(initialOrderNumber));
-  const [activeTab, setActiveTab] = useState<'all' | 'orders' | 'installments' | 'groups'>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'orders' | 'installments' | 'groups' | 'deliveries'>('all');
 
   const query = q.trim().toLowerCase();
   const cleanPhone = q.replace(/\D/g, '').slice(-9);
@@ -48,9 +51,14 @@ export default function MarketplaceTrackOrder({
     ? installmentOrders.find(o => safeLower(o.trackingCode) === query || (o.transactionId && safeLower(o.transactionId) === query))
     : undefined;
 
-  // 3. Direct group deal lookup
+  // 3. Direct group deal lookup (by code, id, or bodaboda deliveryTrackingCode)
   const singleGroupDeal = submitted && query
-    ? groupDeals.find(d => safeLower(d.shareCode) === query || String(d.id) === query)
+    ? groupDeals.find(d => safeLower(d.shareCode) === query || String(d.id) === query || (d.deliveryTrackingCode && safeLower(d.deliveryTrackingCode) === query))
+    : undefined;
+
+  // 3b. Direct delivery / bodaboda lookup
+  const singleDelivery = submitted && query
+    ? (deliveries || []).find(d => safeLower(d.trackingCode) === query || (d.trackingCode && safeLower(d.trackingCode).includes(query)))
     : undefined;
 
   // 4. Phone-based or broad lookup
@@ -70,7 +78,7 @@ export default function MarketplaceTrackOrder({
 
   const matchingGroupDeals = submitted && (cleanPhone.length >= 8 || query)
     ? groupDeals.filter(d => {
-        if (safeLower(d.shareCode).includes(query) || String(d.id) === query) return true;
+        if (safeLower(d.shareCode).includes(query) || String(d.id) === query || (d.deliveryTrackingCode && safeLower(d.deliveryTrackingCode).includes(query))) return true;
         if (cleanPhone.length >= 8) {
           const parts = groupDealParticipants.filter(p => p.groupDealId === d.id);
           return parts.some(p => p.customerPhone.replace(/\D/g, '').endsWith(cleanPhone));
@@ -79,7 +87,18 @@ export default function MarketplaceTrackOrder({
       })
     : [];
 
-  const hasAnyResults = Boolean(singleOrder || singleInstallment || singleGroupDeal || matchingOrders.length > 0 || matchingInstallments.length > 0 || matchingGroupDeals.length > 0);
+  const matchingDeliveries = submitted && (cleanPhone.length >= 8 || query)
+    ? (deliveries || []).filter(d => {
+        if (cleanPhone.length >= 8 && d.customerPhone.replace(/\D/g, '').endsWith(cleanPhone)) return true;
+        return safeLower(d.trackingCode).includes(query);
+      })
+    : [];
+
+  const allDeliveries = singleDelivery
+    ? [singleDelivery, ...matchingDeliveries.filter(d => d.id !== singleDelivery.id)]
+    : matchingDeliveries;
+
+  const hasAnyResults = Boolean(singleOrder || singleInstallment || singleGroupDeal || singleDelivery || matchingOrders.length > 0 || matchingInstallments.length > 0 || matchingGroupDeals.length > 0 || allDeliveries.length > 0);
 
   const submit = () => {
     if (!q.trim()) return;
@@ -139,7 +158,7 @@ export default function MarketplaceTrackOrder({
       {submitted && hasAnyResults && (
         <div className="space-y-6">
           {/* Quick Filter Tabs if multiple kinds found */}
-          {(matchingOrders.length > 0 || matchingInstallments.length > 0 || matchingGroupDeals.length > 0) && (
+          {(matchingOrders.length > 0 || matchingInstallments.length > 0 || matchingGroupDeals.length > 0 || allDeliveries.length > 0) && (
             <div className="flex items-center gap-2 border-b border-gray-200 pb-2 overflow-x-auto">
               <button
                 type="button"
@@ -148,8 +167,19 @@ export default function MarketplaceTrackOrder({
                   activeTab === 'all' ? `${th.btnPrimary} ${th.btnPrimaryText}` : 'text-gray-600 hover:bg-gray-100'
                 }`}
               >
-                {t('Yote')} ({matchingOrders.length + matchingInstallments.length + matchingGroupDeals.length})
+                {t('Yote')} ({matchingOrders.length + matchingInstallments.length + matchingGroupDeals.length + allDeliveries.length})
               </button>
+              {allDeliveries.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('deliveries')}
+                  className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === 'deliveries' ? `${th.btnPrimary} ${th.btnPrimaryText}` : 'text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  <Bike className="w-3.5 h-3.5" /> {t('Bodaboda Delivery')} ({allDeliveries.length})
+                </button>
+              )}
               {matchingOrders.length > 0 && (
                 <button
                   type="button"
@@ -183,6 +213,57 @@ export default function MarketplaceTrackOrder({
                   <Users className="w-3.5 h-3.5" /> {t('Nunua Pamoja')} ({matchingGroupDeals.length})
                 </button>
               )}
+            </div>
+          )}
+
+          {/* BODABODA DELIVERY RESULTS */}
+          {(activeTab === 'all' || activeTab === 'deliveries') && allDeliveries.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-sm font-black text-emerald-800">
+                <Bike className="w-5 h-5 text-emerald-600" /> {t('Ufuatiliaji wa Bodaboda / Delivery')}
+              </div>
+              <div className="grid gap-3.5">
+                {allDeliveries.map(deliv => {
+                  const isDelivered = deliv.status === 'delivered';
+                  const isEnRoute = deliv.status === 'on_the_way';
+                  return (
+                    <div key={deliv.id} className={`${th.card} ${th.cardBorder} rounded-2xl p-4.5 space-y-3 border hover:border-emerald-400 transition shadow-sm`}>
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-black ${isDelivered ? 'bg-emerald-100 text-emerald-700' : 'bg-emerald-500/15 text-emerald-600'}`}>
+                            <Bike className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <div className="text-xs font-black text-gray-900 flex items-center gap-2">
+                              <span>Tracking: {deliv.trackingCode}</span>
+                              <span className="text-[10px] text-gray-500 font-bold">({deliv.customerName})</span>
+                            </div>
+                            <div className="text-[11px] text-gray-600 mt-0.5">
+                              📍 {deliv.customerAddress || 'Dar es Salaam, Tanzania'}
+                            </div>
+                            <div className="text-[11px] font-bold text-emerald-700 mt-0.5 flex items-center gap-2">
+                              <span>🛵 Rider: <strong>{deliv.riderName || 'Juma Rashid (Bodaboda Express)'}</strong></span>
+                              <span>· 📞 {deliv.riderPhone || '+255 714 882 190'}</span>
+                            </div>
+                          </div>
+                        </div>
+                        <span className={`text-[10px] font-black uppercase px-2.5 py-1 rounded-full ${isDelivered ? 'bg-emerald-100 text-emerald-800' : isEnRoute ? 'bg-emerald-500 text-white animate-pulse' : 'bg-amber-100 text-amber-800'}`}>
+                          {isDelivered ? '✓ Imefikishwa' : isEnRoute ? '🛵 Njiani Kwako' : 'Ameteuliwa (In Transit)'}
+                        </span>
+                      </div>
+                      <div className="pt-2 flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={() => handleGo(`/track-delivery/${deliv.trackingCode}`)}
+                          className={`px-4 py-2 text-xs font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer flex items-center gap-1.5 shadow-sm`}
+                        >
+                          <Bike className="w-4 h-4" /> {t('Fungua Bodaboda Live Tracking')}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 

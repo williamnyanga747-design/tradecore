@@ -152,7 +152,12 @@ interface Props {
   storiesHandlers?: { onCreate: (payload: { companyId: number; type: 'image' | 'video'; mediaPath: string; caption?: string; productId?: number | null }) => void; onDelete: (id: number) => void; onRecordView: (storyId: number, viewerPhone?: string) => void };
   chatConversations?: ChatConversation[];
   chatMessages?: ChatMessage[];
-  chatHandlers?: { onSend: (conversationId: number, input: { text?: string; messageType: 'text' | 'image' | 'product'; imageData?: string; productId?: number }) => void; onMarkRead: (conversationId: number) => void; onStartConversation: (companyId: number, buyerName: string, buyerPhone: string, productId?: number | null) => number };
+  chatHandlers?: {
+    onSend: (conversationId: number, input: { text?: string; messageType: 'text' | 'image' | 'product'; imageData?: string; productId?: number }) => void;
+    onMarkRead: (conversationId: number) => void;
+    onStartConversation: (companyId: number, buyerName: string, buyerPhone: string, productId?: number | null) => number;
+    onUpdateConversationProduct?: (conversationId: number, productId: number) => void;
+  };
   appNotifications?: AppNotification[];
   notificationHandlers?: { onMarkAllRead: () => void };
   visualSearchHandlers?: { onLogSearch: (record: VisualSearchRecord) => void };
@@ -743,6 +748,7 @@ export default function MarketplaceApp({
 
         const convId = chatHandlers?.onStartConversation(company.id, chatName, phone, product.id);
         if (convId) {
+          chatHandlers?.onUpdateConversationProduct?.(convId, product.id);
           go(`/marketplace/chat/${convId}`);
         }
       };
@@ -939,6 +945,8 @@ export default function MarketplaceApp({
           installmentPayments={installmentPayments || []}
           groupDeals={groupDeals || []}
           groupDealParticipants={groupDealParticipants || []}
+          deliveries={deliveries || []}
+          deliveryUpdates={deliveryUpdates || []}
           initialOrderNumber={route.orderNumber}
           onBack={() => go('/marketplace')}
           onViewCompany={openCompany}
@@ -1097,6 +1105,7 @@ export default function MarketplaceApp({
           onSend={(convId: number, input: any) => chatHandlers?.onSend(convId, input)}
           onMarkRead={(convId: number) => chatHandlers?.onMarkRead(convId)}
           onOpenProduct={openProduct}
+          onUpdateProduct={(convId: number, prodId: number) => chatHandlers?.onUpdateConversationProduct?.(convId, prodId)}
         />
       );
     }
@@ -1430,6 +1439,7 @@ export default function MarketplaceApp({
 
                   const convId = chatHandlers?.onStartConversation(askSellerProduct.company.id, cleanName, normalized, askSellerProduct.product.id);
                   if (convId) {
+                    chatHandlers?.onUpdateConversationProduct?.(convId, askSellerProduct.product.id);
                     if (askSellerMsg.trim() && chatHandlers?.onSend) {
                       chatHandlers.onSend(convId, { text: askSellerMsg.trim(), messageType: 'text', productId: askSellerProduct.product.id });
                     }

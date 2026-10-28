@@ -118,7 +118,7 @@ export function savePhpConfig(config: Partial<PhpConfig>): void {
       if (config.apiKey !== undefined) localStorage.setItem('tradecore_php_api_key', config.apiKey);
     }
   } catch (e) {
-    console.error('Failed to save PHP config:', e);
+    console.warn('Failed to save PHP config:', e);
   }
 }
 
@@ -239,7 +239,7 @@ export async function discoverApiUrl(): Promise<string | null> {
         clearTimeout(tid);
       }
     }
-    console.error('[PHP API] No working API URL found among', candidates.length, 'candidates:', candidates);
+    console.warn('[PHP API] No working API URL found among', candidates.length, 'candidates:', candidates);
     return null;
   })();
 
@@ -469,7 +469,7 @@ export async function saveSystemDataToPhp(
       : Object.keys(data || {}).filter(k => k !== 'lastUpdated' && k !== '_clientBaseVersion' && k !== 'auditTrails');
 
     // Helper to send a single request
-    const postPayload = async (subPayload: any): Promise<{ ok: boolean; status: number; text: string; is409?: boolean }> => {
+    const postPayload = async (subPayload: any, attempt = 1): Promise<{ ok: boolean; status: number; text: string; is409?: boolean }> => {
       const bodyStr = JSON.stringify(subPayload);
       const res = await fetchWithTimeout(apiUrl, {
         method: 'POST',
@@ -490,6 +490,18 @@ export async function saveSystemDataToPhp(
       }
 
       const text = await res.text().catch(() => '');
+      const trimmed = text.trim();
+      const isHtml = trimmed.startsWith('<') || trimmed.includes('Starting Server') || trimmed.includes('<!doctype') || res.headers.get('content-type')?.includes('text/html');
+
+      if (isHtml) {
+        if (attempt <= 2) {
+          console.warn(`[PHP API] Server is starting up (received HTML / proxy response). Retrying save in 750ms (attempt ${attempt}/2)...`);
+          await new Promise(r => setTimeout(r, 750 * attempt));
+          return postPayload(subPayload, attempt + 1);
+        }
+        return { ok: false, status: res.status, text: 'Server warming up (HTML received)' };
+      }
+
       if (res.ok) {
         try {
           const result = JSON.parse(text);
@@ -600,10 +612,14 @@ export async function saveSystemDataToPhp(
       return false;
     }
 
-    console.error(`[PHP API] Save failed with HTTP ${directRes.status}: ${directRes.text.substring(0, 200)}`);
+    if (directRes.text.includes('warming up') || directRes.text.includes('Starting Server') || directRes.text.trim().startsWith('<')) {
+      console.warn(`[PHP API] Save deferred — server is warming up or proxy not ready. Local changes remain safely cached.`);
+    } else {
+      console.warn(`[PHP API] Save failed with HTTP ${directRes.status}: ${directRes.text.substring(0, 200)}`);
+    }
     return false;
   } catch (error) {
-    console.error('[PHP API] Error saving data to PHP backend:', error);
+    console.warn('[PHP API] Error saving data to PHP backend:', error);
     return false;
   }
 }
@@ -960,7 +976,7 @@ export function connectPhpRealtimeSync(onUpdateCallback: (data: any) => void): (
             onUpdateCallback(message.data);
           }
         } catch (e) {
-          console.error('[PHP Realtime] Error parsing WebSocket message:', e);
+          console.warn('[PHP Realtime] Error parsing WebSocket message:', e);
         }
       };
 
@@ -1014,7 +1030,7 @@ export function connectPhpRealtimeSync(onUpdateCallback: (data: any) => void): (
               onUpdateCallback(message.data);
             }
           } catch (e) {
-            console.error('[PHP Realtime SSE] Error parsing SSE event:', e);
+            console.warn('[PHP Realtime SSE] Error parsing SSE event:', e);
           }
         };
 
@@ -1100,7 +1116,7 @@ export async function apiDeleteProduct(id: string | number, companyId: string | 
     console.warn('[PHP API] delete_product failed:', res?.error || 'unknown');
     return false;
   } catch (e) {
-    console.error('[PHP API] delete_product error:', e);
+    console.warn('[PHP API] delete_product error:', e);
     return false;
   }
 }
@@ -1114,7 +1130,7 @@ export async function apiUpsertProduct(product: any): Promise<boolean> {
     console.warn('[PHP API] upsert_product failed:', res?.error || 'unknown');
     return false;
   } catch (e) {
-    console.error('[PHP API] upsert_product error:', e);
+    console.warn('[PHP API] upsert_product error:', e);
     return false;
   }
 }
@@ -1128,7 +1144,7 @@ export async function apiUpsertUser(userData: any): Promise<boolean> {
     console.warn('[PHP API] upsert_user failed:', res?.error || 'unknown');
     return false;
   } catch (e) {
-    console.error('[PHP API] upsert_user error:', e);
+    console.warn('[PHP API] upsert_user error:', e);
     return false;
   }
 }

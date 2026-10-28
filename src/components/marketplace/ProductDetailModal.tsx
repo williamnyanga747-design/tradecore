@@ -80,6 +80,11 @@ interface Props {
     transactionId?: string;
     receiptImage?: string;
     network?: CollectionNetwork;
+    targetTotalAmount?: number;
+    initialContribution?: number;
+    deliveryRecipientName?: string;
+    deliveryRecipientPhone?: string;
+    deliveryAddress?: string;
   }) => { ok: boolean; dealId?: number; shareCode?: string; error?: string };
   // --- MEGA BUILD F5/F2: flash pricing + ask-seller chat ---
   flashPrice?: number;
@@ -189,6 +194,7 @@ export default function ProductDetailPage({
   const [gbGroupTitle, setGbGroupTitle] = useState('');
   const [gbDiscountPercent, setGbDiscountPercent] = useState<number>(15);
   const [gbMinBuyers, setGbMinBuyers] = useState<number>(3);
+  const [gbContribution, setGbContribution] = useState<string>('');
   const [gbName, setGbName] = useState(session?.name || (typeof window !== 'undefined' ? (localStorage.getItem('tradecore_buyer_name') || '') : ''));
   const [gbPhone, setGbPhone] = useState(activeBuyerPhone);
   const [gbRegion, setGbRegion] = useState('');
@@ -202,7 +208,12 @@ export default function ProductDetailPage({
   const [gbSubmitting, setGbSubmitting] = useState(false);
   const gbFileRef = useRef<HTMLInputElement | null>(null);
 
-  const calculatedGbPrice = Math.round(product.price * (1 - gbDiscountPercent / 100));
+  // Custom initial contribution: buyers can write ANY amount they want to pay towards product
+  const defaultInitialAmount = Math.max(1000, Math.round(product.price * 0.25));
+  const activeInitialAmount = gbContribution.trim()
+    ? Math.min(product.price, Math.max(100, Number(gbContribution.replace(/\D/g, ''))))
+    : defaultInitialAmount;
+  const initialRemaining = Math.max(0, product.price - activeInitialAmount);
 
   const handleStartGroupBuy = () => {
     setGbError('');
@@ -213,10 +224,16 @@ export default function ProductDetailPage({
     if (!gbRegion) return setGbError(t('Tafadhali chagua mkoa wako kwa ajili ya delivery ya mzigo.'));
 
     setGbSubmitting(true);
+    const destAddr = [gbRegion, gbDistrict.trim(), gbWard.trim(), gbStreet.trim()].filter(Boolean).join(', ');
     const res = onCreateGroupDeal ? onCreateGroupDeal({
       productId: product.id,
       companyId: product.companyId,
-      groupPrice: calculatedGbPrice,
+      groupPrice: activeInitialAmount,
+      targetTotalAmount: product.price,
+      initialContribution: activeInitialAmount,
+      deliveryRecipientName: gbName.trim(),
+      deliveryRecipientPhone: gbPhone.trim(),
+      deliveryAddress: destAddr,
       minBuyers: gbMinBuyers,
       title: gbGroupTitle.trim() || undefined,
       isBuyerCreated: true,
@@ -746,17 +763,21 @@ export default function ProductDetailPage({
                 </div>
                 <div className="space-y-2">
                   {activeGroupDeals.map(d => {
-                    const remainingSpots = Math.max(0, d.minBuyers - d.paidCount);
+                    const targetTotal = d.targetTotalAmount || product.price;
+                    const totalPaid = d.totalPaidAmount !== undefined ? d.totalPaidAmount : (d.paidCount * (d.groupPrice || 0));
+                    const remainingBal = Math.max(0, targetTotal - totalPaid);
+                    const isReady = remainingBal <= 0 || d.isReadyForDelivery || d.status === 'completed';
                     return (
                       <div key={d.id} className="p-3 border rounded-xl bg-white hover:border-indigo-400 transition flex items-center justify-between gap-3 flex-wrap">
                         <div>
                           <div className="text-xs font-black text-gray-900 flex items-center gap-1.5">
                             <span>{d.title || `Kikundi #${d.shareCode}`}</span>
                             {d.creatorName && <span className="text-[10px] font-bold text-gray-500">({t('Kiongozi')}: {d.creatorName})</span>}
+                            {isReady && <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded">✓ Tayari Kusafirishwa</span>}
                           </div>
-                          <div className="text-[10px] text-indigo-600 font-bold mt-0.5">
-                            {d.paidCount}/{d.minBuyers} {t('wamelipa')} · <span className="text-emerald-600">{TZS(d.groupPrice)}</span>
-                            {remainingSpots > 0 ? ` · Bado ${remainingSpots}` : ' · Lengo limetimia!'}
+                          <div className="text-[10px] text-indigo-700 font-bold mt-0.5">
+                            Bei Kamili: {TZS(targetTotal)} · <span className="text-emerald-600 font-black">Iliyolipwa: {TZS(totalPaid)}</span>
+                            {remainingBal > 0 ? <span className="text-amber-700 font-bold"> · Bado TZS {remainingBal.toLocaleString()}</span> : <span className="text-emerald-700 font-bold"> · 100% Imelipwa!</span>}
                           </div>
                         </div>
                         <button
@@ -767,7 +788,7 @@ export default function ProductDetailPage({
                           }}
                           className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black cursor-pointer shadow-xs"
                         >
-                          {t('Jiunge Hapa')}
+                          {isReady ? t('Tazama Mzigo') : t('Changia / Jiunge')}
                         </button>
                       </div>
                     );
@@ -790,18 +811,83 @@ export default function ProductDetailPage({
               <button onClick={() => setShowCreateGroupModal(false)} className={`p-1.5 rounded-lg cursor-pointer ${th.textMuted} hover:bg-black/5`}>✕</button>
             </div>
 
-            <div className="p-3 bg-indigo-50/70 rounded-xl border border-indigo-200 flex items-center justify-between">
-              <div>
-                <div className="text-[10px] text-gray-500 uppercase font-bold">{t('Bei ya Kawaida')}</div>
-                <div className="text-xs line-through text-gray-400 font-bold">{TZS(product.price)}</div>
+            {/* Crowdfunded Split & Deduct Pool Overview */}
+            <div className="p-3.5 bg-gradient-to-br from-indigo-50 via-purple-50 to-emerald-50 rounded-2xl border border-indigo-200/80 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] text-gray-500 uppercase font-black tracking-wider">{t('Bei Kamili ya Bidhaa (Target Total)')}</div>
+                  <div className="text-base font-black text-indigo-950">{TZS(product.price)}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] text-emerald-700 uppercase font-black tracking-wider">{t('Unalipa Mwanzoni')}</div>
+                  <div className="text-base font-black text-emerald-600">{TZS(activeInitialAmount)}</div>
+                </div>
               </div>
-              <div>
-                <div className="text-[10px] text-indigo-700 uppercase font-black">{t('Bei ya Kikundi')} (-{gbDiscountPercent}%)</div>
-                <div className="text-base font-black text-emerald-600">{TZS(calculatedGbPrice)}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-[10px] text-amber-700 uppercase font-bold">{t('Unaokoa')}</div>
-                <div className="text-xs font-black text-amber-600">{TZS(product.price - calculatedGbPrice)}</div>
+
+              {/* Custom payment amount input */}
+              <div className="pt-2 border-t border-indigo-200/60">
+                <label className="text-[10px] font-black uppercase tracking-wider text-indigo-900 block mb-1.5 flex items-center justify-between">
+                  <span>{t('Andika Kiasi Unacholipa Wewe (Custom Amount)')} *</span>
+                  <span className="text-[9px] text-indigo-600 font-bold lowercase">{t('chagua kiasi chochote')}</span>
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-black text-gray-400">TZS</span>
+                  <input
+                    type="number"
+                    min={100}
+                    max={product.price}
+                    step={1000}
+                    value={gbContribution}
+                    onChange={e => setGbContribution(e.target.value)}
+                    placeholder={defaultInitialAmount.toLocaleString()}
+                    className={`w-full pl-12 pr-4 py-2.5 rounded-xl border border-indigo-300 font-black text-sm text-gray-900 bg-white focus:ring-2 focus:ring-indigo-500 outline-none`}
+                  />
+                </div>
+
+                {/* Quick percentage chips */}
+                <div className="grid grid-cols-4 gap-1.5 mt-2">
+                  {[
+                    { label: '10%', pct: 0.10 },
+                    { label: '25%', pct: 0.25 },
+                    { label: '50%', pct: 0.50 },
+                    { label: 'Lipa Yote', pct: 1.0 }
+                  ].map(chip => {
+                    const amt = Math.round(product.price * chip.pct);
+                    const isSelected = activeInitialAmount === amt;
+                    return (
+                      <button
+                        key={chip.label}
+                        type="button"
+                        onClick={() => setGbContribution(String(amt))}
+                        className={`py-1 px-1.5 text-center rounded-lg text-[10px] font-black border transition cursor-pointer ${
+                          isSelected
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                            : 'bg-white/80 text-indigo-900 border-indigo-200 hover:bg-indigo-100/50'
+                        }`}
+                      >
+                        <div>{chip.label}</div>
+                        <div className="text-[8px] font-semibold opacity-80">{TZS(amt)}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Real-time deduction indicator */}
+                <div className="mt-2.5 p-2 rounded-xl bg-white/90 border border-indigo-100 flex items-center justify-between text-xs">
+                  <span className="text-[11px] font-bold text-gray-600">{t('Itakayobaki kwa Wanunuzi Wengine')}:</span>
+                  <span className={`font-black ${initialRemaining === 0 ? 'text-emerald-600' : 'text-amber-700'}`}>
+                    {initialRemaining === 0 ? `🎉 TZS 0 (Imelipwa Kamili!)` : TZS(initialRemaining)}
+                  </span>
+                </div>
+                {initialRemaining === 0 ? (
+                  <p className="text-[9px] text-emerald-700 font-bold mt-1">
+                    ✓ {t('Kwa kuwa unalipa 100%, bidhaa itakuwa TAYARI KUSAFIRISHWA mara moja kwa Bodaboda!')}
+                  </p>
+                ) : (
+                  <p className="text-[9px] text-indigo-700 font-medium mt-1">
+                    ℹ️ {t('Kiasi kilichobaki')} ({TZS(initialRemaining)}) {t('kitalipwa na wanunuzi wengine watakaojiunga hadi mzigo uwe tayari kusafirishwa.')}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -810,36 +896,9 @@ export default function ProductDetailPage({
               <input
                 value={gbGroupTitle}
                 onChange={e => setGbGroupTitle(e.target.value)}
-                placeholder={t('Mfano: Kikundi cha Sarah & Marafiki wa Kazini')}
+                placeholder={t('Mfano: Kikundi cha Marafiki wa Kazini, Familia')}
                 className={th.input}
               />
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Punguzo la Bei')}</label>
-                <select
-                  value={gbDiscountPercent}
-                  onChange={e => setGbDiscountPercent(Number(e.target.value))}
-                  className={`${th.input} cursor-pointer text-xs font-bold`}
-                >
-                  <option value={10}>10% Discount</option>
-                  <option value={15}>15% Discount (Standard)</option>
-                  <option value={20}>20% Super Group Discount</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-[10px] font-bold text-gray-500 block mb-1">{t('Idadi ya Wanunuzi')}</label>
-                <select
-                  value={gbMinBuyers}
-                  onChange={e => setGbMinBuyers(Number(e.target.value))}
-                  className={`${th.input} cursor-pointer text-xs font-bold`}
-                >
-                  <option value={2}>Wanunuzi 2</option>
-                  <option value={3}>Wanunuzi 3 (Standard)</option>
-                  <option value={5}>Wanunuzi 5</option>
-                </select>
-              </div>
             </div>
 
             {/* Buyer Contact & Location Fields for records */}
@@ -939,7 +998,7 @@ export default function ProductDetailPage({
               className={`w-full flex items-center justify-center gap-2 px-5 py-3 text-xs sm:text-sm font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer disabled:opacity-50 shadow-md transition`}
             >
               {gbSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Users className="w-4 h-4" />}
-              {t('Anzisha Kikundi & Kamilisha Malipo ya')} {TZS(calculatedGbPrice)}
+              {t('Anzisha Kikundi & Lipa')} {TZS(activeInitialAmount)}
             </button>
           </div>
         </div>

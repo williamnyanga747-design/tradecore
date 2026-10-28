@@ -1,7 +1,18 @@
 {
   "inMemoryPhpState": {
-    "lastUpdated": "2026-10-05T16:17:05.152Z",
+    "lastUpdated": "2026-10-23T13:43:39.846Z",
     "securityLogs": [
+      {
+        "id": "SECLOG-1792762930724",
+        "username": "root_mandate",
+        "status": "Success",
+        "ipAddress": "41.59.28.251",
+        "browserFingerprint": "Desktop Station (1366x768, Africa/Nairobi) [FP-2A971252]",
+        "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        "timestamp": "2026-10-23T13:42:10.724Z",
+        "deviceRecognized": true,
+        "companyId": null
+      },
       {
         "id": "SECLOG-1791217019148",
         "username": "root_mandate",
@@ -1947,6 +1958,6 @@
       "cancelledAt": 1791216473386
     }
   ],
-  "inMemoryStateVersion": 1792226085535,
-  "savedAt": "2026-10-17T08:34:45.535Z"
+  "inMemoryStateVersion": 1792764630886,
+  "savedAt": "2026-10-23T14:10:30.886Z"
 }
