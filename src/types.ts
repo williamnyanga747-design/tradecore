@@ -1421,7 +1421,7 @@ export interface AppNotification {
   id: number;
   audiencePhone?: string; // target customer phone (undefined = broadcast)
   companyId?: number | null; // target company (seller notifications)
-  type: 'flash_sale' | 'order_update' | 'new_message' | 'dispute' | 'general' | 'offer_update';
+  type: 'flash_sale' | 'order_update' | 'new_message' | 'dispute' | 'general' | 'offer_update' | 'deal_update' | 'installment_update' | 'review';
   title: string;
   message: string;
   data?: {
@@ -1429,6 +1429,9 @@ export interface AppNotification {
     orderId?: number;
     conversationId?: number;
     disputeId?: number;
+    dealId?: number;
+    installmentOrderId?: number;
+    orderNumber?: string;
     url?: string;
   };
   isRead: boolean;

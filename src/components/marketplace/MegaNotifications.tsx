@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Bell, Zap, ShoppingBag, MessageCircle, AlertTriangle, Info, HandCoins } from 'lucide-react';
+import { Bell, Zap, ShoppingBag, MessageCircle, AlertTriangle, Info, HandCoins, Users, CalendarClock, Star } from 'lucide-react';
 import { AppNotification } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TFunc } from './MarketplaceShared';
@@ -19,6 +19,9 @@ const ICONS: Record<AppNotification['type'], React.ElementType> = {
   new_message: MessageCircle,
   dispute: AlertTriangle,
   offer_update: HandCoins,
+  deal_update: Users,
+  installment_update: CalendarClock,
+  review: Star,
   general: Info
 };
 
@@ -28,6 +31,9 @@ const ICON_CLS: Record<AppNotification['type'], string> = {
   new_message: 'text-blue-500 bg-blue-500/15',
   dispute: 'text-amber-500 bg-amber-500/15',
   offer_update: 'text-yellow-600 bg-yellow-500/15',
+  deal_update: 'text-indigo-500 bg-indigo-500/15',
+  installment_update: 'text-sky-500 bg-sky-500/15',
+  review: 'text-amber-500 bg-amber-500/15',
   general: 'text-gray-400 bg-gray-500/15'
 };
 

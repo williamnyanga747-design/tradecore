@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { User, Company, Branch, Store, Settings } from '../types';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { User, Company, Branch, Store, Settings, AppNotification } from '../types';
 import { translate } from '../utils/format';
 import { getStoredLanguage } from '../utils/i18n';
 import LanguageSwitcher from '../utils/LanguageSwitcher';
-import { Settings as SettingsIcon, Menu, Bell, Sun, Moon, Store as StoreIcon, Globe, Printer } from 'lucide-react';
+import { Settings as SettingsIcon, Menu, Bell, Sun, Moon, Store as StoreIcon, Globe, Printer, ShoppingCart, HandCoins, Star, MessageSquare, CheckCheck, ExternalLink } from 'lucide-react';
 import { isBluetoothPrinterConnected } from '../utils/escposPrinter';
 import SyncStatusDot from './SyncStatusDot';
 import { sameId } from '../utils/idUtils';
@@ -29,6 +29,9 @@ interface HeaderProps {
   onNavigate?: (page: string) => void;
   language: 'en' | 'sw' | 'fr' | 'es';
   onLanguageChange?: (lang: 'en' | 'sw' | 'fr' | 'es') => void;
+  appNotifications?: AppNotification[];
+  onMarkNotificationRead?: (id: number) => void;
+  onMarkAllNotificationsRead?: (companyId: number | string | null) => void;
 }
 
 // SUPER-ADMIN GLOBAL SCOPE: true for the root accounts and any company-less super role
@@ -58,11 +61,57 @@ export default function Header({
   onOpenGame,
   onNavigate,
   language,
-  onLanguageChange
+  onLanguageChange,
+  appNotifications = [],
+  onMarkNotificationRead,
+  onMarkAllNotificationsRead
 }: HeaderProps) {
   const isSuperAdmin = isSuperScopeUser(currentUser);
   const isAdmin = currentUser?.role === 'Admin' || isSuperAdmin;
   const userInitial = (currentUser?.name?.[0] || currentUser?.username?.[0] || 'U').toUpperCase();
+
+  const [showNotifDropdown, setShowNotifDropdown] = useState<boolean>(false);
+  const notifDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (notifDropdownRef.current && !notifDropdownRef.current.contains(e.target as Node)) {
+        setShowNotifDropdown(false);
+      }
+    };
+    if (showNotifDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showNotifDropdown]);
+
+  // Company-isolated notifications (Super admin in global view sees all)
+  const companyNotifications = useMemo(() => {
+    return (appNotifications || []).filter(n => {
+      if (isSuperAdmin && (currentCompanyId === 0 || currentCompanyId === '0' || !currentCompanyId)) return true;
+      if (!currentCompanyId) return true;
+      return n.companyId != null && sameId(n.companyId, currentCompanyId);
+    });
+  }, [appNotifications, isSuperAdmin, currentCompanyId]);
+
+  const unreadNotifs = useMemo(() => companyNotifications.filter(n => !n.isRead), [companyNotifications]);
+  const unreadCount = unreadNotifs.length;
+
+  const formatRelativeTime = (dateStr?: string): string => {
+    if (!dateStr) return '';
+    try {
+      const diffSec = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+      if (diffSec < 45) return 'Sasa hivi';
+      const diffMin = Math.floor(diffSec / 60);
+      if (diffMin < 60) return `Dakika ${diffMin} zilizopita`;
+      const diffHours = Math.floor(diffMin / 60);
+      if (diffHours < 24) return `Saa ${diffHours} zilizopita`;
+      const diffDays = Math.floor(diffHours / 24);
+      return `Siku ${diffDays} zilizopita`;
+    } catch {
+      return dateStr;
+    }
+  };
 
   // GLOBAL VIEW (ALL COMPANIES): when a global super admin activates it, the company,
   // branch and store selectors aggregate across EVERY company in the system.
@@ -200,6 +249,21 @@ export default function Header({
 
         {/* Mobile controls */}
         <div className="flex items-center gap-2 md:hidden">
+          {/* Mobile Notification Bell */}
+          <button
+            onClick={() => setShowNotifDropdown(!showNotifDropdown)}
+            type="button"
+            className="relative w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition text-white"
+            title={unreadCount > 0 ? `${unreadCount} unread notification(s)` : t('Notifications')}
+          >
+            <Bell className="w-4 h-4" />
+            {unreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[9px] font-black rounded-full h-3.5 min-w-[14px] px-0.5 flex items-center justify-center animate-pulse border border-white/40 shadow-xs">
+                {unreadCount > 99 ? '99+' : unreadCount}
+              </span>
+            )}
+          </button>
+
           {/* Global Theme Toggle Button */}
           <button
             onClick={onToggleTheme}
@@ -324,6 +388,23 @@ export default function Header({
             <LanguageSwitcher language={language} onChange={onLanguageChange} dark={true} />
           )}
 
+          {/* Notification Bell Button with Unread Badge */}
+          <div className="relative">
+            <button
+              onClick={() => setShowNotifDropdown(!showNotifDropdown)}
+              type="button"
+              className="relative w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center transition text-white"
+              title={unreadCount > 0 ? `${unreadCount} unread notification(s)` : t('Notifications')}
+            >
+              <Bell className="w-4 h-4" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[10px] font-black rounded-full h-4 min-w-[16px] px-1 flex items-center justify-center animate-pulse shadow-xs border border-white/40">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </button>
+          </div>
+
           {/* Global Theme Toggle Button */}
           <button
             onClick={onToggleTheme}
@@ -359,6 +440,134 @@ export default function Header({
           </div>
         </div>
       </div>
+
+      {/* Notification Dropdown Drawer for Company User Alerting */}
+      {showNotifDropdown && (
+        <div
+          ref={notifDropdownRef}
+          className="absolute right-2 sm:right-6 top-14 w-[94vw] max-w-sm sm:max-w-md bg-white text-slate-800 rounded-2xl shadow-2xl border border-slate-200 z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        >
+          <div className="p-3.5 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+            <div className="flex items-center gap-2">
+              <Bell className="w-4 h-4 text-amber-400" />
+              <span className="font-bold text-sm tracking-tight">{t('Arifa za Mfanyabiashara')}</span>
+              {unreadCount > 0 && (
+                <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full">
+                  {unreadCount} {t('Mpya')}
+                </span>
+              )}
+            </div>
+            {unreadCount > 0 && onMarkAllNotificationsRead && (
+              <button
+                type="button"
+                onClick={() => onMarkAllNotificationsRead(currentCompanyId)}
+                className="text-[11px] text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 transition cursor-pointer"
+              >
+                <CheckCheck className="w-3.5 h-3.5" />
+                <span>{t('Weka Zote Zimesomwa')}</span>
+              </button>
+            )}
+          </div>
+
+          <div className="max-h-[380px] overflow-y-auto divide-y divide-slate-100">
+            {companyNotifications.length === 0 ? (
+              <div className="p-8 text-center text-slate-400 text-xs">
+                <Bell className="w-8 h-8 text-slate-300 mx-auto mb-2 opacity-50" />
+                <p className="font-medium text-slate-700">{t('Hakuna arifa mpya kwa sasa.')}</p>
+                <p className="text-[10px] text-slate-400 mt-1">Matendo yote ya wanunuzi nje ya duka (maagizo mapya, nunua pamoja, lipa pole pole, maoni) yatatokea hapa kiotomatiki.</p>
+              </div>
+            ) : (
+              companyNotifications.slice(0, 30).map((notif) => {
+                const getNotifIcon = () => {
+                  switch (notif.type) {
+                    case 'order_update':
+                      return <ShoppingCart className="w-4 h-4 text-emerald-600" />;
+                    case 'deal_update':
+                      return <HandCoins className="w-4 h-4 text-amber-600" />;
+                    case 'installment_update':
+                      return <HandCoins className="w-4 h-4 text-blue-600" />;
+                    case 'offer_update':
+                      return <HandCoins className="w-4 h-4 text-indigo-600" />;
+                    case 'review':
+                      return <Star className="w-4 h-4 text-amber-500 fill-amber-400" />;
+                    case 'new_message':
+                      return <MessageSquare className="w-4 h-4 text-purple-600" />;
+                    default:
+                      return <Bell className="w-4 h-4 text-slate-600" />;
+                  }
+                };
+
+                const getBadgeBg = () => {
+                  switch (notif.type) {
+                    case 'order_update':
+                      return 'bg-emerald-50 border-emerald-200';
+                    case 'deal_update':
+                      return 'bg-amber-50 border-amber-200';
+                    case 'installment_update':
+                      return 'bg-blue-50 border-blue-200';
+                    case 'offer_update':
+                      return 'bg-indigo-50 border-indigo-200';
+                    case 'review':
+                      return 'bg-yellow-50 border-yellow-200';
+                    case 'new_message':
+                      return 'bg-purple-50 border-purple-200';
+                    default:
+                      return 'bg-slate-50 border-slate-200';
+                  }
+                };
+
+                return (
+                  <div
+                    key={notif.id}
+                    onClick={() => {
+                      if (!notif.isRead && onMarkNotificationRead) {
+                        onMarkNotificationRead(notif.id);
+                      }
+                      if (notif.data?.url && onNavigate) {
+                        onNavigate(notif.data.url);
+                        setShowNotifDropdown(false);
+                      }
+                    }}
+                    className={`p-3 text-left transition cursor-pointer flex gap-3 items-start ${
+                      !notif.isRead ? 'bg-amber-50/50 hover:bg-amber-50/80' : 'bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className={`p-2 rounded-xl border shrink-0 mt-0.5 ${getBadgeBg()}`}>
+                      {getNotifIcon()}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className={`text-xs truncate ${!notif.isRead ? 'font-black text-slate-900' : 'font-semibold text-slate-700'}`}>
+                          {notif.title}
+                        </span>
+                        {!notif.isRead && (
+                          <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0"></span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-600 line-clamp-2 mt-0.5 leading-snug">
+                        {notif.message}
+                      </p>
+                      <div className="flex items-center justify-between mt-1 text-[10px] text-slate-400">
+                        <span>{formatRelativeTime(notif.createdAt)}</span>
+                        {notif.data?.url && (
+                          <span className="text-brand hover:underline font-bold flex items-center gap-0.5">
+                            Fungua <ExternalLink className="w-2.5 h-2.5" />
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+          <div className="p-2.5 bg-slate-50 border-t border-slate-100 text-center">
+            <span className="text-[11px] text-slate-500 font-medium">
+              {t('Arifa hizi zinatoka kwa wateja nje ya mfumo (Marketplace).')}
+            </span>
+          </div>
+        </div>
+      )}
     </header>
     </>
   );

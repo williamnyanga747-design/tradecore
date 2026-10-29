@@ -23,6 +23,8 @@ interface SidebarProps {
   onToggleCollapse?: () => void;
   language?: 'en' | 'sw' | 'fr' | 'es';
   onRegisterPushSubscription?: (rec: { endpoint: string; p256dh: string; auth: string }) => void;
+  unreadOrderNotifs?: number;
+  unreadSmartNotifs?: number;
 }
 
 /**
@@ -57,7 +59,9 @@ function SidebarInner({
   isCollapsed = false,
   onToggleCollapse,
   language,
-  onRegisterPushSubscription
+  onRegisterPushSubscription,
+  unreadOrderNotifs = 0,
+  unreadSmartNotifs = 0
 }: SidebarProps) {
   // Read stable user from localStorage — never re-read on applyData
   const stableUser = useMemo(() => readStableUser(), []);
@@ -375,13 +379,22 @@ function SidebarInner({
         {isAllowed('marketplace-orders') && (
           <button
             onClick={() => onNavigate('marketplace-orders')}
-            className={`w-full relative flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2'} rounded-md transition text-left ${
+            className={`w-full relative flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2 justify-between'} rounded-md transition text-left ${
               currentPage === 'marketplace-orders' ? 'bg-brand text-white font-bold' : 'text-gray-300 hover:bg-white/10'
             }`}
             title={isCollapsed ? t('Marketplace Orders') : undefined}
           >
-            <ShoppingCart className="w-[18px] h-[18px] flex-shrink-0" />
-            {!isCollapsed && <span>{t('Marketplace Orders')}</span>}
+            <span className="flex items-center gap-3">
+              <ShoppingCart className="w-[18px] h-[18px] flex-shrink-0" />
+              {!isCollapsed && <span>{t('Marketplace Orders')}</span>}
+            </span>
+            {unreadOrderNotifs > 0 && (
+              <span className={`bg-rose-500 text-white font-black rounded-full px-1.5 py-0.2 text-[10px] animate-pulse ${
+                isCollapsed ? 'absolute -top-1 -right-1 text-[9px] px-1' : ''
+              }`}>
+                {unreadOrderNotifs > 99 ? '99+' : unreadOrderNotifs}
+              </span>
+            )}
           </button>
         )}
         {isAllowed('marketplace-settings') && (
@@ -413,13 +426,22 @@ function SidebarInner({
         {isAllowed('seller-phase2c') && (
           <button
             onClick={() => onNavigate('seller-phase2c')}
-            className={`w-full relative flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2'} rounded-md transition text-left ${
+            className={`w-full relative flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2 justify-between'} rounded-md transition text-left ${
               currentPage === 'seller-phase2c' ? 'bg-brand text-white font-bold' : 'text-gray-300 hover:bg-white/10'
             }`}
             title={isCollapsed ? t('Smart Selling') : undefined}
           >
-            <HandCoins className="w-[18px] h-[18px] flex-shrink-0" />
-            {!isCollapsed && <span>{t('Smart Selling')}</span>}
+            <span className="flex items-center gap-3">
+              <HandCoins className="w-[18px] h-[18px] flex-shrink-0" />
+              {!isCollapsed && <span>{t('Smart Selling')}</span>}
+            </span>
+            {unreadSmartNotifs > 0 && (
+              <span className={`bg-amber-500 text-slate-900 font-black rounded-full px-1.5 py-0.2 text-[10px] animate-pulse ${
+                isCollapsed ? 'absolute -top-1 -right-1 text-[9px] px-1' : ''
+              }`}>
+                {unreadSmartNotifs > 99 ? '99+' : unreadSmartNotifs}
+              </span>
+            )}
           </button>
         )}
         {isAllowed('affiliate-program') && (
@@ -961,5 +983,7 @@ export default React.memo(SidebarInner, (prev, next) => {
     && prev.isCollapsed === next.isCollapsed
     && prev.lowStockCount === next.lowStockCount
     && prev.language === next.language
-    && prev.allowedPages === next.allowedPages;
+    && prev.allowedPages === next.allowedPages
+    && prev.unreadOrderNotifs === next.unreadOrderNotifs
+    && prev.unreadSmartNotifs === next.unreadSmartNotifs;
 });

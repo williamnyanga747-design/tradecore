@@ -1764,18 +1764,7 @@ function InstallmentStartPage(props: Props) {
   const milk = theme === 'milk';
   const product = props.products.find(p => p.id === Number(props.route.id));
 
-  // Sensible default plans if seller hasn't configured custom plans
-  const fallbackPlans: InstallmentPlan[] = useMemo(() => {
-    if (!product) return [];
-    return [
-      { id: 9101, productId: product.id, companyId: product.companyId, totalPrice: product.price, downPaymentPercent: 25, installmentsCount: 3, installmentPercentExtra: 0, status: 'active', createdAt: '' },
-      { id: 9102, productId: product.id, companyId: product.companyId, totalPrice: product.price, downPaymentPercent: 30, installmentsCount: 4, installmentPercentExtra: 2, status: 'active', createdAt: '' },
-      { id: 9103, productId: product.id, companyId: product.companyId, totalPrice: product.price, downPaymentPercent: 50, installmentsCount: 2, installmentPercentExtra: 0, status: 'active', createdAt: '' }
-    ];
-  }, [product]);
-
-  const existingPlans = (props.installmentPlans || []).filter(p => p.productId === product?.id && p.status === 'active');
-  const availablePlans = existingPlans.length > 0 ? existingPlans : fallbackPlans;
+  const availablePlans = (props.installmentPlans || []).filter(p => p.productId === product?.id && p.status === 'active');
 
   const [name, setName] = useState(props.session?.name || '');
   const [phone, setPhone] = useState(props.session?.phone || '');
@@ -1783,7 +1772,7 @@ function InstallmentStartPage(props: Props) {
   const [district, setDistrict] = useState('');
   const [ward, setWard] = useState('');
   const [street, setStreet] = useState('');
-  const [planId, setPlanId] = useState<number>(availablePlans[0]?.id || 9101);
+  const [planId, setPlanId] = useState<number>(availablePlans[0]?.id || 0);
   const [txId, setTxId] = useState('');
   const [receiptImage, setReceiptImage] = useState<string | undefined>();
   const [error, setError] = useState('');
@@ -1791,6 +1780,35 @@ function InstallmentStartPage(props: Props) {
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   if (!product) return <NotFound th={th} t={t} onBack={props.onBack} label={t('The product does not exist.')} />;
+
+  if (availablePlans.length === 0) {
+    return (
+      <div className="space-y-4 pb-16">
+        <BackButton th={th} t={t} onClick={props.onBack} />
+        <Card th={th} className="p-8 text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-amber-500/15 text-amber-600 flex items-center justify-center mx-auto shadow-sm">
+            <CalendarClock className="w-7 h-7" />
+          </div>
+          <div>
+            <h2 className={`text-base sm:text-lg font-black ${th.strongText}`}>
+              {t('Lipa Pole Pole Haipatikani')}
+            </h2>
+            <p className={`text-xs ${th.textMuted} font-semibold mt-1 max-w-md mx-auto`}>
+              {t('Huduma ya Lipa Pole Pole haijawezeshwa au imesitishwa na muuzaji kwa bidhaa hii. Unaweza kuendelea na ununuzi wa kawaida.')}
+            </p>
+          </div>
+          <div className="pt-2">
+            <button
+              onClick={props.onBack}
+              className={`px-5 py-2.5 rounded-xl text-xs font-black ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer transition`}
+            >
+              {t('Rudi Nyuma')}
+            </button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
 
   const plan = availablePlans.find(p => p.id === planId) || availablePlans[0];
   const downPayment = Math.round(product.price * (plan?.downPaymentPercent || 25) / 100);

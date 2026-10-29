@@ -9247,7 +9247,34 @@ try {
   const pushAppNotification = (n: { audiencePhone?: string; companyId?: number | null; type: AppNotification['type']; title: string; message: string; data?: AppNotification['data'] }) => {
     const cur = dbStateRef.current;
     const notif: AppNotification = { id: Date.now() + Math.floor(Math.random() * 1000), ...n, isRead: false, createdAt: new Date().toISOString() };
-    saveAllData({ appNotifications: [notif, ...(cur.appNotifications || [])].slice(0, 200) });
+    saveAllData({ appNotifications: [notif, ...(cur.appNotifications || [])].slice(0, 300) });
+
+    // Live in-app alert toast for users within the relevant company
+    try {
+      const activeCo = currentCompanyId || currentUser?.companyId;
+      const isRelevant = !n.companyId || (activeCo && sameId(n.companyId, activeCo)) || isSuperScopeUser(currentUser);
+      if (isRelevant) {
+        toast.info(`🔔 ${n.title}: ${n.message}`, 5500);
+      }
+    } catch {}
+  };
+
+  const markAppNotificationRead = (id: number) => {
+    const cur = dbStateRef.current;
+    saveAllData({
+      appNotifications: (cur.appNotifications || []).map(n => n.id === id ? { ...n, isRead: true } : n)
+    });
+  };
+
+  const markCompanyNotificationsRead = (companyId: number | string | null) => {
+    const cur = dbStateRef.current;
+    const cId = companyId !== null && companyId !== undefined ? Number(companyId) : null;
+    saveAllData({
+      appNotifications: (cur.appNotifications || []).map(n => {
+        const match = cId === null || cId === 0 ? true : (n.companyId && sameId(n.companyId, cId));
+        return match && !n.isRead ? { ...n, isRead: true } : n;
+      })
+    });
   };
 
   const markAllNotificationsRead = (identityPhone: string | null) => {
@@ -9393,7 +9420,7 @@ try {
       sameId(c.companyId, companyId) && (c.buyerPhone === buyerPhone || (target && norm(c.buyerPhone) === target))
     );
     if (existing) {
-      if (productId && !existing.productId) {
+      if (productId && (!existing.productId || existing.productId !== productId)) {
         saveAllData({
           chatConversations: (cur.chatConversations || []).map(c => c.id === existing.id ? { ...c, productId } : c)
         });
@@ -9990,6 +10017,15 @@ try {
       });
       forceFlushNow();
       logAction('Marketplace Order', `New marketplace order ${orderNumber} (${data.customerName}, ${phone}) — TZS ${totalAmount.toLocaleString()} for ${company.name}.`);
+
+      // Alert company users about new buyer order
+      pushAppNotification({
+        companyId: data.companyId,
+        type: 'order_update',
+        title: `Agizo Jipya #${orderNumber}!`,
+        message: `${data.customerName || 'Mteja'} (${phone}) ameweka agizo la TZS ${totalAmount.toLocaleString()} (${newOrder.items.length} bidhaa).`,
+        data: { orderId: newOrder.id, orderNumber, url: 'marketplace-orders' }
+      });
 
       // --- MEGA BUILD F1: schedule simulated STK push confirmation ---
       if (isEscrowMobile) {
@@ -11064,6 +11100,13 @@ try {
       marketplaceCustomers: customersUpdated
     });
     logAction('Feature Order', `Feature order ${orderNumber} (${input.trackingRef || 'feature'}) TZS ${totalAmount.toLocaleString()} — collection ${collection.reference}.`);
+    pushAppNotification({
+      companyId: input.companyId,
+      type: 'order_update',
+      title: `Malipo ya Bidhaa #${orderNumber}!`,
+      message: `${input.customerName} amefanya malipo ya TZS ${totalAmount.toLocaleString()} (${product.name} - ${input.trackingRef || 'malipo'}).`,
+      data: { orderId: newOrder.id, orderNumber, url: 'marketplace-orders' }
+    });
     return { ok: true, reference: collection.reference, orderId: newOrder.id };
   };
 
@@ -11610,6 +11653,13 @@ try {
       deliveryUpdates: nextDeliveryUpdates
     });
     logAction('Group Deal Created', `Nunua Pamoja #${shareCode} (${deal.title || 'Kikundi'}) on ${product.name} — Target TZS ${targetTotal.toLocaleString()}, Paid TZS ${initialContribution.toLocaleString()}, Remaining TZS ${remainingAmount.toLocaleString()}.`);
+    pushAppNotification({
+      companyId: deal.companyId,
+      type: 'deal_update',
+      title: `Nunua Pamoja Mpya: #${shareCode}`,
+      message: `${input.customerName} ameanzisha ununuzi wa pamoja kwa "${product.name}". Lengo: TZS ${targetTotal.toLocaleString()}, Mchango: TZS ${initialContribution.toLocaleString()}.`,
+      data: { dealId: deal.id, productId: product.id, url: 'seller-phase2c' }
+    });
     return { ok: true, dealId: deal.id, shareCode };
   };
 
@@ -11688,6 +11738,13 @@ try {
     forceFlushNow();
 
     logNotification(phone, `Umejiunga Nunua Pamoja #${deal.shareCode}! Kiasi kilichobaki kulipwa kwa bidhaa hii ni TZS ${newRemaining.toLocaleString()}.`, 'sms', `/group-deal/${dealId}`);
+    pushAppNotification({
+      companyId: deal.companyId,
+      type: 'deal_update',
+      title: `Mwanakikundi Mpya: #${deal.shareCode}`,
+      message: `${input.customerName} amejiunga kwenye Nunua Pamoja #${deal.shareCode}. Kiasi kilichobaki: TZS ${newRemaining.toLocaleString()}.`,
+      data: { dealId: deal.id, productId: deal.productId, url: 'seller-phase2c' }
+    });
     return { ok: true, reference: ref };
   };
 
@@ -11894,6 +11951,15 @@ try {
       forceFlushNow();
 
       logAction('Group Deal Payment', `Participant ${phone} contributed TZS ${paymentAmount.toLocaleString()} (deducted, ${newRemaining.toLocaleString()} TZS remaining) for Nunua Pamoja #${deal.shareCode} on ${product.name}.`);
+      pushAppNotification({
+        companyId: deal.companyId,
+        type: 'deal_update',
+        title: isReadyForDelivery ? `Nunua Pamoja Imekamilika! (#${deal.shareCode})` : `Mchango wa Nunua Pamoja (#${deal.shareCode})`,
+        message: isReadyForDelivery
+          ? `Kikundi #${deal.shareCode} kwa "${product.name}" kimelipwa kamili (TZS ${targetAmount.toLocaleString()}) na kiko tayari kwa usafirishaji!`
+          : `${address.customerName || 'Mwanakikundi'} amelipa TZS ${paymentAmount.toLocaleString()} kwa "${product.name}". Zimebaki TZS ${newRemaining.toLocaleString()}.`,
+        data: { dealId: deal.id, productId: product.id, url: 'seller-phase2c' }
+      });
     }
     return res;
   };
@@ -12256,21 +12322,10 @@ try {
     if (!phone) return { ok: false, error: 'Namba ya simu si sahihi.' };
 
     if (!plan) {
-      const downPercent = input.downPaymentPercent || 25;
-      const count = input.installmentsCount || 3;
-      const extra = input.installmentPercentExtra || 0;
-      plan = {
-        id: Date.now() + 10,
-        productId: product.id,
-        companyId: product.companyId,
-        totalPrice: product.price,
-        downPaymentPercent: downPercent,
-        installmentsCount: count,
-        installmentPercentExtra: extra,
-        status: 'active',
-        createdAt: new Date().toISOString()
-      };
-      saveAllData({ installmentPlans: [plan, ...(installmentPlans || [])] });
+      plan = (installmentPlans || []).find(p => p.productId === product.id && p.status === 'active');
+      if (!plan) {
+        return { ok: false, error: 'Huduma ya Lipa Pole Pole haipatikani au imesitishwa na muuzaji kwa bidhaa hii.' };
+      }
     }
 
     const totalPrice = product.price;
@@ -12351,6 +12406,13 @@ try {
     });
     logNotification(phone, `Lipa Pole Pole #${trackingCode} imethibitishwa! Malipo ya awali TZS ${downPayment.toLocaleString()} yamepokelewa.`, 'sms', `/lipa-pole-pole/${trackingCode}`);
     logAction('Installment Order Created', `Lipa Pole Pole order #${trackingCode} created on ${product.name} for ${order.customerName} (${phone}) - total TZS ${totalPrice.toLocaleString()}.`);
+    pushAppNotification({
+      companyId: input.companyId,
+      type: 'installment_update',
+      title: `Lipa Pole Pole Mpya (#${trackingCode})`,
+      message: `${order.customerName} ameanzisha mpango wa awamu kwa "${product.name}". Jumla: TZS ${totalPrice.toLocaleString()}${hasDownPayment ? `, Awali: TZS ${downPayment.toLocaleString()}` : ''}.`,
+      data: { installmentOrderId: order.id, productId: product.id, url: 'seller-phase2c' }
+    });
     return { ok: true, trackingCode, orderId: order.id };
   };
 
@@ -12471,6 +12533,15 @@ try {
 
       logNotification(instOrder.customerPhone, `Awamu #${payIndex} ya Lipa Pole Pole #${instOrder.trackingCode} (TZS ${amount.toLocaleString()}) imelipwa. Baki: TZS ${nextRemaining.toLocaleString()}.`, 'sms');
       logAction('Installment Payment Made', `Payment for ${instOrder.trackingCode} (${type}) TZS ${amount.toLocaleString()} received with TxID ${address.transactionId || '-'}.`);
+      pushAppNotification({
+        companyId: instOrder.companyId,
+        type: 'installment_update',
+        title: isCompleted ? `Lipa Pole Pole Imekamilika! (#${instOrder.trackingCode})` : `Awamu ya Lipa Pole Pole (#${instOrder.trackingCode})`,
+        message: isCompleted
+          ? `Lipa Pole Pole ya "${product.name}" imelipwa kamili (TZS ${instOrder.totalPrice.toLocaleString()}) na iko tayari kwa uwasilishaji!`
+          : `${instOrder.customerName} amelipa awamu (${payIndex}) ya TZS ${amount.toLocaleString()} kwa "${product.name}". Baki: TZS ${nextRemaining.toLocaleString()}.`,
+        data: { installmentOrderId: instOrder.id, productId: product.id, url: 'seller-phase2c' }
+      });
     }
     return { ok: res.ok, reference: res.reference, error: res.error };
   };
@@ -13164,6 +13235,13 @@ try {
     };
     const nextReviews = [review, ...reviews].slice(0, 2000);
     saveAllData({ reviews: nextReviews });
+    pushAppNotification({
+      companyId: data.companyId,
+      type: 'review',
+      title: 'Maoni Mapya ya Bidhaa!',
+      message: `${name} ameacha maoni (${data.rating}★)${comment ? `: "${comment.slice(0, 60)}..."` : ''}.`,
+      data: { productId: data.productId || undefined, url: 'marketplace-settings' }
+    });
     toast.success(t('Thank you! Your review is awaiting approval.'));
     return { ok: true };
   };
@@ -17990,6 +18068,8 @@ try {
       )}
 
       {/* Sidebar - Desktop Layout */}
+      {(() => null)()}
+      {/* Compute unread order & smart selling action badges */}
       <div className={`hidden lg:block transition-all duration-300 flex-shrink-0 ${sidebarCollapsed ? 'w-[70px]' : 'w-64'}`}>
         <Sidebar
           currentPage={currentPage}
@@ -18004,6 +18084,8 @@ try {
           onToggleCollapse={handleToggleSidebarCollapsed}
           language={activeLanguage}
           onRegisterPushSubscription={registerPushSubscription}
+          unreadOrderNotifs={(appNotifications || []).filter(n => !n.isRead && n.type === 'order_update' && (!n.companyId || (currentCompanyId && sameId(n.companyId, currentCompanyId)) || isSuperScopeUser(currentUser))).length}
+          unreadSmartNotifs={(appNotifications || []).filter(n => !n.isRead && (n.type === 'deal_update' || n.type === 'installment_update' || n.type === 'offer_update') && (!n.companyId || (currentCompanyId && sameId(n.companyId, currentCompanyId)) || isSuperScopeUser(currentUser))).length}
         />
       </div>
 
@@ -18023,6 +18105,8 @@ try {
               lowStockCount={lowStockCount}
               language={activeLanguage}
               onRegisterPushSubscription={registerPushSubscription}
+              unreadOrderNotifs={(appNotifications || []).filter(n => !n.isRead && n.type === 'order_update' && (!n.companyId || (currentCompanyId && sameId(n.companyId, currentCompanyId)) || isSuperScopeUser(currentUser))).length}
+              unreadSmartNotifs={(appNotifications || []).filter(n => !n.isRead && (n.type === 'deal_update' || n.type === 'installment_update' || n.type === 'offer_update') && (!n.companyId || (currentCompanyId && sameId(n.companyId, currentCompanyId)) || isSuperScopeUser(currentUser))).length}
             />
           </div>
         </div>
@@ -18058,6 +18142,9 @@ try {
           onNavigate={(page) => setCurrentPage(page)}
           language={activeLanguage}
           onLanguageChange={(lang) => { setUserAdminLanguage(lang); syncDocumentLang(lang); }}
+          appNotifications={appNotifications}
+          onMarkNotificationRead={markAppNotificationRead}
+          onMarkAllNotificationsRead={markCompanyNotificationsRead}
         />
 
         <main className="flex-1 overflow-y-auto p-4 lg:p-6 scrollbar-thin">

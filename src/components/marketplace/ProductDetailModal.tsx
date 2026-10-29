@@ -593,71 +593,84 @@ export default function ProductDetailPage({
         </div>
       )}
 
-      {/* MEGA Phase 2C — Piga Bei / Nunua Pamoja / Lipa Pole Pole (ALWAYS ACTIVE) */}
-      <div className={`${th.card} ${th.cardBorder} rounded-3xl p-4 md:p-5`}>
-        <h3 className={`text-sm font-black ${th.strongText} mb-3 flex items-center justify-between`}>
-          <span>{t('Smart Ways to Buy')}</span>
-          <span className="text-[10px] text-brand font-bold uppercase tracking-wider">{t('Okoa Pesa & Lipa Kidogo Kidogo')}</span>
-        </h3>
-        <div className="grid sm:grid-cols-3 gap-2.5">
-          {/* 1. Piga Bei */}
-          <button
-            onClick={() => { setOSuccess(false); setShowOffer(true); }}
-            className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
-          >
-            <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-orange-100 text-orange-700' : 'bg-orange-500/20 text-orange-400'}`}>
-              <HandCoins className="w-4.5 h-4.5" />
-            </div>
-            <div className={`text-[11px] font-black ${th.strongText}`}>{t('Piga Bei')}</div>
-            <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>{t('Nadi bei yako mwenyewe — muuzaji atakujibu ndani ya saa 24.')}</div>
-          </button>
+      {/* MEGA Phase 2C — Smart Ways to Buy (Conditioned on active seller promotions) */}
+      {(() => {
+        const hasGroupBuy = activeGroupDeals.length > 0;
+        const hasInstallment = activeInstallmentPlans.length > 0;
+        const hasPigaBei = true;
+        const smartCount = (hasPigaBei ? 1 : 0) + (hasGroupBuy ? 1 : 0) + (hasInstallment ? 1 : 0);
+        if (smartCount === 0) return null;
 
-          {/* 2. Nunua Pamoja (Group Buy) - Always Active */}
-          <button
-            onClick={() => {
-              if (activeGroupDeals.length > 0) {
-                setShowGroupChooserModal(true);
-              } else {
-                setGbError('');
-                setGbGroupTitle('');
-                setShowCreateGroupModal(true);
-              }
-            }}
-            className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
-          >
-            <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-indigo-100 text-indigo-700' : 'bg-indigo-500/20 text-indigo-400'}`}>
-              <Users className="w-4.5 h-4.5" />
-            </div>
-            <div className={`text-[11px] font-black ${th.strongText}`}>{t('Nunua Pamoja')}</div>
-            {activeGroupDeals.length > 0 ? (
-              <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
-                <span className="text-indigo-600 font-bold">{activeGroupDeals.length} {t('vikundi vilivyopo')}</span> · {t('au anzisha chako')}
-              </div>
-            ) : (
-              <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
-                {t('Anzisha kikundi chako upate punguzo la -15% hadi -20%')}
-              </div>
-            )}
-          </button>
+        const gridColsClass = smartCount === 3
+          ? 'grid sm:grid-cols-3 gap-2.5'
+          : smartCount === 2
+          ? 'grid sm:grid-cols-2 gap-2.5'
+          : 'grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-xl';
 
-          {/* 3. Lipa Pole Pole - Always Active */}
-          <button
-            onClick={() => onStartInstallment?.(product.id)}
-            className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
-          >
-            <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-sky-100 text-sky-700' : 'bg-sky-500/20 text-sky-400'}`}>
-              <CalendarClock className="w-4.5 h-4.5" />
-            </div>
-            <div className={`text-[11px] font-black ${th.strongText}`}>{t('Lipa Pole Pole')}</div>
-            <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
-              {activeInstallmentPlans.length > 0 ? (
-                <>{t('Malipo ya awali')} {activeInstallmentPlans[0].downPaymentPercent}% + {activeInstallmentPlans[0].installmentsCount} {t('awamu')}</>
-              ) : (
-                <>{t('Malipo ya awali')} 25% + 3 {t('awamu bila riba')}</>
+        return (
+          <div className={`${th.card} ${th.cardBorder} rounded-3xl p-4 md:p-5`}>
+            <h3 className={`text-sm font-black ${th.strongText} mb-3 flex items-center justify-between`}>
+              <span>{t('Smart Ways to Buy')}</span>
+              <span className="text-[10px] text-brand font-bold uppercase tracking-wider">{t('Okoa Pesa & Lipa Kidogo Kidogo')}</span>
+            </h3>
+            <div className={gridColsClass}>
+              {/* 1. Piga Bei */}
+              {hasPigaBei && (
+                <button
+                  onClick={() => { setOSuccess(false); setShowOffer(true); }}
+                  className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
+                >
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-orange-100 text-orange-700' : 'bg-orange-500/20 text-orange-400'}`}>
+                    <HandCoins className="w-4.5 h-4.5" />
+                  </div>
+                  <div className={`text-[11px] font-black ${th.strongText}`}>{t('Piga Bei')}</div>
+                  <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>{t('Nadi bei yako mwenyewe — muuzaji atakujibu ndani ya saa 24.')}</div>
+                </button>
+              )}
+
+              {/* 2. Nunua Pamoja (Group Buy) — only shown when active and not stopped */}
+              {hasGroupBuy && (
+                <button
+                  onClick={() => {
+                    if (activeGroupDeals.length > 0) {
+                      setShowGroupChooserModal(true);
+                    } else {
+                      setGbError('');
+                      setGbGroupTitle('');
+                      setShowCreateGroupModal(true);
+                    }
+                  }}
+                  className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
+                >
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-indigo-100 text-indigo-700' : 'bg-indigo-500/20 text-indigo-400'}`}>
+                    <Users className="w-4.5 h-4.5" />
+                  </div>
+                  <div className={`text-[11px] font-black ${th.strongText}`}>{t('Nunua Pamoja')}</div>
+                  <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
+                    <span className="text-indigo-600 font-bold">{activeGroupDeals.length} {t('vikundi vilivyopo')}</span> · {t('au jiunge sasa')}
+                  </div>
+                </button>
+              )}
+
+              {/* 3. Lipa Pole Pole — only shown when active plans exist and not stopped */}
+              {hasInstallment && (
+                <button
+                  onClick={() => onStartInstallment?.(product.id)}
+                  className={`p-3.5 rounded-2xl border text-left transition cursor-pointer hover:brightness-105 ${th.cardBorder} ${th.card}`}
+                >
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center mb-2 ${milk ? 'bg-sky-100 text-sky-700' : 'bg-sky-500/20 text-sky-400'}`}>
+                    <CalendarClock className="w-4.5 h-4.5" />
+                  </div>
+                  <div className={`text-[11px] font-black ${th.strongText}`}>{t('Lipa Pole Pole')}</div>
+                  <div className={`text-[9px] ${th.textMuted} font-semibold mt-0.5`}>
+                    <>{t('Malipo ya awali')} {activeInstallmentPlans[0].downPaymentPercent}% + {activeInstallmentPlans[0].installmentsCount} {t('awamu')}</>
+                  </div>
+                </button>
               )}
             </div>
-          </button>
-        </div>
+          </div>
+        );
+      })()}
 
         {/* Piga Bei modal */}
         {showOffer && (
@@ -711,7 +724,6 @@ export default function ProductDetailPage({
             )}
           </div>
         )}
-      </div>
 
       {/* Modal: Group Buy Chooser (Start My Own vs Join Existing) */}
       {showGroupChooserModal && (
