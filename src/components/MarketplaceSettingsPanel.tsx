@@ -51,6 +51,8 @@ interface Props {
   bulkUploadHandlers?: { onCreateJob: (job: BulkUploadJob) => void; onUpdateJob: (job: BulkUploadJob) => void; onSaveProduct: (product: MarketplaceProduct) => void };
   shippingZones?: ShippingZone[];
   shippingZoneHandlers?: { onSave: (zone: ShippingZone) => void; onDelete: (id: number) => void };
+  currentUser?: any;
+  rolePermissions?: Record<string, string[]>;
 }
 
 const METHOD_TYPES: Array<{ key: CompanyPaymentMethod['methodType']; label: string }> = [
@@ -65,11 +67,42 @@ const METHOD_TYPES: Array<{ key: CompanyPaymentMethod['methodType']; label: stri
 export default function MarketplaceSettingsPanel({
   company, products, stores, clicks, reviews, productViews, regions, theme: themeProp, translate: t, onSaveProfile, onSavePaymentMethod, onDeletePaymentMethod, onSaveProduct, onDeleteProduct, onSaveStore,
   flashSales, flashSalesHandlers, stories, storiesHandlers, chatConversations, chatMessages, chatHandlers,
-  productReturns, returnHandlers, disputes, disputeMessages, disputeHandlers, bulkUploadJobs, bulkUploadHandlers, shippingZones, shippingZoneHandlers
+  productReturns, returnHandlers, disputes, disputeMessages, disputeHandlers, bulkUploadJobs, bulkUploadHandlers, shippingZones, shippingZoneHandlers,
+  currentUser, rolePermissions
 }: Props) {
   const th = getPublicTheme(themeProp || 'milk');
   const regionList = regions && regions.length > 0 ? regions : TANZANIA_REGIONS;
   const [tab, setTab] = useState<'profile' | 'stores' | 'payments' | 'products' | 'analytics' | 'flash-sales' | 'stories' | 'chat' | 'returns' | 'disputes' | 'bulk-upload' | 'shipping'>('profile');
+
+  // Branch Administrator RBAC: Cannot perform CRUD in Store Profile, Payment Methods, and Maduka (Stores) unless explicitly given access by Admin
+  const roleNorm = (currentUser?.role || '').toLowerCase().trim();
+  const isBranchAdmin = roleNorm === 'branch administrator' || roleNorm === 'branch admin';
+
+  const userPerms: string[] = useMemo(() => {
+    const list: string[] = [];
+    if (Array.isArray(currentUser?.permissions)) list.push(...currentUser.permissions);
+    if (Array.isArray(currentUser?.allowedPages)) list.push(...currentUser.allowedPages);
+    if (Array.isArray(currentUser?.allowedActions)) list.push(...currentUser.allowedActions);
+    if (rolePermissions && (rolePermissions['Branch Administrator'] || rolePermissions['branch admin'])) {
+      list.push(...(rolePermissions['Branch Administrator'] || rolePermissions['branch admin'] || []));
+    }
+    return list.map(p => String(p).toLowerCase().trim());
+  }, [currentUser, rolePermissions]);
+
+  const hasAccess = (permissionKeys: string[]) => {
+    if (!isBranchAdmin) return true; // Non-branch administrators retain normal rights
+    return permissionKeys.some(k => {
+      const kLower = k.toLowerCase().trim();
+      if (userPerms.includes(kLower)) return true;
+      if (userPerms.includes('marketplace_settings_crud') || userPerms.includes('all')) return true;
+      if (currentUser?.[k] === true) return true;
+      return false;
+    });
+  };
+
+  const canManageStoreProfile = hasAccess(['manage_store_profile', 'edit_store_profile', 'store_profile_crud', 'canManageStoreProfile']);
+  const canManagePaymentMethods = hasAccess(['manage_payment_methods', 'payment_methods_crud', 'canManagePaymentMethods']);
+  const canManageStores = hasAccess(['manage_stores', 'maduka_crud', 'stores_crud', 'canManageStores']);
 
   // Profile form state
   const [profile, setProfile] = useState<Partial<Company>>({
@@ -121,6 +154,10 @@ export default function MarketplaceSettingsPanel({
   }, [company?.id, company?.isMarketplaceActive, company?.name, company?.isVerified]);
 
   const toggleMarketplaceActive = () => {
+    if (!canManageStoreProfile) {
+      toast.error(t('Access restricted: Branch Administrators cannot modify store live status without Admin approval.'));
+      return;
+    }
     const nextVal = !(profile.isMarketplaceActive !== false);
     setProfile(p => ({ ...p, isMarketplaceActive: nextVal }));
     if (company) {
@@ -148,6 +185,10 @@ export default function MarketplaceSettingsPanel({
   const [deleteStoreId, setDeleteStoreId] = useState<number | null>(null);
 
   const startNewStore = () => {
+    if (!canManageStores) {
+      toast.error(t('Access restricted: Branch Administrators cannot add stores without Admin approval.'));
+      return;
+    }
     setEditingStore(null);
     setStoreForm({
       name: '',
@@ -162,6 +203,10 @@ export default function MarketplaceSettingsPanel({
   };
 
   const startEditStore = (s: Store) => {
+    if (!canManageStores) {
+      toast.error(t('Access restricted: Branch Administrators cannot edit stores without Admin approval.'));
+      return;
+    }
     setEditingStore(s);
     setStoreForm({
       ...s,
@@ -171,6 +216,10 @@ export default function MarketplaceSettingsPanel({
   };
 
   const handleSaveStore = () => {
+    if (!canManageStores) {
+      toast.error(t('Access restricted: Branch Administrators cannot modify stores without Admin approval.'));
+      return;
+    }
     if (!company) return;
     if (!storeForm.name?.trim()) {
       toast.error(t('Jina la duka linahitajika (Store name is required).'));
@@ -208,6 +257,10 @@ export default function MarketplaceSettingsPanel({
   };
 
   const handleDeleteStore = (sId: number) => {
+    if (!canManageStores) {
+      toast.error(t('Access restricted: Branch Administrators cannot delete stores without Admin approval.'));
+      return;
+    }
     const target = (stores || []).find(s => s.id === sId);
     if (target && onSaveStore) {
       onSaveStore({ ...target, isDeleted: true });
@@ -336,6 +389,10 @@ export default function MarketplaceSettingsPanel({
   };
 
   const saveProfile = () => {
+    if (!canManageStoreProfile) {
+      toast.error(t('Access restricted: Branch Administrators cannot modify Store Profile without Admin approval.'));
+      return;
+    }
     if (!profile.name?.trim()) return toast.error(t('Company name is required.'));
     onSaveProfile({
       ...profile,
@@ -345,16 +402,28 @@ export default function MarketplaceSettingsPanel({
   };
 
   const startNewMethod = () => {
+    if (!canManagePaymentMethods) {
+      toast.error(t('Access restricted: Branch Administrators cannot add payment methods without Admin approval.'));
+      return;
+    }
     setEditingMethod(null);
     setMethodForm({ methodType: 'mpesa', accountName: '', accountNumber: '', instructions: '', isActive: true });
   };
 
   const startEditMethod = (m: CompanyPaymentMethod) => {
+    if (!canManagePaymentMethods) {
+      toast.error(t('Access restricted: Branch Administrators cannot edit payment methods without Admin approval.'));
+      return;
+    }
     setEditingMethod(m);
     setMethodForm({ ...m });
   };
 
   const saveMethod = () => {
+    if (!canManagePaymentMethods) {
+      toast.error(t('Access restricted: Branch Administrators cannot modify payment methods without Admin approval.'));
+      return;
+    }
     if (!company) return;
     if (!methodForm.accountName?.trim() || !methodForm.accountNumber?.trim()) {
       return toast.error(t('Account name and number are required.'));
@@ -543,6 +612,19 @@ export default function MarketplaceSettingsPanel({
       {/* PROFILE TAB */}
       {tab === 'profile' && (
         <div className="bg-white border border-gray-100 rounded-xl p-5 space-y-4">
+          {!canManageStoreProfile && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50/80 p-3.5 flex items-center justify-between gap-3 text-amber-900 text-xs">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-amber-700 shrink-0" />
+                <span className="font-bold">
+                  {t('Hali ya Kusoma Tu (Branch Administrator): Huwezi kubadilisha taarifa za Wasifu wa Duka (Store Profile) bila idhini ya moja kwa moja kutoka kwa Admin.')}
+                </span>
+              </div>
+              <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-amber-200/80 text-amber-900 shrink-0 border border-amber-300">
+                🔒 {t('Imefungwa (Locked)')}
+              </span>
+            </div>
+          )}
           <div className="grid sm:grid-cols-2 gap-4">
             <div>
               <label className={labelCls}>{t('Company Name')} *</label>
@@ -769,10 +851,21 @@ export default function MarketplaceSettingsPanel({
             </div>
           </div>
 
-          <div className="flex justify-end pt-2 border-t border-gray-100">
-            <button onClick={saveProfile} className="flex items-center gap-2 px-5 py-2.5 text-[11px] font-bold text-white bg-brand hover:opacity-90 rounded-lg transition cursor-pointer">
-              <Save className="w-3.5 h-3.5" /> {t('Save Profile')}
-            </button>
+          <div className="flex items-center justify-between pt-2 border-t border-gray-100 flex-wrap gap-2">
+            {!canManageStoreProfile ? (
+              <span className="text-xs text-amber-700 font-semibold flex items-center gap-1.5">
+                🔒 {t('Mabadiliko yamefungwa kwa Branch Administrator.')}
+              </span>
+            ) : <span />}
+            {canManageStoreProfile ? (
+              <button onClick={saveProfile} className="flex items-center gap-2 px-5 py-2.5 text-[11px] font-bold text-white bg-brand hover:opacity-90 rounded-lg transition cursor-pointer">
+                <Save className="w-3.5 h-3.5" /> {t('Save Profile')}
+              </button>
+            ) : (
+              <button disabled className="flex items-center gap-2 px-5 py-2.5 text-[11px] font-bold text-gray-400 bg-gray-100 rounded-lg cursor-not-allowed">
+                <Save className="w-3.5 h-3.5" /> {t('Save Profile (Locked)')}
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -787,12 +880,18 @@ export default function MarketplaceSettingsPanel({
                 {t('Maduka haya kutoka Master Data Store Management hutumika kuwezesha wateja kuona tawi la karibu, kutembelea dukani ("Njoo Dukani"), na kutenga bidhaa maalum kwa kila duka.')}
               </p>
             </div>
-            <button
-              onClick={startNewStore}
-              className="flex items-center gap-1.5 px-4 py-2 text-[11px] font-bold text-white bg-brand hover:opacity-90 rounded-lg transition cursor-pointer shadow-xs"
-            >
-              <Plus className="w-3.5 h-3.5" /> {t('Ongeza Duka Jipya')}
-            </button>
+            {canManageStores ? (
+              <button
+                onClick={startNewStore}
+                className="flex items-center gap-1.5 px-4 py-2 text-[11px] font-bold text-white bg-brand hover:opacity-90 rounded-lg transition cursor-pointer shadow-xs"
+              >
+                <Plus className="w-3.5 h-3.5" /> {t('Ongeza Duka Jipya')}
+              </button>
+            ) : (
+              <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                🔒 {t('Maduka Read-Only (Branch Administrator)')}
+              </span>
+            )}
           </div>
 
           {(() => {
@@ -809,12 +908,14 @@ export default function MarketplaceSettingsPanel({
                       {t('Ongeza duka la kimwili au tawi lenye GPS coordinates ili wateja waweze kuchagua kuchukua mzigo dukani ("In-Store Pickup") au kutembelea moja kwa moja.')}
                     </div>
                   </div>
-                  <button
-                    onClick={startNewStore}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-brand rounded-lg shadow-sm hover:opacity-90 transition cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" /> {t('Sajili Duka la Kwanza')}
-                  </button>
+                  {canManageStores && (
+                    <button
+                      onClick={startNewStore}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-brand rounded-lg shadow-sm hover:opacity-90 transition cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" /> {t('Sajili Duka la Kwanza')}
+                    </button>
+                  )}
                 </div>
               );
             }
@@ -887,35 +988,43 @@ export default function MarketplaceSettingsPanel({
                       </div>
 
                       <div className="flex items-center justify-between pt-3 mt-3 border-t border-gray-100">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (onSaveStore) {
-                              onSaveStore({ ...st, isMarketplaceVisible: !isVisible });
-                              toast.success(isVisible ? t('Duka limefichwa kwenye Marketplace.') : t('Duka sasa linaonekana kwenye Marketplace!'));
-                            }
-                          }}
-                          className={`text-[10px] font-bold px-2 py-1 rounded-md transition cursor-pointer ${isVisible ? 'text-amber-700 bg-amber-50 hover:bg-amber-100' : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'}`}
-                        >
-                          {isVisible ? t('Ficha') : t('Weka Live')}
-                        </button>
+                        {canManageStores ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onSaveStore) {
+                                onSaveStore({ ...st, isMarketplaceVisible: !isVisible });
+                                toast.success(isVisible ? t('Duka limefichwa kwenye Marketplace.') : t('Duka sasa linaonekana kwenye Marketplace!'));
+                              }
+                            }}
+                            className={`text-[10px] font-bold px-2 py-1 rounded-md transition cursor-pointer ${isVisible ? 'text-amber-700 bg-amber-50 hover:bg-amber-100' : 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100'}`}
+                          >
+                            {isVisible ? t('Ficha') : t('Weka Live')}
+                          </button>
+                        ) : (
+                          <span className="text-[10px] font-bold text-gray-400">
+                            {isVisible ? t('Live') : t('Hidden')}
+                          </span>
+                        )}
 
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => startEditStore(st)}
-                            className="p-1.5 rounded-lg text-gray-400 hover:text-brand hover:bg-gray-50 transition cursor-pointer"
-                            title={t('Hariri duka')}
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => setDeleteStoreId(st.id)}
-                            className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition cursor-pointer"
-                            title={t('Futa duka')}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
+                        {canManageStores && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => startEditStore(st)}
+                              className="p-1.5 rounded-lg text-gray-400 hover:text-brand hover:bg-gray-50 transition cursor-pointer"
+                              title={t('Hariri duka')}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                            <button
+                              onClick={() => setDeleteStoreId(st.id)}
+                              className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition cursor-pointer"
+                              title={t('Futa duka')}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -1059,11 +1168,17 @@ export default function MarketplaceSettingsPanel({
       {/* PAYMENTS TAB */}
       {tab === 'payments' && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between flex-wrap gap-2">
             <p className="text-xs text-gray-500 font-medium">{t('Customers pay to these accounts during checkout.')}</p>
-            <button onClick={startNewMethod} className="flex items-center gap-1.5 px-4 py-2 text-[11px] font-bold text-white bg-brand hover:opacity-90 rounded-lg transition cursor-pointer">
-              <Plus className="w-3.5 h-3.5" /> {t('Add Payment Method')}
-            </button>
+            {canManagePaymentMethods ? (
+              <button onClick={startNewMethod} className="flex items-center gap-1.5 px-4 py-2 text-[11px] font-bold text-white bg-brand hover:opacity-90 rounded-lg transition cursor-pointer">
+                <Plus className="w-3.5 h-3.5" /> {t('Add Payment Method')}
+              </button>
+            ) : (
+              <span className="text-[10px] font-black uppercase px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                🔒 {t('Payment Methods Read-Only (Branch Administrator)')}
+              </span>
+            )}
           </div>
 
           {(company.paymentMethods || []).length === 0 ? (
@@ -1087,12 +1202,16 @@ export default function MarketplaceSettingsPanel({
                     </div>
                     <div className="text-[11px] text-gray-500 font-medium">{m.accountNumber}</div>
                   </div>
-                  <button onClick={() => startEditMethod(m)} className="p-2 rounded-lg text-gray-400 hover:text-brand hover:bg-gray-50 transition cursor-pointer" title={t('Edit')}>
-                    <Pencil className="w-4 h-4" />
-                  </button>
-                  <button onClick={() => onDeletePaymentMethod(company.id, m.id)} className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition cursor-pointer" title={t('Delete')}>
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  {canManagePaymentMethods && (
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => startEditMethod(m)} className="p-2 rounded-lg text-gray-400 hover:text-brand hover:bg-gray-50 transition cursor-pointer" title={t('Edit')}>
+                        <Pencil className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => onDeletePaymentMethod(company.id, m.id)} className="p-2 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition cursor-pointer" title={t('Delete')}>
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

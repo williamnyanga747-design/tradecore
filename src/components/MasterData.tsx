@@ -95,6 +95,24 @@ export default function MasterData({
       .filter((id, idx, arr) => id !== '' && id !== 'none' && arr.indexOf(id) === idx);
   }, [currentUser]);
 
+  const isBranchAdmin = React.useMemo(() => {
+    if (!currentUser) return false;
+    const r = String(currentUser.role || '').toLowerCase().trim();
+    return r === 'branch administrator' || r === 'branch admin';
+  }, [currentUser]);
+
+  const userAssignedStoreIds = React.useMemo(() => {
+    const raw = [
+      ...((currentUser as any)?.assignedStoreIds || []),
+      ...((currentUser as any)?.storeIds || []),
+      ...(currentUser?.storeId != null ? [currentUser.storeId] : []),
+      ...(currentStoreId != null ? [currentStoreId] : [])
+    ];
+    return raw
+      .map(id => sv(id))
+      .filter((id, idx, arr) => id !== '' && id !== 'none' && id !== 'all' && arr.indexOf(id) === idx);
+  }, [currentUser, currentStoreId]);
+
   const userCompanyId = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
   const effectiveCompanyId = React.useMemo(() => {
     if (!isSuperAdmin && userCompanyId != null && String(userCompanyId) !== '' && String(userCompanyId) !== 'null' && String(userCompanyId) !== 'all') {
@@ -131,6 +149,29 @@ export default function MasterData({
       return sameId(storeCompanyId(s), coId);
     });
   }, [stores, branches, effectiveCompanyId, isSuperAdmin]);
+
+  // Allowed stores for the user to view/operate:
+  // - Super Admin: all active stores
+  // - Company Admin: all stores of their own company (activeCompanyStores)
+  // - Branch Admin / Store User: only stores under their assigned branch(es) or store(s)
+  const userAllowedStoreIds = React.useMemo(() => {
+    if (isSuperAdmin) return null; // all stores permitted
+    if (!isBranchAdmin && isAdmin) {
+      // Company Admin
+      return activeCompanyStores.map(s => sv(s.id));
+    }
+    // Branch Admin or Store Admin:
+    const filtered = activeCompanyStores.filter(st => {
+      if (userAssignedBranchIds.length > 0 && st.branchId) {
+        return userAssignedBranchIds.some(bid => sameId(bid, st.branchId));
+      }
+      if (userAssignedStoreIds.length > 0) {
+        return userAssignedStoreIds.some(sid => sameId(sid, st.id));
+      }
+      return true;
+    }).map(s => sv(s.id));
+    return filtered.length > 0 ? filtered : activeCompanyStores.map(s => sv(s.id));
+  }, [isSuperAdmin, isBranchAdmin, isAdmin, activeCompanyStores, userAssignedBranchIds, userAssignedStoreIds]);
 
   const [statementModal, setStatementModal] = useState<{
     isOpen: boolean;
@@ -242,6 +283,10 @@ export default function MasterData({
   };
 
   const handleDeleteBranch = (id: number) => {
+    if (isBranchAdmin) {
+      toast.error(t('Access Denied: Branch Administrators cannot delete branches.'));
+      return;
+    }
     const targetBranch = branches.find(b => sameId(b.id, id));
     if (!isSuperAdmin && targetBranch && !sameId(targetBranch.companyId, effectiveCompanyId)) {
       toast.error(t('Access Denied: You cannot delete branches belonging to another company.'));
@@ -598,6 +643,10 @@ export default function MasterData({
         }
       }
     } else if (type === 'branch') {
+      if (isBranchAdmin) {
+        toast.error(t('Access Denied: Branch Administrators cannot create or edit branches.'));
+        return;
+      }
       const userCo = (currentUser as any)?.companyId ?? (currentUser as any)?.company_id;
       const targetCoId = !isSuperAdmin && userCo != null && String(userCo) !== '' && String(userCo) !== 'null'
         ? String(userCo)
@@ -917,12 +966,19 @@ export default function MasterData({
               <Database className="w-4 h-4 text-brand" />
               {t('Branches')}
             </h3>
-            <button
-              onClick={() => setEditingItem({ type: 'branch', data: { name: '', companyId: effectiveCompanyId, company_id: effectiveCompanyId } })}
-              className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
-            >
-              <Plus className="w-3.5 h-3.5" /> {t('Add Branch')}
-            </button>
+            {isBranchAdmin ? (
+              <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 px-2.5 py-1.5 rounded-lg border border-amber-200 flex items-center gap-1.5">
+                <Database className="w-3.5 h-3.5" />
+                {t('Branch Read-Only (Branch Administrator)')}
+              </span>
+            ) : (
+              <button
+                onClick={() => setEditingItem({ type: 'branch', data: { name: '', companyId: effectiveCompanyId, company_id: effectiveCompanyId } })}
+                className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
+              >
+                <Plus className="w-3.5 h-3.5" /> {t('Add Branch')}
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-[13px] text-left">
@@ -944,30 +1000,34 @@ export default function MasterData({
                       <td className="px-6 py-4 text-gray-500 font-semibold">{compName}</td>
                       <td className="px-6 py-4 text-center font-bold text-gray-700">{storeCount}</td>
                       <td className="px-6 py-4 text-right">
-                        <div className="flex justify-end gap-1.5">
-                          <button
-                            onClick={() => {
-                              if (!isSuperAdmin && !sameId(b.companyId, effectiveCompanyId)) {
-                                toast.error(t('Access Denied: You cannot edit branches of another company.'));
-                                return;
-                              }
-                              setEditingItem({ type: 'branch', data: b });
-                            }}
-                            className="p-1 px-2 text-[10px] font-bold rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition inline-flex items-center gap-1"
-                            title={t('Edit')}
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                            {t('Edit')}
-                          </button>
-                          <button
-                            onClick={() => handleDeleteBranch(b.id)}
-                            className="p-1 px-2 text-[10px] font-bold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
-                            title={t('Delete')}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            {t('Delete')}
-                          </button>
-                        </div>
+                        {!isBranchAdmin ? (
+                          <div className="flex justify-end gap-1.5">
+                            <button
+                              onClick={() => {
+                                if (!isSuperAdmin && !sameId(b.companyId, effectiveCompanyId)) {
+                                  toast.error(t('Access Denied: You cannot edit branches of another company.'));
+                                  return;
+                                }
+                                setEditingItem({ type: 'branch', data: b });
+                              }}
+                              className="p-1 px-2 text-[10px] font-bold rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition inline-flex items-center gap-1"
+                              title={t('Edit')}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                              {t('Edit')}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteBranch(b.id)}
+                              className="p-1 px-2 text-[10px] font-bold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
+                              title={t('Delete')}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              {t('Delete')}
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-gray-400 font-semibold italic">{t('View only')}</span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -1385,11 +1445,36 @@ export default function MasterData({
       );
 
     case 'categories': {
-      const isGlobal = !currentCompanyId || currentCompanyId === 'all';
-      const coId = isGlobal ? null : currentCompanyId;
-      const displayedCategories = categoryFilterStore
+      const isGlobal = isSuperAdmin && (!currentCompanyId || currentCompanyId === 'all');
+      const coId = isGlobal ? null : effectiveCompanyId;
+      const baseCategories = categoryFilterStore
         ? getStoreCategories(categories, categoryFilterStore, coId)
         : getCompanyCategories(categories, coId);
+
+      // Strict category isolation:
+      // Admin / Branch Administrator see ONLY categories of their own store/company that they operate
+      const displayedCategories = baseCategories.filter(c => {
+        if (!c || typeof c !== 'string' || !c.trim()) return false;
+        const parsed = parseCategoryScope(c);
+
+        // 1. Company check: non-superadmin users CANNOT see categories from other companies
+        if (!isSuperAdmin && coId) {
+          if (parsed.companyId && !sameId(parsed.companyId, coId)) {
+            return false;
+          }
+        }
+
+        // 2. Store check: if category is tied to a specific store, verify the user operates that store
+        if (!isSuperAdmin && userAllowedStoreIds && userAllowedStoreIds.length > 0) {
+          if (parsed.storeId) {
+            if (!userAllowedStoreIds.includes(sv(parsed.storeId))) {
+              return false; // Belongs to a different store not operated by this user
+            }
+          }
+        }
+
+        return true;
+      });
 
       return (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm max-w-3xl mx-auto mt-6">
@@ -1413,14 +1498,22 @@ export default function MasterData({
                   className="text-xs font-bold text-gray-800 bg-transparent outline-none cursor-pointer"
                 >
                   <option value="">{t('All Stores')}</option>
-                  {activeCompanyStores.map(st => (
-                    <option key={st.id} value={st.id}>{st.name}</option>
-                  ))}
+                  {activeCompanyStores
+                    .filter(st => !userAllowedStoreIds || userAllowedStoreIds.includes(sv(st.id)))
+                    .map(st => (
+                      <option key={st.id} value={st.id}>{st.name}</option>
+                    ))}
                 </select>
               </div>
               {isAdmin && (
                 <button
-                  onClick={() => setEditingItem({ type: 'category', data: { name: '', storeId: categoryFilterStore || '' } })}
+                  onClick={() => setEditingItem({
+                    type: 'category',
+                    data: {
+                      name: '',
+                      storeId: categoryFilterStore || (userAllowedStoreIds && userAllowedStoreIds.length === 1 ? userAllowedStoreIds[0] : '')
+                    }
+                  })}
                   className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
                 >
                   <Plus className="w-3.5 h-3.5" /> {t('Add Category')}
@@ -2932,9 +3025,11 @@ export default function MasterData({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-semibold focus:border-brand cursor-pointer"
                     >
                       <option value="">{t('All Stores (Company Wide)')}</option>
-                      {activeCompanyStores.map(st => (
-                        <option key={st.id} value={st.id}>{st.name}</option>
-                      ))}
+                      {activeCompanyStores
+                        .filter(st => !userAllowedStoreIds || userAllowedStoreIds.includes(sv(st.id)))
+                        .map(st => (
+                          <option key={st.id} value={st.id}>{st.name}</option>
+                        ))}
                     </select>
                     <p className="text-[11px] text-gray-500 mt-1">
                       {t('Assign to a specific store so this category is only available in that store.')}

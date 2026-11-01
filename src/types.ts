@@ -492,6 +492,9 @@ export interface Expense {
   companyId?: number | string | null;
   paymentMethod: 'Cash' | 'Bank' | 'Mobile Money';
   isDeleted?: boolean;
+  receiptUrl?: string; // Data URL or receipt image/document URL
+  receiptName?: string;
+  receiptUploadedAt?: string;
 }
 
 export interface Tax {

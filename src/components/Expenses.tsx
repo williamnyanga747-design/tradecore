@@ -1,11 +1,15 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Expense, Store, Branch } from '../types';
 import { formatMoney, exportToExcel } from '../utils/format';
 import { handlePrintWithFallback } from '../utils/printHelper';
 import { safeLower } from '../utils/stateHelpers';
-import { Plus, Trash2, Pencil, Search, Calendar, CreditCard, Receipt, AlertCircle, FileSpreadsheet, Printer } from 'lucide-react';
+import { compressImageFile, formatByteSize } from '../utils/imageCompression';
+import { Plus, Trash2, Pencil, Search, Calendar, CreditCard, Receipt, AlertCircle, FileSpreadsheet, Printer, Camera, Upload, X, CheckCircle2, FileText } from 'lucide-react';
 import { ConfirmActionModal } from './ConfirmActionModal';
 import { sameId } from '../utils/idUtils';
+import ExpenseReceiptModal from './ExpenseReceiptModal';
+import ReceiptCameraModal from './ReceiptCameraModal';
+import { toast } from '../utils/toast';
 
 interface ExpensesProps {
   expenses: Expense[];
@@ -47,6 +51,12 @@ export default function Expenses({
     description: '',
     onConfirm: () => {}
   });
+
+  // Receipt Modal state
+  const [selectedExpenseForReceipt, setSelectedExpenseForReceipt] = useState<Expense | null>(null);
+  const [receiptModalOpen, setReceiptModalOpen] = useState(false);
+  const [formCameraOpen, setFormCameraOpen] = useState(false);
+  const formFileInputRef = useRef<HTMLInputElement | null>(null);
   
   // Form fields
   const [category, setCategory] = useState('Utilities');
@@ -56,6 +66,8 @@ export default function Expenses({
   const activeStores = useMemo(() => stores.filter(s => !s.isDeleted), [stores]);
   const [storeId, setStoreId] = useState<string | number | null>(currentStoreId || (activeStores[0]?.id ?? null));
   const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Bank' | 'Mobile Money'>('Cash');
+  const [receiptUrl, setReceiptUrl] = useState<string>('');
+  const [receiptName, setReceiptName] = useState<string>('');
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -78,6 +90,8 @@ export default function Expenses({
     setDate(new Date().toISOString().split('T')[0]);
     if (currentStoreId) setStoreId(currentStoreId);
     setPaymentMethod('Cash');
+    setReceiptUrl('');
+    setReceiptName('');
     setShowAddForm(true);
   };
 
@@ -92,7 +106,67 @@ export default function Expenses({
     setDate(exp.date);
     setStoreId(exp.storeId);
     setPaymentMethod(exp.paymentMethod);
+    setReceiptUrl(exp.receiptUrl || '');
+    setReceiptName(exp.receiptName || '');
     setShowAddForm(true);
+  };
+
+  const handleFormReceiptFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) {
+      toast.error(translate('File is too large. Maximum size is 15MB.'));
+      return;
+    }
+    try {
+      if (file.type.startsWith('image/')) {
+        const compressed = await compressImageFile(file, { maxWidth: 1280, maxHeight: 1280, quality: 0.82 });
+        setReceiptUrl(compressed.dataUrl);
+        setReceiptName(file.name);
+        toast.success(`${translate('Receipt compressed')} (${formatByteSize(compressed.originalBytes)} → ${formatByteSize(compressed.compressedBytes)})`);
+      } else {
+        const reader = new FileReader();
+        reader.onload = () => {
+          setReceiptUrl(String(reader.result || ''));
+          setReceiptName(file.name);
+        };
+        reader.readAsDataURL(file);
+      }
+    } catch {
+      toast.error(translate('Could not process this receipt file.'));
+    }
+  };
+
+  const handleSaveReceiptFromModal = async (expenseId: number, newReceiptUrl: string, newReceiptName?: string) => {
+    const nowIso = new Date().toISOString();
+    const updated = expenses.map(exp => {
+      if (exp.id === expenseId) {
+        return {
+          ...exp,
+          receiptUrl: newReceiptUrl,
+          receiptName: newReceiptName || 'receipt.jpg',
+          receiptUploadedAt: nowIso
+        };
+      }
+      return exp;
+    });
+    await onUpdateExpenses(updated);
+    logAction('Attached Expense Receipt', `Linked receipt to expense #${expenseId}`);
+  };
+
+  const handleRemoveReceiptFromModal = async (expenseId: number) => {
+    const updated = expenses.map(exp => {
+      if (exp.id === expenseId) {
+        const copy = { ...exp };
+        delete copy.receiptUrl;
+        delete copy.receiptName;
+        delete copy.receiptUploadedAt;
+        return copy;
+      }
+      return exp;
+    });
+    await onUpdateExpenses(updated);
+    logAction('Removed Expense Receipt', `Detached receipt from expense #${expenseId}`);
   };
 
   const handleSubmit = async (e?: React.FormEvent) => {
@@ -123,7 +197,10 @@ export default function Expenses({
             date,
             storeId: cleanStoreId,
             companyId: exp.companyId || effectiveCompanyId,
-            paymentMethod
+            paymentMethod,
+            receiptUrl: receiptUrl || undefined,
+            receiptName: receiptName || undefined,
+            receiptUploadedAt: receiptUrl ? (exp.receiptUploadedAt || new Date().toISOString()) : undefined
           };
         }
         return exp;
@@ -144,7 +221,10 @@ export default function Expenses({
         date,
         storeId: cleanStoreId,
         companyId: effectiveCompanyId,
-        paymentMethod
+        paymentMethod,
+        receiptUrl: receiptUrl || undefined,
+        receiptName: receiptName || undefined,
+        receiptUploadedAt: receiptUrl ? new Date().toISOString() : undefined
       };
       await onUpdateExpenses([newExp, ...expenses]);
       logAction("Logged Expense", `Added expense: ${newExp.expenseNumber} - ${description} (${usdAmount} USD)`);
@@ -400,12 +480,83 @@ export default function Expenses({
                 <label className="text-xs font-semibold text-gray-700 mb-1 block">Description</label>
                 <textarea
                   required
-                  rows={3}
+                  rows={2}
                   placeholder="Rent payment, electricity grid token, transport cost..."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white"
                 ></textarea>
+              </div>
+
+              {/* Receipt Attachment in Expense Form */}
+              <div className="md:col-span-2 p-3.5 rounded-xl border border-gray-200 bg-gray-50/70 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Receipt className="w-4 h-4 text-brand" />
+                    <label className="text-xs font-bold text-gray-800">
+                      {translate('Receipt Attachment (Optional)')}
+                    </label>
+                  </div>
+                  {receiptUrl && (
+                    <button
+                      type="button"
+                      onClick={() => { setReceiptUrl(''); setReceiptName(''); }}
+                      className="text-[11px] font-bold text-red-600 hover:underline inline-flex items-center gap-1"
+                    >
+                      <X className="w-3.5 h-3.5" /> {translate('Remove')}
+                    </button>
+                  )}
+                </div>
+
+                {receiptUrl ? (
+                  <div className="flex items-center gap-3 bg-white p-2.5 rounded-lg border border-emerald-200">
+                    {receiptUrl.startsWith('data:image/') || receiptUrl.startsWith('http') ? (
+                      <img src={receiptUrl} alt="Receipt preview" className="w-14 h-14 object-cover rounded-md border border-gray-200" />
+                    ) : (
+                      <div className="w-14 h-14 rounded-md bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+                        <FileText className="w-6 h-6" />
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 truncate">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                        <span className="truncate">{receiptName || 'receipt_attached.jpg'}</span>
+                      </div>
+                      <p className="text-[10px] text-gray-400 font-medium mt-0.5">
+                        {translate('Ready to be linked with this expense record on save.')}
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="file"
+                      ref={formFileInputRef}
+                      onChange={handleFormReceiptFile}
+                      accept="image/*,application/pdf"
+                      className="hidden"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => formFileInputRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg transition cursor-pointer shadow-2xs"
+                    >
+                      <Upload className="w-3.5 h-3.5 text-gray-500" />
+                      {translate('Upload Receipt File')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormCameraOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-gray-700 bg-white border border-gray-300 hover:bg-gray-50 rounded-lg transition cursor-pointer shadow-2xs"
+                    >
+                      <Camera className="w-3.5 h-3.5 text-brand" />
+                      {translate('Capture with Camera')}
+                    </button>
+                    <span className="text-[11px] text-gray-400 font-medium ml-1">
+                      {translate('Images & PDF up to 15MB')}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -441,6 +592,7 @@ export default function Expenses({
                 <th className="px-5 py-3">Store Location</th>
                 <th className="px-5 py-3">Payment Method</th>
                 <th className="px-5 py-3 text-right">Amount</th>
+                <th className="px-5 py-3 text-center">{translate('Receipt')}</th>
                 <th className="px-5 py-3 w-24"></th>
               </tr>
             </thead>
@@ -459,6 +611,35 @@ export default function Expenses({
                   <td className="px-5 py-3 text-gray-600 font-medium">{exp.paymentMethod}</td>
                   <td className="px-5 py-3 text-right font-bold text-gray-900">
                     {formatMoney(exp.amount, currency, exchangeRate)}
+                  </td>
+                  <td className="px-5 py-3 text-center whitespace-nowrap">
+                    {exp.receiptUrl ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedExpenseForReceipt(exp);
+                          setReceiptModalOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition cursor-pointer shadow-2xs"
+                        title={translate('View linked receipt')}
+                      >
+                        <Receipt className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>{translate('Receipt')}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedExpenseForReceipt(exp);
+                          setReceiptModalOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-gray-500 hover:text-brand hover:border-brand/40 hover:bg-gray-50 transition border border-dashed border-gray-200 cursor-pointer"
+                        title={translate('Upload/capture expense receipt')}
+                      >
+                        <Upload className="w-3 h-3 text-gray-400" />
+                        <span>{translate('Import')}</span>
+                      </button>
+                    )}
                   </td>
                   <td className="px-5 py-3">
                     <div className="flex items-center gap-1.5 justify-end">
@@ -486,7 +667,7 @@ export default function Expenses({
               ))}
               {filteredExpenses.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-5 py-8 text-center text-gray-400">
+                  <td colSpan={9} className="px-5 py-8 text-center text-gray-400">
                     <AlertCircle className="w-8 h-8 mx-auto mb-2 text-gray-300" />
                     No expenses logged for current store context.
                   </td>
@@ -531,6 +712,37 @@ export default function Expenses({
         title={confirmModal.title}
         description={confirmModal.description}
       />
+
+      {/* Expense Receipt Modal */}
+      {receiptModalOpen && selectedExpenseForReceipt && (
+        <ExpenseReceiptModal
+          expense={selectedExpenseForReceipt}
+          isOpen={receiptModalOpen}
+          onClose={() => {
+            setReceiptModalOpen(false);
+            setSelectedExpenseForReceipt(null);
+          }}
+          onSaveReceipt={handleSaveReceiptFromModal}
+          onRemoveReceipt={handleRemoveReceiptFromModal}
+          currency={currency}
+          exchangeRate={exchangeRate}
+          translate={translate}
+        />
+      )}
+
+      {/* Camera Capture Modal for Add/Edit Form */}
+      {formCameraOpen && (
+        <ReceiptCameraModal
+          open={formCameraOpen}
+          onClose={() => setFormCameraOpen(false)}
+          onCapture={(dataUrl) => {
+            setReceiptUrl(dataUrl);
+            setReceiptName(`expense_camera_${Date.now()}.jpg`);
+            toast.success(translate('Receipt photo captured from camera.'));
+          }}
+          translate={translate}
+        />
+      )}
     </div>
   );
 }

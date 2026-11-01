@@ -226,6 +226,13 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
   const calculatedBank = Math.max(1000000, 3500000 + totalBankCollected - (totalExpensesPaid * 0.6));
   const fixedAssets = 2500000;
 
+  // Role checks for accounting module
+  const isBranchAdmin = useMemo(() => {
+    if (!currentUser) return false;
+    const r = String(currentUser.role || '').toLowerCase().trim();
+    return r === 'branch administrator' || r === 'branch admin';
+  }, [currentUser]);
+
   // Company Administrator role authorization check
   const isCompanyAdmin = useMemo(() => {
     if (!currentUser) return false;
@@ -241,6 +248,13 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
     }
     return false;
   }, [currentUser, selectedCompanyId]);
+
+  // Chart of Accounts CRUD is strictly restricted: Branch Administrators CANNOT perform CRUD on it!
+  const canManageCOA = useMemo(() => {
+    if (!currentUser) return false;
+    if (isBranchAdmin) return false; // Strictly restricted from COA CRUD
+    return isCompanyAdmin;
+  }, [currentUser, isBranchAdmin, isCompanyAdmin]);
 
   // Modals & CRUD state
   const [showVoucherModal, setShowVoucherModal] = useState<boolean>(false);
@@ -631,7 +645,10 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
   });
 
   const handleStartEditAccount = (acc: AccountingAccount) => {
-    if (!isCompanyAdmin) return;
+    if (!canManageCOA) {
+      alert('Action unauthorized: Branch Administrators cannot modify accounts in the Chart of Accounts.');
+      return;
+    }
     setEditingAccount(acc);
     setNewAccountForm({
       code: acc.code,
@@ -645,7 +662,10 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
   };
 
   const handleConfirmDeleteAccount = () => {
-    if (!isCompanyAdmin || !accountToDelete) return;
+    if (!canManageCOA || !accountToDelete) {
+      alert('Action unauthorized: Branch Administrators cannot delete accounts from the Chart of Accounts.');
+      return;
+    }
     const hasLinkedVouchers = vouchers.some(v => v.entries.some(e => String(e.accountId) === String(accountToDelete.id)));
     if (hasLinkedVouchers) {
       setAccountDeleteWarning(`Cannot delete '${accountToDelete.code} - ${accountToDelete.name}' because journal vouchers reference this account. Please delete or reassign those vouchers first to preserve ledger integrity.`);
@@ -661,8 +681,8 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
 
   const handleSaveAccount = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isCompanyAdmin) {
-      alert('Action unauthorized: Only company administrators can create or edit accounts.');
+    if (!canManageCOA) {
+      alert('Action unauthorized: Branch Administrators cannot create or edit accounts in the Chart of Accounts.');
       return;
     }
     if (!newAccountForm.name.trim() || !newAccountForm.code.trim()) return;
@@ -1477,7 +1497,7 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                 Standard ledger account directory categorized by Assets, Liabilities, Equity, Incomes, and Expenses.
               </p>
             </div>
-            {isCompanyAdmin && (
+            {canManageCOA ? (
               <button
                 onClick={() => {
                   setEditingAccount(null);
@@ -1496,7 +1516,12 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                 <Plus className="w-3.5 h-3.5" />
                 Add Account
               </button>
-            )}
+            ) : isBranchAdmin ? (
+              <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-2.5 py-1.5 rounded-lg border border-amber-200 dark:border-amber-900/60 flex items-center gap-1.5">
+                <Lock className="w-3.5 h-3.5" />
+                Read-Only (Branch Administrator)
+              </span>
+            ) : null}
           </div>
 
           <div className="overflow-x-auto">
@@ -1538,7 +1563,7 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                         >
                           View Ledger
                         </button>
-                        {isCompanyAdmin && (
+                        {canManageCOA && (
                           <>
                             <button
                               onClick={() => handleStartEditAccount(acc)}

@@ -84,6 +84,19 @@ export default function AICopilot({
     ? activeCompany.name
     : 'WILLIAM COMPANY';
 
+  const userRoleNorm = (currentUser?.role || '').toLowerCase().trim();
+  const isSuperAdmin = userRoleNorm === 'superadmin' || userRoleNorm === 'super admin' || !!currentUser?.isRoot;
+
+  const locatedCompanies = useMemo(() => {
+    if (isSuperAdmin) return (companies || []).filter(c => !c.isDeleted);
+    const targetCoId = currentUser?.companyId ?? currentCompanyId;
+    if (targetCoId) {
+      const match = (companies || []).filter(c => !c.isDeleted && sameId(c.id, targetCoId));
+      if (match.length > 0) return match;
+    }
+    return activeCompany ? [activeCompany] : (companies || []).slice(0, 1);
+  }, [companies, currentUser, currentCompanyId, isSuperAdmin, activeCompany]);
+
   // Company stores filtering
   const companyBranchIds = useMemo(() => {
     return branches.filter(b => sameId(b.companyId, activeCompany.id)).map(b => b.id);
@@ -320,7 +333,7 @@ export default function AICopilot({
           },
           metricsSummary: metrics,
           domain: activeDomain,
-          companies: (companies || []).map(c => ({
+          companies: (locatedCompanies || []).map(c => ({
             id: c.id,
             name: c.name,
             tin_number: (c as any).tin_number || (c as any).tinNumber,

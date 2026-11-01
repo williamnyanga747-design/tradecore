@@ -711,27 +711,48 @@ function AIStockCopilot({
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [isListening, setIsListening] = useState(false);
 
-  // Active Company Selection (Allows Super Admins or users to query any company)
+  // Active Company Selection (Scoped strictly to company where user is located for non-superadmins)
+  const userRoleNorm = (currentUser?.role || '').toLowerCase().trim();
+  const isSuperAdmin = userRoleNorm === 'superadmin' || userRoleNorm === 'super admin' || !!currentUser?.isRoot;
+
+  const userLocatedCompanies = useMemo(() => {
+    if (isSuperAdmin) {
+      return (companies || []).filter(c => !c.isDeleted);
+    }
+    const targetCoId = currentUser?.companyId != null ? String(currentUser.companyId) : (companyId != null ? String(companyId) : null);
+    if (targetCoId) {
+      const matched = (companies || []).filter(c => !c.isDeleted && String(c.id) === targetCoId);
+      if (matched.length > 0) return matched;
+      return [{ id: targetCoId, name: companyName || 'Alpha Global Retail Corp' }];
+    }
+    return (companies || []).slice(0, 1);
+  }, [companies, currentUser, companyId, isSuperAdmin, companyName]);
+
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | number>(
-    companyId || currentUser?.companyId || (companies[0]?.id ?? 1)
+    isSuperAdmin
+      ? (companyId || currentUser?.companyId || (companies[0]?.id ?? 1))
+      : (userLocatedCompanies[0]?.id ?? currentUser?.companyId ?? companyId ?? 1)
   );
 
   useEffect(() => {
-    if (companyId) {
+    if (!isSuperAdmin) {
+      const lockedId = userLocatedCompanies[0]?.id ?? currentUser?.companyId ?? companyId ?? 1;
+      setSelectedCompanyId(lockedId);
+    } else if (companyId) {
       setSelectedCompanyId(companyId);
     } else if (currentUser?.companyId) {
       setSelectedCompanyId(currentUser.companyId);
     }
-  }, [companyId, currentUser]);
+  }, [companyId, currentUser, isSuperAdmin, userLocatedCompanies]);
 
   const activeCompanyObj = useMemo(() => {
-    const found = companies.find(c => String(c.id) === String(selectedCompanyId));
+    const found = userLocatedCompanies.find(c => String(c.id) === String(selectedCompanyId));
     if (found) return found;
     return {
       id: selectedCompanyId || 1,
       name: companyName || 'Alpha Global Retail Corp'
     };
-  }, [companies, selectedCompanyId, companyName]);
+  }, [userLocatedCompanies, selectedCompanyId, companyName]);
 
   const companyDisplayName = activeCompanyObj?.name || companyName || 'Alpha Global Retail Corp';
 
@@ -978,7 +999,7 @@ Je, unaona bidhaa zako zinazouza zaidi zina faida ghafi ya kutosha (Gross Margin
             } : null
           },
           domain: activeDomain === 'all' ? 'overview' : activeDomain,
-          companies: (companies || []).map(c => ({
+          companies: (userLocatedCompanies || []).map(c => ({
             id: c.id,
             name: c.name,
             tin_number: (c as any).tin_number || (c as any).tinNumber,
@@ -1178,14 +1199,14 @@ Je, unaona bidhaa zako zinazouza zaidi zina faida ghafi ya kutosha (Gross Margin
               <div className="flex items-center gap-1 font-bold text-gray-800 bg-gray-100 px-2 py-0.5 rounded-md border border-gray-200">
                 <span>🏢</span>
                 <span className="text-[11px] text-gray-500">{t('Company')}:</span>
-                {companies.length > 1 ? (
+                {isSuperAdmin && userLocatedCompanies.length > 1 ? (
                   <select
                     value={selectedCompanyId}
                     onChange={(e) => setSelectedCompanyId(e.target.value)}
                     className="bg-transparent text-xs font-black text-brand focus:outline-hidden cursor-pointer"
                     title="Switch company scope"
                   >
-                    {companies.map(c => (
+                    {userLocatedCompanies.map(c => (
                       <option key={c.id} value={c.id}>{c.name}</option>
                     ))}
                   </select>
@@ -17277,6 +17298,8 @@ try {
               onSave: saveShippingZone,
               onDelete: deleteShippingZone,
             }}
+            currentUser={currentUser}
+            rolePermissions={rolePermissions}
           />
         );
       }
