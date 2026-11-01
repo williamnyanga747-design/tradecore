@@ -1,10 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Wallet as WalletIcon, ArrowUpRight, ArrowDownLeft, Clock3, CheckCircle2, XCircle,
-  Smartphone, Send, ShieldCheck, AlertTriangle, Copy, Building2, Plus, Sparkles, Check, X
+  Smartphone, Send, ShieldCheck, AlertTriangle, Copy, Building2, Plus, Sparkles, Check, X,
+  Store as StoreIcon, Layers, Banknote, History
 } from 'lucide-react';
-import { Company, SellerWallet, WalletTransaction } from '../types';
+import { Company, SellerWallet, WalletTransaction, PosShift, Store, Branch } from '../types';
 import { TZS } from './marketplace/MarketplaceShared';
+import { sameId } from '../utils/idUtils';
 
 interface SellerWalletPanelProps {
   company: Company | null;
@@ -12,6 +14,9 @@ interface SellerWalletPanelProps {
   wallet: SellerWallet | undefined;
   transactions: WalletTransaction[];
   withdrawals?: any[];
+  posShifts?: PosShift[];
+  stores?: Store[];
+  branches?: Branch[];
   translate: (text: string) => string;
   onRequestWithdrawal: (companyId: number, amount: number, phoneNumber: string) => { ok: boolean; error?: string };
   onApproveWithdrawal?: (withdrawalId: number) => void;
@@ -33,6 +38,9 @@ export default function SellerWalletPanel({
   companies = [],
   wallet,
   transactions,
+  posShifts = [],
+  stores = [],
+  branches = [],
   translate: t,
   onRequestWithdrawal,
   onApproveWithdrawal,
@@ -62,6 +70,53 @@ export default function SellerWalletPanel({
   const balance = wallet?.balance || 0;
   const totalEarned = wallet?.totalEarned || 0;
   const totalWithdrawn = wallet?.totalWithdrawn || 0;
+
+  // Resolve stores corresponding to the active company
+  const companyBranchIds = useMemo(() => {
+    if (!company) return new Set<string>();
+    return new Set((branches || []).filter(b => sameId(b.companyId, company.id)).map(b => String(b.id)));
+  }, [branches, company]);
+
+  const companyStores = useMemo(() => {
+    if (!company) return [];
+    return (stores || []).filter(s => {
+      if (s.isDeleted) return false;
+      if (sameId((s as any).companyId, company.id)) return true;
+      if (s.branchId != null && companyBranchIds.has(String(s.branchId))) return true;
+      return false;
+    });
+  }, [stores, company, companyBranchIds]);
+
+  // Expected Drawer Cash breakdown for closed register shifts per store
+  const storeClosedShiftSummaries = useMemo(() => {
+    return companyStores.map(st => {
+      const closedShifts = (posShifts || []).filter(shift =>
+        sameId(shift.storeId, st.id) && shift.status === 'Closed'
+      );
+      const expectedDrawerCash = closedShifts.reduce((sum, s) => {
+        const cashAmount = s.closingCashActual != null
+          ? Number(s.closingCashActual)
+          : (Number(s.openingFloat || 0) + Number(s.expectedCashSales || 0));
+        return sum + cashAmount;
+      }, 0);
+      const cashSalesTotal = closedShifts.reduce((sum, s) => sum + Number(s.expectedCashSales || 0), 0);
+      const openingFloatTotal = closedShifts.reduce((sum, s) => sum + Number(s.openingFloat || 0), 0);
+      return {
+        store: st,
+        closedShiftsCount: closedShifts.length,
+        expectedDrawerCash,
+        cashSalesTotal,
+        openingFloatTotal,
+        lastClosedShift: closedShifts[0] || null
+      };
+    });
+  }, [companyStores, posShifts]);
+
+  const totalClosedDrawerCash = useMemo(() => {
+    return storeClosedShiftSummaries.reduce((sum, s) => sum + s.expectedDrawerCash, 0);
+  }, [storeClosedShiftSummaries]);
+
+  const combinedGrossSales = totalEarned + totalClosedDrawerCash;
 
   const handleSubmit = () => {
     setError('');
@@ -151,15 +206,28 @@ export default function SellerWalletPanel({
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 bg-white/10 backdrop-blur-md p-3.5 rounded-2xl border border-white/20">
+          <div className="flex flex-col md:flex-row items-start md:items-center gap-3 md:gap-4 bg-white/10 backdrop-blur-md p-3.5 rounded-2xl border border-white/20">
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-200">{t('Jumla ya Mauzo')}</div>
-              <div className="text-lg font-black mt-0.5 text-white">{TZS(totalEarned)}</div>
+              <div className="text-base md:text-lg font-black mt-0.5 text-white">{TZS(totalEarned)}</div>
+              <div className="text-[9px] text-emerald-300 font-semibold">{t('Marketplace & Online')}</div>
             </div>
-            <div className="hidden sm:block w-px h-8 bg-white/20" />
+            <div className="hidden md:block w-px h-8 bg-white/20" />
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-amber-200">{t('Expected Drawer Cash')}</div>
+              <div className="text-base md:text-lg font-black mt-0.5 text-amber-200">{TZS(totalClosedDrawerCash)}</div>
+              <div className="text-[9px] text-amber-300 font-semibold">{t('Register Drawer Closed')}</div>
+            </div>
+            <div className="hidden md:block w-px h-8 bg-white/20" />
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-100">{t('Jumla Kuu (Gross)')}</div>
+              <div className="text-base md:text-lg font-black mt-0.5 text-emerald-200">{TZS(combinedGrossSales)}</div>
+              <div className="text-[9px] text-emerald-200/80 font-semibold">{t('Combined Sales & Cash')}</div>
+            </div>
+            <div className="hidden md:block w-px h-8 bg-white/20" />
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-200">{t('Zilizotolewa')}</div>
-              <div className="text-lg font-black mt-0.5 text-white">{TZS(totalWithdrawn)}</div>
+              <div className="text-base md:text-lg font-black mt-0.5 text-white">{TZS(totalWithdrawn)}</div>
             </div>
             {isAdmin && onCreditWallet && (
               <button
@@ -173,6 +241,90 @@ export default function SellerWalletPanel({
             )}
           </div>
         </div>
+      </div>
+
+      {/* Register Drawer Closed — Expected Cash Breakdown by Store */}
+      <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 md:p-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-3 mb-4">
+          <div>
+            <h3 className="font-black text-gray-900 text-sm flex items-center gap-2">
+              <StoreIcon className="w-4 h-4 text-emerald-600" />
+              <span>{t('Register Drawer Closed — Expected Cash by Store')}</span>
+              <span className="text-[10px] text-emerald-700 bg-emerald-50 font-bold px-2 py-0.5 rounded-full border border-emerald-200">
+                {company?.name || 'Active Company'}
+              </span>
+            </h3>
+            <p className="text-[11px] text-gray-500 mt-0.5 font-medium">
+              {t('Kiasi cha fedha taslimu kinachotarajiwa kwenye droo za POS zilizofungwa (Register Drawer Closed) kwa kila duka linalomilikiwa na kampuni hii.')}
+            </p>
+          </div>
+          <div className="text-right shrink-0">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">{t('Jumla ya Fedha za Droo')}</span>
+            <span className="text-sm md:text-base font-black text-emerald-700">{TZS(totalClosedDrawerCash)}</span>
+          </div>
+        </div>
+
+        {storeClosedShiftSummaries.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            {storeClosedShiftSummaries.map(({ store: st, closedShiftsCount, expectedDrawerCash, cashSalesTotal, openingFloatTotal, lastClosedShift }) => (
+              <div
+                key={st.id}
+                className="border border-gray-200 rounded-xl p-4 bg-gradient-to-b from-gray-50/50 to-white hover:border-emerald-300 transition shadow-2xs space-y-2.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-black text-xs text-gray-900 truncate flex items-center gap-1.5">
+                      <StoreIcon className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                      <span>{st.name}</span>
+                    </div>
+                    <div className="text-[10px] text-gray-500 mt-0.5 truncate">
+                      📍 {st.location || st.address || t('Location Not Specified')}
+                    </div>
+                  </div>
+                  <span className={`text-[10px] font-black px-2 py-0.5 rounded-full shrink-0 ${
+                    closedShiftsCount > 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-500'
+                  }`}>
+                    {closedShiftsCount} {t('Vardha Zilizofungwa')}
+                  </span>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-emerald-50/60 border border-emerald-100/80 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-gray-700">
+                    <span>{t('Expected Drawer Cash')}:</span>
+                    <span className="text-emerald-800 font-black">{TZS(expectedDrawerCash)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-gray-500">
+                    <span>{t('Cash Sales katika Droo')}:</span>
+                    <span className="font-semibold text-gray-700">{TZS(cashSalesTotal)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-gray-500">
+                    <span>{t('Opening Float Zilizowekwa')}:</span>
+                    <span className="font-semibold text-gray-700">{TZS(openingFloatTotal)}</span>
+                  </div>
+                </div>
+
+                {lastClosedShift ? (
+                  <div className="text-[10px] text-gray-400 font-medium flex items-center justify-between pt-1 border-t border-gray-100">
+                    <span>{t('Mwisho Kufungwa')}: {new Date(lastClosedShift.closeTime || lastClosedShift.openTime).toLocaleDateString()}</span>
+                    <span className="font-mono text-gray-500">#{lastClosedShift.id}</span>
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-gray-400 italic pt-1 border-t border-gray-100">
+                    {t('Hakuna vardha iliyofungwa kwenye duka hili bado.')}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-8 text-gray-400 font-medium text-xs bg-gray-50 rounded-xl border border-dashed border-gray-200">
+            <StoreIcon className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+            <div className="font-bold text-gray-600">{t('Hakuna maduka yaliyosajiliwa chini ya kampuni hii bado.')}</div>
+            <div className="text-[11px] text-gray-400 mt-1">
+              {t('Unaweza kusajili maduka kwenye Mipangilio ya Marketplace (Maduka) na vardha za POS zitaonekana hapa.')}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Instant Credit Modal for Admin / Testing */}

@@ -227,6 +227,8 @@ export interface MarketplaceOrder {
   autoReleaseAt?: string; // deliveredAt + 48h — cron releases escrow after this
   archivedAt?: string; // CRITICAL FIX Part 1 — TRA archive: delivered orders only (kept for tax reporting, hidden from Active list)
   deletedAt?: string; // CRITICAL FIX Part 1 — soft-delete → Trash: pending/rejected orders only; delivered orders can NEVER be deleted (TRA)
+  affiliateId?: number;
+  affiliateCode?: string;
   // --- Shipping ---
   shippingZoneId?: number;
   shippingZoneName?: string;
@@ -780,6 +782,7 @@ export interface Withdrawal {
 
 export interface Affiliate {
   id: number;
+  companyId?: number; // Company this agent is registered with / represents
   userId?: number | null;
   name: string;
   phone: string;
@@ -831,9 +834,10 @@ export interface AffiliateSale {
 export interface AffiliateWithdrawal {
   id: number;
   affiliateId: number;
+  companyId?: number; // Company responsible for this agent's payout
   amount: number;
   phoneNumber: string;
-  method?: string; // 'mpesa' | 'tigopesa' | 'bank'
+  method?: string; // 'mpesa' | 'tigopesa' | 'airtel' | 'halopesa' | 'bank'
   accountName?: string;
   bankName?: string;
   status: WithdrawalStatus;

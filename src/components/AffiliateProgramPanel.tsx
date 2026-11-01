@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Share2, Copy, Check, MessageCircle, MousePointerClick, ShoppingBag, Wallet as WalletIcon,
   Smartphone, Send, AlertTriangle, ExternalLink, BadgePercent, Plus, Users, Search,
@@ -18,6 +18,7 @@ interface AffiliateProgramPanelProps {
   withdrawals: AffiliateWithdrawal[];
   companies: Company[];
   commissionPercent: number;
+  currentCompanyId?: number;
   translate: (text: string) => string;
   onRequestWithdrawal: (affiliateId: number, amount: number, phoneNumber: string) => { ok: boolean; error?: string };
   onCreateAgent?: (agent: {
@@ -28,6 +29,9 @@ interface AffiliateProgramPanelProps {
     district?: string;
     commissionPercent?: number;
     nationalId?: string;
+    referralCode?: string;
+    password?: string;
+    companyId?: number;
   }) => { ok: boolean; error?: string; agent?: Affiliate };
   onUpdateAgent?: (id: number, patch: Partial<Affiliate>) => void;
   onDeleteAgent?: (id: number) => void;
@@ -52,10 +56,12 @@ function companyNameFor(companies: Company[], id: number): string {
 
 export default function AffiliateProgramPanel({
   user, affiliate, affiliates = [], clicks, sales, withdrawals, companies,
-  commissionPercent, translate: t, onRequestWithdrawal,
+  commissionPercent, currentCompanyId, translate: t, onRequestWithdrawal,
   onCreateAgent, onUpdateAgent, onDeleteAgent, onDecideWithdrawal
 }: AffiliateProgramPanelProps) {
-  const isAdmin = Boolean(user?.role === 'Super Admin' || user?.role === 'Admin' || (user as any)?.isAdmin);
+  const isSuperAdmin = user?.role === 'Super Admin';
+  const isAdmin = Boolean(isSuperAdmin || user?.role === 'Admin' || (user as any)?.isAdmin);
+  const activeCompanyId = currentCompanyId || user?.companyId;
 
   const [activeTab, setActiveTab] = useState<'agents' | 'withdrawals' | 'my-link'>(isAdmin ? 'agents' : 'my-link');
   const [amount, setAmount] = useState('');
@@ -75,6 +81,9 @@ export default function AffiliateProgramPanel({
   const [newAgentRegion, setNewAgentRegion] = useState(TANZANIA_REGIONS[0] || 'Dar es Salaam');
   const [newAgentDistrict, setNewAgentDistrict] = useState('');
   const [newAgentNationalId, setNewAgentNationalId] = useState('');
+  const [newAgentReferralCode, setNewAgentReferralCode] = useState('');
+  const [newAgentPassword, setNewAgentPassword] = useState('1234');
+  const [newAgentCompanyId, setNewAgentCompanyId] = useState<number | undefined>(activeCompanyId);
   const [newAgentComm, setNewAgentComm] = useState(String(commissionPercent || 5));
   const [createModalError, setCreateModalError] = useState('');
   const [createModalSuccess, setCreateModalSuccess] = useState('');
@@ -158,7 +167,10 @@ export default function AffiliateProgramPanel({
       region: newAgentRegion,
       district: newAgentDistrict.trim() || undefined,
       commissionPercent: Number(newAgentComm) || commissionPercent,
-      nationalId: newAgentNationalId.trim() || undefined
+      nationalId: newAgentNationalId.trim() || undefined,
+      referralCode: newAgentReferralCode.trim() || undefined,
+      password: newAgentPassword.trim() || '1234',
+      companyId: isSuperAdmin ? (newAgentCompanyId || activeCompanyId) : activeCompanyId
     });
 
     if (!res.ok) {
@@ -166,29 +178,46 @@ export default function AffiliateProgramPanel({
       return;
     }
 
-    setCreateModalSuccess(t('Wakala amesajiliwa kikamilifu!'));
+    setCreateModalSuccess(t('Wakala amesajiliwa kikamilifu! Anaweza kuingia kwa kutumia Referral Code na nenosiri alilowekewa.'));
     setNewAgentName('');
     setNewAgentPhone('');
     setNewAgentEmail('');
     setNewAgentDistrict('');
     setNewAgentNationalId('');
+    setNewAgentReferralCode('');
+    setNewAgentPassword('1234');
     setTimeout(() => {
       setShowCreateModal(false);
       setCreateModalSuccess('');
-    }, 1200);
+    }, 1500);
   };
 
+  // Scoped Affiliates according to active company
+  const scopedAffiliates = useMemo(() => {
+    if (isSuperAdmin || !activeCompanyId) return affiliates;
+    return affiliates.filter(a => a.companyId === activeCompanyId || !a.companyId);
+  }, [affiliates, isSuperAdmin, activeCompanyId]);
+
   // Filtered Agents for Admin view
-  const filteredAgents = affiliates.filter(a => {
+  const filteredAgents = scopedAffiliates.filter(a => {
     const q = agentSearch.toLowerCase().trim();
     const matchesSearch = !q || a.name.toLowerCase().includes(q) || a.phone.includes(q) || a.referralCode.toLowerCase().includes(q);
     const matchesRegion = !selectedRegion || a.region === selectedRegion;
     return matchesSearch && matchesRegion;
   });
 
+  // Scoped Withdrawals
+  const scopedWithdrawals = useMemo(() => {
+    if (isSuperAdmin || !activeCompanyId) return withdrawals;
+    return withdrawals.filter(w => {
+      const ag = affiliates.find(a => a.id === w.affiliateId);
+      return w.companyId === activeCompanyId || ag?.companyId === activeCompanyId;
+    });
+  }, [withdrawals, affiliates, isSuperAdmin, activeCompanyId]);
+
   // System Agent Totals
-  const totalAgents = affiliates.length;
-  const activeAgents = affiliates.filter(a => a.isActive !== false && a.status !== 'suspended').length;
+  const totalAgents = scopedAffiliates.length;
+  const activeAgents = scopedAffiliates.filter(a => a.isActive !== false && a.status !== 'suspended').length;
   const totalSystemCommission = affiliates.reduce((sum, a) => sum + (a.totalEarned || 0), 0);
   const totalSystemBalance = affiliates.reduce((sum, a) => sum + (a.balance || 0), 0);
 
@@ -427,32 +456,43 @@ export default function AffiliateProgramPanel({
                 <tr>
                   <th className="px-4 py-2.5">{t('Tarehe')}</th>
                   <th className="px-4 py-2.5">{t('Wakala')}</th>
-                  <th className="px-4 py-2.5">{t('Namba ya M-Pesa')}</th>
+                  {isSuperAdmin && <th className="px-4 py-2.5">{t('Kampuni')}</th>}
+                  <th className="px-4 py-2.5">{t('Njia & Akaunti')}</th>
                   <th className="px-4 py-2.5 text-right">{t('Kiasi')}</th>
                   <th className="px-4 py-2.5 text-center">{t('Hali')}</th>
                   <th className="px-4 py-2.5 text-right">{t('Vitendo')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {withdrawals.length === 0 ? (
+                {scopedWithdrawals.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={isSuperAdmin ? 7 : 6} className="px-4 py-8 text-center text-gray-400">
                       {t('Hakuna maombi ya kutoa pesa bado.')}
                     </td>
                   </tr>
                 ) : (
-                  withdrawals.map(w => {
+                  scopedWithdrawals.map(w => {
                     const ag = affiliates.find(a => a.id === w.affiliateId);
+                    const comp = companies.find(c => c.id === w.companyId || c.id === ag?.companyId);
                     return (
                       <tr key={w.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 text-gray-500 font-mono">
                           {new Date(w.requestedAt).toLocaleDateString()}
                         </td>
-                        <td className="px-4 py-3 font-black text-gray-900">
-                          {ag?.name || `Agent #${w.affiliateId}`}
+                        <td className="px-4 py-3">
+                          <div className="font-black text-gray-900">{ag?.name || `Agent #${w.affiliateId}`}</div>
+                          <div className="text-[10px] font-mono text-gray-500">{ag?.referralCode}</div>
                         </td>
-                        <td className="px-4 py-3 font-mono font-bold text-gray-700">
-                          {w.phoneNumber}
+                        {isSuperAdmin && (
+                          <td className="px-4 py-3 text-gray-700 font-semibold">
+                            {comp ? comp.name : t('Global')}
+                          </td>
+                        )}
+                        <td className="px-4 py-3">
+                          <div className="font-mono font-bold text-gray-900">{w.phoneNumber}</div>
+                          <div className="text-[10px] text-gray-500 font-bold uppercase">
+                            {w.method || 'M-Pesa'}{w.bankName ? ` (${w.bankName})` : ''}
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-right font-black text-emerald-700">
                           {TZS(w.amount)}
@@ -472,7 +512,7 @@ export default function AffiliateProgramPanel({
                               <button
                                 type="button"
                                 onClick={() => onDecideWithdrawal(w.id, 'approved')}
-                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold cursor-pointer"
+                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold cursor-pointer shadow-xs"
                               >
                                 {t('Idhinisha')}
                               </button>
@@ -731,6 +771,47 @@ export default function AffiliateProgramPanel({
                   />
                 </div>
               </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-gray-700 block mb-1">{t('Referral Code (Hiari)')}</label>
+                  <input
+                    type="text"
+                    value={newAgentReferralCode}
+                    onChange={e => setNewAgentReferralCode(e.target.value.toUpperCase())}
+                    placeholder="WAKALA-XXXX (au wazi kwa auto)"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-mono font-bold outline-none focus:ring-2 focus:ring-brand"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-gray-700 block mb-1">{t('Nenosiri la Kuingilia Portal')} *</label>
+                  <input
+                    type="text"
+                    required
+                    value={newAgentPassword}
+                    onChange={e => setNewAgentPassword(e.target.value)}
+                    placeholder="Default: 1234"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-brand"
+                  />
+                  <p className="text-[10px] text-gray-400 mt-0.5">{t('Wakala ataingia kwa Referral Code na nenosiri hili.')}</p>
+                </div>
+              </div>
+
+              {isSuperAdmin && (
+                <div>
+                  <label className="text-xs font-bold text-gray-700 block mb-1">{t('Kampuni Inayomiliki Wakala')}</label>
+                  <select
+                    value={newAgentCompanyId || ''}
+                    onChange={e => setNewAgentCompanyId(e.target.value ? Number(e.target.value) : undefined)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-bold outline-none cursor-pointer"
+                  >
+                    <option value="">{t('Wakala wa Mfumo Mzima (Global Agent)')}</option>
+                    {companies.map(c => (
+                      <option key={c.id} value={c.id}>{c.name} ({c.region || 'Tanzania'})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {createModalError && (
                 <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 text-xs text-red-600 font-bold flex items-center gap-1.5">

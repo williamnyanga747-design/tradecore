@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { Package, CheckCircle2, XCircle, Truck, Search, ChevronDown, Store, Phone, MapPin, Calendar, FileText, ShieldCheck, Boxes, Lock, Archive, ArchiveRestore, Trash2, RotateCcw } from 'lucide-react';
-import { Company, MarketplaceOrder, MarketplaceOrderStatus, User } from '../types';
+import { Package, CheckCircle2, XCircle, Truck, Search, ChevronDown, Store, Phone, MapPin, Calendar, FileText, ShieldCheck, Boxes, Lock, Archive, ArchiveRestore, Trash2, RotateCcw, Share2, UserCheck, DollarSign } from 'lucide-react';
+import { Company, MarketplaceOrder, MarketplaceOrderStatus, User, Affiliate, AffiliateSale } from '../types';
 import StatusStepper from './marketplace/StatusStepper';
 import { TZS, orderStatusLabel } from './marketplace/MarketplaceShared';
 import { sameId } from '../utils/idUtils';
@@ -10,6 +10,8 @@ interface Props {
   currentCompanyId?: string | number;
   orders: MarketplaceOrder[];
   companies: Company[];
+  affiliates?: Affiliate[];
+  affiliateSales?: AffiliateSale[];
   translate: (text: string) => string;
   currentUser: User | null;
   onUpdateStatus: (orderId: number, status: MarketplaceOrderStatus, reason?: string) => void;
@@ -29,7 +31,7 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 export default function MarketplaceOrdersPanel({
-  currentCompanyId, orders, companies, translate: t, currentUser, onUpdateStatus, onMutateOrders
+  currentCompanyId, orders, companies, affiliates = [], affiliateSales = [], translate: t, currentUser, onUpdateStatus, onMutateOrders
 }: Props) {
   const [filter, setFilter] = useState<MarketplaceOrderStatus | 'All'>('All');
   const [viewTab, setViewTab] = useState<ViewTab>('active');
@@ -41,6 +43,29 @@ export default function MarketplaceOrdersPanel({
   const [confirmOp, setConfirmOp] = useState<{ op: MutateOp; ids: number[] } | null>(null);
 
   const companyFor = (id: number) => companies.find(c => sameId(c.id, id));
+
+  const getOrderAgentInfo = (order: MarketplaceOrder) => {
+    const sale = (affiliateSales || []).find(s => s.orderId === order.id);
+    const agent = (affiliates || []).find(a =>
+      (order.affiliateId && sameId(a.id, order.affiliateId)) ||
+      (order.affiliateCode && safeLower(a.referralCode) === safeLower(order.affiliateCode)) ||
+      (sale && sameId(a.id, sale.affiliateId))
+    );
+    if (!agent && !sale && !order.affiliateCode) return null;
+    const commissionAmt = sale?.commissionAmount || Math.round(order.totalAmount * 0.05);
+    const isApproved = sale?.status === 'approved' || sale?.status === 'paid' || ['verified', 'processing', 'out_for_delivery', 'delivered'].includes(order.status);
+    const isRejected = sale?.status === 'rejected' || sale?.status === 'cancelled' || order.status === 'rejected';
+    return {
+      agent,
+      sale,
+      name: agent?.name || (order.affiliateCode ? `Wakala #${order.affiliateCode}` : t('Wakala wa Kampuni')),
+      referralCode: agent?.referralCode || order.affiliateCode || '—',
+      phone: agent?.phone || '—',
+      commissionAmount: commissionAmt,
+      isApproved,
+      isRejected
+    };
+  };
 
   const canManage = (order: MarketplaceOrder) =>
     !!currentUser && (currentUser.role === 'Super Admin' || sameId(currentUser.companyId, order.companyId));
@@ -269,6 +294,7 @@ export default function MarketplaceOrdersPanel({
             const qty = (o.items || []).reduce((s, i) => s + i.quantity, 0);
             const trashed = !!o.deletedAt;
             const archivedRow = !!o.archivedAt;
+            const agentInfo = getOrderAgentInfo(o);
             return (
               <div key={o.id} className={`bg-white border rounded-xl overflow-hidden ${trashed ? 'border-red-200 opacity-90' : archivedRow ? 'border-indigo-100' : 'border-gray-100'}`}>
                 {/* Row header */}
@@ -301,6 +327,12 @@ export default function MarketplaceOrdersPanel({
                             ⚡ {t('Smart Selling POS')}
                           </span>
                         )}
+                        {agentInfo && (
+                          <span className="text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full border bg-amber-50 text-amber-900 border-amber-300 inline-flex items-center gap-1 shadow-2xs">
+                            <Share2 className="w-2.5 h-2.5 text-amber-600" />
+                            {t('Wakala')}: {agentInfo.name} ({agentInfo.referralCode}) · {t('Kamisheni')}: {TZS(agentInfo.commissionAmount)}
+                          </span>
+                        )}
                         {archivedRow && !trashed && (
                           <span className="text-[9px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-full border bg-indigo-50 text-indigo-600 border-indigo-200 inline-flex items-center gap-1">
                             <Archive className="w-2.5 h-2.5" /> {t('Archived')}
@@ -325,6 +357,54 @@ export default function MarketplaceOrdersPanel({
                 {isExpanded && (
                   <div className="border-t border-gray-100 px-4 py-4 space-y-4">
                     {!trashed && <StatusStepper status={o.status} rejectionReason={o.rejectionReason} />}
+
+                    {/* Agent Commission Card */}
+                    {agentInfo && (
+                      <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3.5 space-y-2">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-amber-950">
+                            <Share2 className="w-4 h-4 text-amber-600" />
+                            {t('Wakala wa Kampuni & Kamisheni ya Mauzo')}
+                          </div>
+                          <span className={`text-[10px] font-bold px-2.5 py-0.5 rounded-full border ${
+                            agentInfo.isApproved
+                              ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                              : agentInfo.isRejected
+                                ? 'bg-red-100 text-red-800 border-red-300'
+                                : 'bg-amber-100 text-amber-800 border-amber-300 animate-pulse'
+                          }`}>
+                            {agentInfo.isApproved
+                              ? `✓ ${t('Imethibitishwa & Kuingizwa Salio la Wakala')}`
+                              : agentInfo.isRejected
+                                ? `✗ ${t('Malipo Yamekataliwa')}`
+                                : `⏳ ${t('Inasubiri Uhakiki wa Malipo')}`}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1">
+                          <div>
+                            <span className="text-[10px] text-gray-500 font-semibold block">{t('Jina la Wakala')}</span>
+                            <span className="font-bold text-gray-900">{agentInfo.name}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-gray-500 font-semibold block">{t('Kodi ya Uwakal')}</span>
+                            <span className="font-bold font-mono text-amber-700">{agentInfo.referralCode}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-gray-500 font-semibold block">{t('Simu ya Wakala')}</span>
+                            <span className="font-medium text-gray-700">{agentInfo.phone}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-gray-500 font-semibold block">{t('Kamisheni Inayolipwa')}</span>
+                            <span className="font-black text-amber-900 text-sm">{TZS(agentInfo.commissionAmount)}</span>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-amber-800 font-medium leading-relaxed">
+                          {agentInfo.isApproved
+                            ? t('Malipo ya mnunuzi yamethibitishwa. Kamisheni hii imeingizwa rasmi kwenye salio la wakala na anaweza kuiombea payout wakati wowote kupitia portal ya wakala.')
+                            : t('Baada ya muuzaji kuthibitisha malipo ya mnunuzi (Verify Payment), kamisheni hii itaingizwa moja kwa moja kwenye salio la wakala.')}
+                        </p>
+                      </div>
+                    )}
 
                     <div className="grid md:grid-cols-2 gap-4">
                       {/* Items */}

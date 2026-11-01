@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { ChevronLeft, MapPin, Phone, Mail, Search, ShoppingCart, Store, Package, Grid3x3 } from 'lucide-react';
-import { Company, MarketplaceProduct, Review } from '../../types';
+import { ChevronLeft, MapPin, Phone, Mail, Search, ShoppingCart, Store as StoreIcon, Package, Grid3x3 } from 'lucide-react';
+import { Company, MarketplaceProduct, Review, Store } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { safeLower } from '../../utils/stateHelpers';
 import { CartLine, ProductCard, TZS, VerifiedBadge, TFunc, isProductVisible, Stars } from './MarketplaceShared';
@@ -12,6 +12,7 @@ interface Props {
   company: Company;
   products: MarketplaceProduct[];
   cartItems: CartLine[];
+  stores?: Store[];
   onBack: () => void;
   onAddToCart: (product: MarketplaceProduct) => void;
   onOpenProduct: (product: MarketplaceProduct) => void;
@@ -21,7 +22,7 @@ interface Props {
 }
 
 export default function MarketplaceStorefront({
-  theme, t, company, products, cartItems, onBack, onAddToCart, onOpenProduct, onOpenCart, distanceKm, reviews
+  theme, t, company, products, cartItems, stores = [], onBack, onAddToCart, onOpenProduct, onOpenCart, distanceKm, reviews
 }: Props) {
   const th = getPublicTheme(theme);
   const milk = theme === 'milk';
@@ -44,7 +45,8 @@ export default function MarketplaceStorefront({
 
   const cartCount = cartItems.reduce((s, i) => s + i.quantity, 0);
   const cartTotal = cartItems.reduce((s, i) => s + i.quantity * i.product.price, 0);
-  const hasCoords = typeof company.latitude === 'number' && typeof company.longitude === 'number';
+  const hasStoreCoords = (stores || []).some(s => typeof s.latitude === 'number' && typeof s.longitude === 'number' && Number.isFinite(s.latitude) && Number.isFinite(s.longitude));
+  const hasCoords = (typeof company.latitude === 'number' && typeof company.longitude === 'number' && Number.isFinite(company.latitude) && Number.isFinite(company.longitude)) || hasStoreCoords;
   const approvedReviews = (reviews || []).filter(r => r.status === 'approved' && r.companyId === company.id);
 
   return (
@@ -85,7 +87,7 @@ export default function MarketplaceStorefront({
               )}
               {company.category && (
                 <span className={`inline-flex items-center gap-1 text-[10px] font-black ${th.chipText} ${th.chip} ${th.chipBorder} px-2 py-0.5 rounded-full mt-1`}>
-                  <Store className="w-3 h-3" /> {company.category}
+                  <StoreIcon className="w-3 h-3" /> {company.category}
                 </span>
               )}
               <p className={`text-xs ${th.textMuted} font-medium mt-2 max-w-2xl`}>{company.description}</p>
@@ -175,7 +177,7 @@ export default function MarketplaceStorefront({
           <h2 className={`text-sm font-black ${th.strongText} mb-2 flex items-center gap-1.5`}>
             <Grid3x3 className="w-4 h-4" /> {t('Company Location')} — {t('Njoo Dukani')}
           </h2>
-          <StoreMapCard company={company} theme={theme} t={t} />
+          <StoreMapCard company={company} theme={theme} t={t} stores={stores} />
         </section>
       )}
 

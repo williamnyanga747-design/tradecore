@@ -192,6 +192,13 @@ export default function MarketplaceSettingsPanel({
     };
     if (onSaveStore) {
       onSaveStore(payload);
+      if (payload.latitude != null && payload.longitude != null && onSaveProfile) {
+        onSaveProfile({
+          latitude: payload.latitude,
+          longitude: payload.longitude,
+          addressText: payload.location || (storeForm as any).address || company.addressText
+        });
+      }
     } else {
       toast.error(t('Store save handler not available.'));
       return;

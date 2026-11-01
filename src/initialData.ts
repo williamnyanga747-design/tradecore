@@ -267,8 +267,10 @@ export const defaultRolePermissions: Record<string, string[]> = {
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
     'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
+    'report-unit-velocity', 'report-tax-vat', 'report-predictive-ai',
     'user-info', 'user-access', 'subscriptions',
-    'marketplace-orders', 'marketplace-settings'
+    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'qr-code-yangu', 'sauti-search', 'tra-report',
+    'root-dashboard', 'tra-reports', 'root-disputes'
   ],
   'Admin': [
     'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
@@ -276,34 +278,37 @@ export const defaultRolePermissions: Record<string, string[]> = {
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
     'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
-    'user-info',
-    'marketplace-orders', 'marketplace-settings'
+    'report-unit-velocity', 'report-tax-vat', 'report-predictive-ai',
+    'user-info', 'user-access',
+    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'qr-code-yangu', 'sauti-search', 'tra-report'
   ],
   'Retailer': [
     'dashboard', 'stock-items', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
     'report-transaction', 'report-daily', 'report-sales', 'report-sales-outstanding', 'report-lowstock', 'report-shifts',
-    'marketplace-orders', 'marketplace-settings'
+    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'qr-code-yangu', 'sauti-search', 'tra-report'
   ],
   'Wholesaler': [
     'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-daily', 'report-sales', 'report-purchase',
     'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
-    'marketplace-orders', 'marketplace-settings'
+    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'qr-code-yangu', 'sauti-search', 'tra-report'
   ],
   'Store Admin': [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
+    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
     'report-transaction', 'report-daily', 'report-sales', 'report-purchase',
     'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
+    'report-unit-velocity', 'report-tax-vat',
     'user-info',
-    'marketplace-orders', 'marketplace-settings'
+    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'qr-code-yangu', 'sauti-search', 'tra-report'
   ],
   'Branch Administrator': [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
+    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
     'report-transaction', 'report-daily', 'report-sales', 'report-purchase',
     'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
+    'report-unit-velocity', 'report-tax-vat',
     'user-info',
-    'marketplace-orders', 'marketplace-settings'
+    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'qr-code-yangu', 'sauti-search', 'tra-report'
   ]
 };
 
@@ -393,9 +398,9 @@ export const defaultSalesOrders: SalesOrder[] = [
 ];
 
 export const defaultExpenses: Expense[] = [
-  { id: 1, expenseNumber: 'EXP-2026-0001', category: 'Rent', description: 'Store Premises Rent (January 2026)', amount: 450, date: today, storeId: 1, paymentMethod: 'Bank' },
-  { id: 2, expenseNumber: 'EXP-2026-0002', category: 'Utilities', description: 'Electricity and Power Supply Grid', amount: 85, date: today, storeId: 1, paymentMethod: 'Cash' },
-  { id: 3, expenseNumber: 'EXP-2026-0003', category: 'Transport', description: 'Transporting grain from depot', amount: 150, date: yesterday, storeId: 1, paymentMethod: 'Mobile Money' }
+  { id: 1, expenseNumber: 'EXP-2026-0001', category: 'Rent', description: 'Store Premises Rent (January 2026)', amount: 450, date: today, storeId: 1, companyId: 1, paymentMethod: 'Bank' },
+  { id: 2, expenseNumber: 'EXP-2026-0002', category: 'Utilities', description: 'Electricity and Power Supply Grid', amount: 85, date: today, storeId: 1, companyId: 1, paymentMethod: 'Cash' },
+  { id: 3, expenseNumber: 'EXP-2026-0003', category: 'Transport', description: 'Transporting grain from depot', amount: 150, date: yesterday, storeId: 1, companyId: 1, paymentMethod: 'Mobile Money' }
 ];
 
 export const defaultAuditTrails: AuditTrail[] = [];

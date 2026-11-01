@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronLeft, Search, Package, Store, MapPin, Smartphone, Calendar, FileText, CalendarClock, Users, CheckCircle2, Clock, Share2, ArrowRight, Bike, Truck } from 'lucide-react';
+import { ChevronLeft, Search, Package, Store, MapPin, Smartphone, Calendar, FileText, CalendarClock, Users, CheckCircle2, Clock, Share2, ArrowRight, Bike, Truck, UserPlus } from 'lucide-react';
 import { Company, MarketplaceOrder, MarketplaceProduct, InstallmentOrder, InstallmentPayment, GroupDeal, GroupDealParticipant, Delivery, DeliveryUpdate } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { safeLower } from '../../utils/stateHelpers';
@@ -23,6 +23,7 @@ interface Props {
   onBack: () => void;
   onViewCompany: (slug: string) => void;
   onNavigate?: (path: string) => void;
+  onLinkOrderAgent?: (orderNumber: string, agentCodeOrName: string) => { ok: boolean; message: string; agentName?: string; commission?: number };
 }
 
 export default function MarketplaceTrackOrder({
@@ -30,13 +31,22 @@ export default function MarketplaceTrackOrder({
   installmentOrders = [], installmentPayments = [],
   groupDeals = [], groupDealParticipants = [],
   deliveries = [], deliveryUpdates = [],
-  initialOrderNumber, onBack, onViewCompany, onNavigate
+  initialOrderNumber, onBack, onViewCompany, onNavigate, onLinkOrderAgent
 }: Props) {
   const th = getPublicTheme(theme);
   const milk = theme === 'milk';
   const [q, setQ] = useState(initialOrderNumber || '');
   const [submitted, setSubmitted] = useState(Boolean(initialOrderNumber));
   const [activeTab, setActiveTab] = useState<'all' | 'orders' | 'installments' | 'groups' | 'deliveries'>('all');
+  const [agentInputs, setAgentInputs] = useState<Record<string, string>>({});
+  const [agentMessages, setAgentMessages] = useState<Record<string, { ok: boolean; message: string; agentName?: string; commission?: number }>>({});
+
+  const handleLinkAgent = (orderNum: string) => {
+    const val = (agentInputs[orderNum] || '').trim();
+    if (!val || !onLinkOrderAgent) return;
+    const res = onLinkOrderAgent(orderNum, val);
+    setAgentMessages(prev => ({ ...prev, [orderNum]: res }));
+  };
 
   const query = q.trim().toLowerCase();
   const cleanPhone = q.replace(/\D/g, '').slice(-9);
@@ -468,6 +478,59 @@ export default function MarketplaceTrackOrder({
                         <span className={`text-xs font-black ${th.strongText}`}>{t('Total')}</span>
                         <span className={`text-lg font-black ${th.statValue}`}>{TZS(order.totalAmount)}</span>
                       </div>
+                    </div>
+
+                    {/* Agent / Wakala Linking Card */}
+                    <div className={`${th.card} ${th.cardBorder} rounded-2xl p-4.5 shadow-sm space-y-2.5`}>
+                      <div className="flex items-center justify-between">
+                        <span className={`text-xs font-black ${th.strongText} flex items-center gap-1.5`}>
+                          <UserPlus className="w-4 h-4 text-amber-500" />
+                          {t('Wakala wa Kampuni (Sales Agent / Referral)')}
+                        </span>
+                        {((order as any).affiliateCode || order.affiliateId) ? (
+                          <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                            {t('Wakala')} {(order as any).affiliateCode || `#${order.affiliateId}`}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                            {t('Haijaunganishwa')}
+                          </span>
+                        )}
+                      </div>
+
+                      {((order as any).affiliateCode || order.affiliateId) ? (
+                        <div className="text-[11px] text-emerald-800 bg-emerald-50/60 p-2.5 rounded-xl border border-emerald-100 font-semibold">
+                          ✓ {t('Oda hii imeunganishwa na wakala wa kampuni.')} {t('Kamisheni imeingizwa kwenye salio lake la mfumo wa mawakala (Wakala Portal).')}
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <p className={`text-[11px] ${th.textMuted} font-semibold leading-relaxed`}>
+                            {t('Je, kuna wakala wa duka/kampuni aliyekusaidia kuchagua au kuagiza bidhaa hii? Weka jina lake au referral code hapa ili apate kamisheni yake.')}
+                          </p>
+                          <div className="flex gap-2">
+                            <input
+                              type="text"
+                              value={agentInputs[order.orderNumber] || ''}
+                              onChange={(e) => setAgentInputs(prev => ({ ...prev, [order.orderNumber]: e.target.value }))}
+                              placeholder={t('Weka jina au kodi ya wakala (mf. WAK-102 au Sarah)')}
+                              className={`${th.input} py-2 text-xs flex-1`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleLinkAgent(order.orderNumber)}
+                              className={`px-4 py-2 text-xs font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer shadow-sm transition shrink-0`}
+                            >
+                              {t('Unganisha Wakala')}
+                            </button>
+                          </div>
+                          {agentMessages[order.orderNumber] && (
+                            <div className={`text-[11px] font-bold p-2.5 rounded-xl border ${agentMessages[order.orderNumber].ok ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'}`}>
+                              {agentMessages[order.orderNumber].message}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );

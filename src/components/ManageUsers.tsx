@@ -192,6 +192,8 @@ export default function ManageUsers({
         { id: 'sales-order', name: t('Sales Orders') },
         { id: 'expenses', name: t('Expenses') },
         { id: 'receipts', name: t('Receipts') },
+        { id: 'accounting', name: t('Accounting (Tally)') },
+        { id: 'ai-copilot', name: t('AI Stock Copilot') },
       ]
     },
     {
@@ -200,9 +202,11 @@ export default function ManageUsers({
         { id: 'marketplace-orders', name: t('Marketplace Orders (verify customers)') },
         { id: 'marketplace-settings', name: t('Marketplace Store Settings') },
         { id: 'seller-wallet', name: t('Seller Wallet (M-Pesa payouts)') },
+        { id: 'seller-phase2c', name: t('Smart Selling (Group Buy, Lipa Pole Pole)') },
         { id: 'affiliate-program', name: t('Wakala Wangu (referral earnings)') },
         { id: 'qr-code-yangu', name: t('QR Code Yangu (store poster)') },
         { id: 'sauti-search', name: t('Sauti Search (voice stats)') },
+        { id: 'tra-report', name: t('Ripoti ya TRA (EFD / VAT Submission)') },
       ]
     },
     {
@@ -216,6 +220,7 @@ export default function ManageUsers({
         { id: 'branches', name: t('Branch Management (Master)') },
         { id: 'companies', name: t('Company Registry (Super Admin)') },
         { id: 'data-recovery', name: t('Data Recovery / Trash (Master)') },
+        { id: 'exchange-rate', name: t('Currency & Exchange Rate (Master)') },
       ]
     },
     {
@@ -239,6 +244,10 @@ export default function ManageUsers({
         { id: 'report-purchase-outstanding', name: t('Purchase Outstanding') },
         { id: 'report-lowstock', name: t('Low Stock Report') },
         { id: 'report-po-details', name: t('PO Details Report') },
+        { id: 'report-shifts', name: t('POS Shifts Report') },
+        { id: 'report-unit-velocity', name: t('Fast/Slow Velocity Report') },
+        { id: 'report-tax-vat', name: t('TRA VAT Compliance Report') },
+        { id: 'report-predictive-ai', name: t('Predictive AI Forecasting') },
       ]
     }
   ];
@@ -339,14 +348,15 @@ export default function ManageUsers({
     const roles = ['Admin', 'Store Admin', 'Branch Administrator', 'Retailer', 'Wholesaler'];
     const updatedPermissions: Record<string, string[]> = {
       'Super Admin': [
-        'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts',
-        'companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes',
+        'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
+        'companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'data-recovery', 'exchange-rate',
         'import-stock', 'import-customers', 'import-suppliers',
         'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
-        'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details',
-        'user-info', 'user-access',
-        'marketplace-orders', 'marketplace-settings',
-        'seller-wallet', 'affiliate-program', 'qr-code-yangu', 'sauti-search'
+        'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
+        'report-unit-velocity', 'report-tax-vat', 'report-predictive-ai',
+        'user-info', 'user-access', 'subscriptions',
+        'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'qr-code-yangu', 'sauti-search', 'tra-report',
+        'root-dashboard', 'tra-reports', 'root-disputes'
       ],
       'Admin': [],
       'Store Admin': [],
@@ -490,33 +500,8 @@ export default function ManageUsers({
     setEditingUser(null);
   };
 
-  // Define module screens for Access Matrix
-  const modules = [
-    { id: 'dashboard', name: t('Dashboard') },
-    { id: 'stock-items', name: t('Stock Items') },
-    { id: 'purchase-order', name: t('Purchase Orders') },
-    { id: 'sales-order', name: t('Sales Orders') },
-    { id: 'companies', name: t('Company Settings (Master)') },
-    { id: 'branches', name: t('Branch Management (Master)') },
-    { id: 'stores', name: t('Store Management (Master)') },
-    { id: 'customers', name: t('Customers (Master)') },
-    { id: 'suppliers', name: t('Suppliers (Master)') },
-    { id: 'categories', name: t('Categories (Master)') },
-    { id: 'taxes', name: t('Taxes (Master)') },
-    { id: 'import-stock', name: t('Import - Stock Items') },
-    { id: 'import-customers', name: t('Import - Customers') },
-    { id: 'import-suppliers', name: t('Import - Suppliers') },
-    { id: 'report-transaction', name: t('Report - Transaction Date Search') },
-    { id: 'report-daily', name: t('Report - Daily Activity') },
-    { id: 'report-monthly', name: t('Report - Monthly') },
-    { id: 'report-sales', name: t('Report - Sales') },
-    { id: 'report-purchase', name: t('Report - Purchase') },
-    { id: 'report-sales-outstanding', name: t('Report - Sales Outstanding') },
-    { id: 'report-purchase-outstanding', name: t('Report - Purchase Outstanding') },
-    { id: 'report-lowstock', name: t('Report - Low Stock') },
-    { id: 'report-po-details', name: t('Report - Purchase Order Details') },
-    { id: 'user-info', name: t('User Management') }
-  ];
+  // Define module screens for Access Matrix (dynamically synced with all categorized modules)
+  const modules = moduleCategories.flatMap(c => c.items);
 
   // --- RENDER CONTENT BY currentPage ---
   if (currentPage === 'user-info') {

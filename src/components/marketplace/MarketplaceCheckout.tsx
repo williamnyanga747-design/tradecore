@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react';
-import { ChevronLeft, Minus, Plus, Trash2, MapPin, Navigation, Smartphone, Upload, Loader2, CheckCircle2, Store, Zap, ShieldCheck, Clock, Landmark, Banknote } from 'lucide-react';
+import { ChevronLeft, Minus, Plus, Trash2, MapPin, Navigation, Smartphone, Upload, Loader2, CheckCircle2, Store, Zap, ShieldCheck, Clock, Landmark, Banknote, UserPlus } from 'lucide-react';
 import { Company, CompanyPaymentMethod, MarketplaceProduct, CollectionNetwork, CollectionSetting, CollectionMode, CollectionStatus, MegaPaymentMethod, ShippingZone } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TANZANIA_REGIONS } from '../../utils/regions';
@@ -16,6 +16,7 @@ export interface CheckoutSubmitData {
   customerWard: string;
   customerStreet: string;
   deliveryInstructions?: string;
+  agentCode?: string;
   latitude?: number;
   longitude?: number;
   paymentMethodType: string;
@@ -141,6 +142,7 @@ export default function MarketplaceCheckout({
   const [ward, setWard] = useState('');
   const [street, setStreet] = useState('');
   const [instructions, setInstructions] = useState('');
+  const [agentCode, setAgentCode] = useState('');
   const [loc, setLoc] = useState<{ lat: number; lng: number } | null>(readCustomerLocation());
   const [locating, setLocating] = useState(false);
   const [methodType, setMethodType] = useState<string>(methods[0]?.methodType || 'mpesa');
@@ -241,6 +243,7 @@ export default function MarketplaceCheckout({
       customerWard: ward.trim(),
       customerStreet: street.trim(),
       deliveryInstructions: [instructions.trim(), liveStreamKey ? `LIVE-STREAM: ${liveStreamKey}` : ''].filter(Boolean).join(' | ') || undefined,
+      agentCode: agentCode.trim() || undefined,
       latitude: loc?.lat,
       longitude: loc?.lng,
       paymentMethodType: isEscrowPay
@@ -325,6 +328,21 @@ export default function MarketplaceCheckout({
               <div className="sm:col-span-2">
                 <label className={labelCls}>{t('Delivery Instructions (optional)')}</label>
                 <input value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="e.g. Piga simu kabla ya kufika" className={inputCls} />
+              </div>
+              <div className="sm:col-span-2 pt-2 border-t border-gray-100">
+                <label className={labelCls}>{t('Kodi / Jina la Wakala (Agent / Referral Code - Hiari)')}</label>
+                <div className="relative">
+                  <UserPlus className={`w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 ${th.textDim}`} />
+                  <input
+                    value={agentCode}
+                    onChange={(e) => setAgentCode(e.target.value)}
+                    placeholder={t('Weka jina la wakala au referral code (mf. WAK-102 au Sarah)')}
+                    className={`${inputCls} pl-9`}
+                  />
+                </div>
+                <div className={`text-[10px] ${th.textMuted} font-semibold mt-1`}>
+                  {t('Ikiwa wakala wa kampuni alikusaidia kuchagua au kuagiza bidhaa, weka kodi yake au jina hapa ili apate kamisheni.')}
+                </div>
               </div>
             </div>
             <div className="mt-4 flex flex-wrap items-center gap-3">

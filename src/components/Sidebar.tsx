@@ -89,12 +89,13 @@ function SidebarInner({
   // allowedPages already guarantees a non-empty authoritative list.
   const DEFAULT_OPERATIONAL_PAGES = [
     'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
-    'companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'exchange-rate',
+    'companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'data-recovery', 'exchange-rate',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
     'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
+    'report-unit-velocity', 'report-tax-vat', 'report-predictive-ai',
     'user-info', 'user-access',
-    'marketplace-orders', 'marketplace-settings', 'profile'
+    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'qr-code-yangu', 'sauti-search', 'tra-report', 'profile'
   ];
   const pages = allowedPages && allowedPages.length > 0 ? allowedPages : DEFAULT_OPERATIONAL_PAGES;
   const isAllowed = (page: string) => pages.includes(page);
@@ -103,7 +104,7 @@ function SidebarInner({
   // Helper for submenus to check if any of their children is active
   const isMasterActive = ['companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'data-recovery', 'exchange-rate'].includes(currentPage);
   const isImportActive = ['import-stock', 'import-customers', 'import-suppliers'].includes(currentPage);
-  const isReportActive = ['report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase', 'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts', 'report-unit-velocity'].includes(currentPage);
+  const isReportActive = ['report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase', 'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts', 'report-unit-velocity', 'report-tax-vat', 'report-predictive-ai'].includes(currentPage);
   const isUserActive = ['user-info', 'user-access'].includes(currentPage);
 
   const [showMasters, setShowMasters] = useState(isMasterActive);

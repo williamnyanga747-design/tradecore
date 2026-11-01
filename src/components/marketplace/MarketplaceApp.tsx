@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { MessageCircle, CheckCircle2, Loader2, Clock, ShieldCheck, Zap, XCircle, RefreshCw, ChevronLeft, Landmark, Camera } from 'lucide-react';
+import { MessageCircle, CheckCircle2, Loader2, Clock, ShieldCheck, Zap, XCircle, RefreshCw, ChevronLeft, Landmark, Camera, UserPlus } from 'lucide-react';
 import { Company, MarketplaceCustomer, MarketplaceOrder, MarketplaceProduct, Currency, TradeSubscriptionPlan, CompanySubscription, PayNumbersConfig, Review, SearchSynonym, CollectionSetting, CollectionMode, CollectionNetwork, CollectionStatus, Offer, GroupDeal, GroupDealParticipant, InstallmentPlan, InstallmentOrder, InstallmentPayment, LiveStream, LiveComment, Delivery, DeliveryUpdate, LoyaltyCustomer, WhatsappConversation, Affiliate, AffiliateClick, AffiliateSale, AffiliateWithdrawal, EscrowTransaction, ChatConversation, ChatMessage, VisualSearchRecord, ProductReturn, Dispute, DisputeMessage, FlashSale, FlashSaleItem, AppNotification, Story, StoryView, ReturnReason, BulkUploadJob, ShippingZone, Store } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { haversineKm, readCustomerLocation } from '../../utils/haversine';
@@ -7,6 +7,7 @@ import { GoldenTopLine } from '../../utils/publicTheme';
 import { MarketHeader, MarketFooter, CartLine, isProductVisible, isCompanySubscriptionExpired, TZS } from './MarketplaceShared';
 import { translate } from '../../utils/format';
 import { safeLower } from '../../utils/stateHelpers';
+import { sameId } from '../../utils/idUtils';
 import { getScopedStoredLanguage, setScopedStoredLanguage, clearScopedStoredLanguage, ensureLocaleCookie, setLocaleCookie, isLangCode, syncDocumentLang, LangCode } from '../../utils/i18n';
 import MarketplaceHome from './MarketplaceHome';
 import MarketplaceStorefront from './MarketplaceStorefront';
@@ -132,12 +133,13 @@ interface Props {
     ward?: string;
     nida?: string;
   }) => { ok: boolean; error?: string; affiliate?: Affiliate };
-  onLoginAffiliate?: (phone: string, password: string) => { ok: boolean; error?: string; affiliate?: Affiliate };
+  onLoginAffiliate?: (identifier: string, password: string) => { ok: boolean; error?: string; affiliate?: Affiliate };
   onRequestAffiliateWithdrawal?: (affiliateId: number, amount: number, phoneNumber: string, options?: {
     method?: string;
     accountName?: string;
     bankName?: string;
   }) => { ok: boolean; error?: string };
+  onLinkOrderAgent?: (orderNumber: string, agentCodeOrName: string) => { ok: boolean; message: string; agentName?: string; commission?: number };
   onLogVoiceSearch?: (query: string, transcript: string, matches: number, language?: string) => void;
   onRecordQrScan?: (companyId: number, productId: number | null, token: string, referrer: string, isAffiliate: boolean) => void;
   onOpenQrPage?: () => void;
@@ -225,7 +227,7 @@ export default function MarketplaceApp({
   liveStreams, liveComments, deliveries, deliveryUpdates, loyaltyCustomers, whatsappConversations, featureHandlers,
   affiliates, affiliateClicks, affiliateSales, affiliateWithdrawals,
   affiliateCommissionPercent, affiliateMinWithdrawal,
-  onRegisterAffiliate, onLoginAffiliate, onRequestAffiliateWithdrawal,
+  onRegisterAffiliate, onLoginAffiliate, onRequestAffiliateWithdrawal, onLinkOrderAgent,
   onLogVoiceSearch, onRecordQrScan, onOpenQrPage, voiceSearchEnabled, qr5Enabled, qr5DiscountPercent,
   flashSales, flashSalesHandlers, stories, storyViews, storiesHandlers,
   chatConversations, chatMessages, chatHandlers, appNotifications, notificationHandlers,
@@ -267,6 +269,8 @@ export default function MarketplaceApp({
   const [placedInfo, setPlacedInfo] = useState<{ orderNumber: string; reference?: string; mode?: string; status?: string } | null>(null);
   const [paySecondsLeft, setPaySecondsLeft] = useState(300);
   const payEndRef = useRef<number>(0);
+  const [postOrderAgentCode, setPostOrderAgentCode] = useState('');
+  const [postOrderAgentMsg, setPostOrderAgentMsg] = useState<{ ok: boolean; message: string; agentName?: string; commission?: number } | null>(null);
 
   // --- MEGA BUILD: visual search modal + buyer notification feed ---
   const [showVisualSearch, setShowVisualSearch] = useState(false);
@@ -675,6 +679,47 @@ export default function MarketplaceApp({
           </div>
         )}
 
+        {/* Post-Order Agent / Wakala Linking Card */}
+        <div className={`p-3.5 rounded-2xl border ${th.cardBorder} text-left space-y-2 bg-amber-500/10`}>
+          <div className="flex items-center justify-between">
+            <span className={`text-xs font-black ${th.strongText} flex items-center gap-1.5`}>
+              <UserPlus className="w-3.5 h-3.5 text-amber-500" />
+              {t('Ulisaidiwa na Wakala? (Assisting Agent)')}
+            </span>
+            <span className="text-[10px] font-bold text-amber-600 bg-amber-100/80 px-2 py-0.5 rounded-full">
+              {t('Pata Kamisheni')}
+            </span>
+          </div>
+          <p className={`text-[11px] ${th.textMuted} font-semibold leading-relaxed`}>
+            {t('Ikiwa kuna wakala au muuzaji aliyekusaidia kuweka oda hii, weka jina lake au referral code yake hapa ili apate kamisheni.')}
+          </p>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={postOrderAgentCode}
+              onChange={(e) => setPostOrderAgentCode(e.target.value)}
+              placeholder={t('Jina la wakala au kodi (mf. WAK-102 au Juma)')}
+              className={`${th.input} py-1.5 text-xs flex-1`}
+            />
+            <button
+              type="button"
+              onClick={() => {
+                if (!postOrderAgentCode.trim() || !onLinkOrderAgent) return;
+                const r = onLinkOrderAgent(info.orderNumber, postOrderAgentCode.trim());
+                setPostOrderAgentMsg(r);
+              }}
+              className={`px-3 py-1.5 text-xs font-black rounded-xl ${th.btnPrimary} ${th.btnPrimaryText} cursor-pointer shrink-0`}
+            >
+              {t('Unganisha')}
+            </button>
+          </div>
+          {postOrderAgentMsg && (
+            <div className={`text-[11px] font-bold p-2 rounded-xl border ${postOrderAgentMsg.ok ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-red-50 text-red-800 border-red-200'}`}>
+              {postOrderAgentMsg.message}
+            </div>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-2">
           {pending && (
             <button
@@ -844,21 +889,22 @@ export default function MarketplaceApp({
       return (
         <MarketplaceWakala
           view={route.wakalaView as WakalaView}
-            theme={theme}
-            t={t}
-            affiliates={affiliates || []}
-            affiliateClicks={affiliateClicks || []}
-            affiliateSales={affiliateSales || []}
-            affiliateWithdrawals={affiliateWithdrawals || []}
-            companies={companies}
-            commissionPercent={affiliateCommissionPercent ?? 2}
-            minWithdrawal={affiliateMinWithdrawal ?? 10000}
-            onRegisterAffiliate={(data) => onRegisterAffiliate?.(data) || { ok: false, error: 'Not available.' }}
-            onLoginAffiliate={(phone, password) => onLoginAffiliate?.(phone, password) || { ok: false, error: 'Not available.' }}
-            onRequestWithdrawal={(affId, amt, phone, opts) => onRequestAffiliateWithdrawal?.(affId, amt, phone, opts) || { ok: false, error: 'Not available.' }}
-            onNavigate={(v) => go(`/affiliate/${v}`)}
-            onBack={() => go('/marketplace')}
-          />
+          theme={theme}
+          t={t}
+          affiliates={affiliates || []}
+          affiliateClicks={affiliateClicks || []}
+          affiliateSales={affiliateSales || []}
+          affiliateWithdrawals={affiliateWithdrawals || []}
+          companies={companies}
+          stores={stores || []}
+          commissionPercent={affiliateCommissionPercent ?? 2}
+          minWithdrawal={affiliateMinWithdrawal ?? 10000}
+          onRegisterAffiliate={(data) => onRegisterAffiliate?.(data) || { ok: false, error: 'Not available.' }}
+          onLoginAffiliate={(identifier, password) => onLoginAffiliate?.(identifier, password) || { ok: false, error: 'Not available.' }}
+          onRequestWithdrawal={(affId, amt, phone, opts) => onRequestAffiliateWithdrawal?.(affId, amt, phone, opts) || { ok: false, error: 'Not available.' }}
+          onNavigate={(v) => go(`/affiliate/${v}`)}
+          onBack={() => go('/marketplace')}
+        />
       );
     }
 
@@ -922,6 +968,7 @@ export default function MarketplaceApp({
             company={company}
             products={products.filter(p => p.companyId === company.id && isProductVisible(p))}
             cartItems={cart.items}
+            stores={(stores || []).filter(s => s.companyId === company.id || sameId((s as any).companyId, company.id))}
             onBack={() => go('/marketplace')}
             onAddToCart={addToCart}
             onOpenProduct={openProduct}
@@ -951,6 +998,7 @@ export default function MarketplaceApp({
           onBack={() => go('/marketplace')}
           onViewCompany={openCompany}
           onNavigate={go}
+          onLinkOrderAgent={onLinkOrderAgent}
         />
       );
     }
@@ -1188,6 +1236,7 @@ export default function MarketplaceApp({
           regions={regions}
           companies={activeCompanies}
           products={products}
+          stores={stores}
           onOpenCompany={openCompany}
           onOpenProduct={openProduct}
           onTrackOrder={() => go('/marketplace/track')}

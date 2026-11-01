@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { Store, Package, BadgeCheck, ArrowRight, ShoppingBag, HandCoins, Users, Gift, MessageCircle, Video, Bike, Mic, QrCode, Percent, UserPlus } from 'lucide-react';
-import { Company, MarketplaceProduct } from '../../types';
+import { Store as StoreIcon, Package, BadgeCheck, ArrowRight, ShoppingBag, HandCoins, Users, Gift, MessageCircle, Video, Bike, Mic, QrCode, Percent, UserPlus } from 'lucide-react';
+import { Company, MarketplaceProduct, Store } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import MarketplaceHero from './MarketplaceHero';
 import MarketplaceDirectory from './MarketplaceDirectory';
@@ -13,6 +13,7 @@ interface Props {
   regions?: string[];
   companies: Company[];
   products: MarketplaceProduct[];
+  stores?: Store[];
   onOpenCompany: (slug: string) => void;
   onOpenProduct: (product: MarketplaceProduct) => void;
   onTrackOrder: () => void;
@@ -28,7 +29,7 @@ interface Props {
   liveCount?: number;
 }
 
-export default function MarketplaceHome({ theme, t, regions, companies, products, onOpenCompany, onOpenProduct, onTrackOrder, onAddToCart, onNavigate, onOpenWakala, onOpenQr, voiceEnabled = true, qr5Enabled = false, qr5DiscountPercent = 5, offerCount = 0, groupDealCount = 0, liveCount = 0 }: Props) {
+export default function MarketplaceHome({ theme, t, regions, companies, products, stores, onOpenCompany, onOpenProduct, onTrackOrder, onAddToCart, onNavigate, onOpenWakala, onOpenQr, voiceEnabled = true, qr5Enabled = false, qr5DiscountPercent = 5, offerCount = 0, groupDealCount = 0, liveCount = 0 }: Props) {
   const th = getPublicTheme(theme);
   const activeCompanies = useMemo(() => companies.filter(c => c.isMarketplaceActive !== false), [companies]);
   const activeProducts = useMemo(() => products.filter(isProductVisible), [products]);
@@ -231,6 +232,7 @@ export default function MarketplaceHome({ theme, t, regions, companies, products
         <MarketplaceDirectory
           companies={activeCompanies}
           products={activeProducts}
+          stores={stores}
           theme={theme}
           t={t}
           regions={regions}
@@ -244,7 +246,7 @@ export default function MarketplaceHome({ theme, t, regions, companies, products
         <h2 className={`text-base font-black ${th.strongText} mb-5 text-center`}>{t('Jinsi Inavyofanya Kazi')}</h2>
         <div className="grid sm:grid-cols-4 gap-4">
           {[
-            { icon: Store, step: '1', title: 'Chagua Kampuni', desc: t('Pick a verified company from the directory.') },
+            { icon: StoreIcon, step: '1', title: 'Chagua Kampuni', desc: t('Pick a verified company from the directory.') },
             { icon: ShoppingBag, step: '2', title: 'Agiza Bidhaa', desc: t('Add products to your cart and checkout.') },
             { icon: BadgeCheck, step: '3', title: 'Lipia & Thibitisha', desc: t('Pay via mobile money and upload the receipt.') },
             { icon: Package, step: '4', title: 'Subiri Ufikishwe', desc: t('Staff verify, then your order is delivered.') }

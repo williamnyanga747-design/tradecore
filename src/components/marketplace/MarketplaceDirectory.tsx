@@ -1,15 +1,17 @@
 import React, { useMemo, useState } from 'react';
-import { Search, MapPin, Navigation, LayoutGrid, Map as MapIcon, Store, ChevronLeft, ChevronRight, ExternalLink, Phone } from 'lucide-react';
-import { Company, MarketplaceProduct } from '../../types';
+import { Search, MapPin, Navigation, LayoutGrid, Map as MapIcon, Store as StoreIcon, ChevronLeft, ChevronRight, ExternalLink, Phone } from 'lucide-react';
+import { Company, MarketplaceProduct, Store } from '../../types';
 import { getPublicTheme, PublicTheme } from '../../utils/publicTheme';
 import { TANZANIA_REGIONS, regionCenter } from '../../utils/regions';
 import { haversineKm, readCustomerLocation, saveCustomerLocation, formatDistanceKm, resolveCompanyCoords, jitterCompanyCoords } from '../../utils/haversine';
+import { sameId } from '../../utils/idUtils';
 import LeafletMap from './LeafletMap';
 import { VerifiedBadge, Money, TZS, TFunc, isProductVisible } from './MarketplaceShared';
 
 interface Props {
   companies: Company[];
   products: MarketplaceProduct[];
+  stores?: Store[];
   theme: PublicTheme;
   t: TFunc;
   regions?: string[];
@@ -18,7 +20,7 @@ interface Props {
   maxCards?: number;
 }
 
-export default function MarketplaceDirectory({ companies, products, theme, t, regions, onOpenCompany, paginate = false, maxCards }: Props) {
+export default function MarketplaceDirectory({ companies, products, stores = [], theme, t, regions, onOpenCompany, paginate = false, maxCards }: Props) {
   const th = getPublicTheme(theme);
   const milk = theme === 'milk';
   const regionList = regions && regions.length > 0 ? regions : TANZANIA_REGIONS;
@@ -39,11 +41,16 @@ export default function MarketplaceDirectory({ companies, products, theme, t, re
     let list = companies
       .filter(c => c.isMarketplaceActive !== false)
       .map(c => {
-        const hasOwnCoords = typeof c.latitude === 'number' && typeof c.longitude === 'number' && isFinite(c.latitude);
-        const resolved = resolveCompanyCoords(c.latitude, c.longitude, c.region);
+        const companyStores = (stores || []).filter(s => s.companyId === c.id || sameId((s as any).companyId, c.id));
+        const companyStoreWithCoords = companyStores.find(s => typeof s.latitude === 'number' && typeof s.longitude === 'number' && isFinite(s.latitude) && isFinite(s.longitude));
+        const effectiveLat = typeof c.latitude === 'number' && isFinite(c.latitude) ? c.latitude : companyStoreWithCoords?.latitude;
+        const effectiveLng = typeof c.longitude === 'number' && isFinite(c.longitude) ? c.longitude : companyStoreWithCoords?.longitude;
+        const hasOwnCoords = typeof effectiveLat === 'number' && typeof effectiveLng === 'number' && isFinite(effectiveLat) && isFinite(effectiveLng);
+        const resolved = resolveCompanyCoords(effectiveLat, effectiveLng, c.region);
         const coords = resolved ? (hasOwnCoords ? resolved : jitterCompanyCoords(resolved.lat, resolved.lng, c.id)) : null;
         return {
           company: c,
+          companyStores,
           coords,
           distanceKm: customerLoc && coords ? haversineKm(customerLoc.lat, customerLoc.lng, coords.lat, coords.lng) : null,
           productCount: productCountFor(c.id),
@@ -62,7 +69,7 @@ export default function MarketplaceDirectory({ companies, products, theme, t, re
       .filter(c => radiusKm <= 0 || !customerLoc || (c.distanceKm !== null && c.distanceKm <= radiusKm));
     if (customerLoc) list.sort((a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity));
     return list;
-  }, [companies, products, search, region, customerLoc, radiusKm]);
+  }, [companies, products, stores, search, region, customerLoc, radiusKm]);
 
   const locateMe = () => {
     if (!navigator.geolocation) {
@@ -91,15 +98,52 @@ export default function MarketplaceDirectory({ companies, products, theme, t, re
   const clampedPage = Math.min(page, maxPage);
   const visible = paginate ? rows.slice(clampedPage * pageSize, clampedPage * pageSize + pageSize) : rows.slice(0, maxCards || rows.length);
 
-  const mapMarkers = useMemo(() => rows.map(r => {
-    if (!r.coords) return null;
-    return {
-      lat: r.coords.lat,
-      lng: r.coords.lng,
-      title: r.company.name,
-      popupHtml: `<div style="min-width:180px"><b>${r.company.name}</b><br/>${r.company.region || ''} · ${r.company.district || ''}<br/>${r.distanceKm !== null ? `${formatDistanceKm(r.distanceKm)} ${t('away')}` : ''}<br/><a href="/company/${r.company.slug}" style="display:inline-block;margin-top:6px;background:#eab308;color:#1f2937;font-weight:700;font-size:11px;padding:4px 10px;border-radius:8px;text-decoration:none">${t('Angalia Bidhaa')}</a></div>`
-    };
-  }).filter((m): m is NonNullable<typeof m> => m !== null), [rows, t]);
+  // Map markers for BOTH Company Headquarters AND its physical Stores
+  const mapMarkers = useMemo(() => {
+    const list: Array<{ lat: number; lng: number; title: string; popupHtml: string }> = [];
+    rows.forEach(r => {
+      // 1. Company HQ Pin
+      if (r.coords) {
+        list.push({
+          lat: r.coords.lat,
+          lng: r.coords.lng,
+          title: `🏢 ${r.company.name} (Makao Makuu)`,
+          popupHtml: `<div style="min-width:190px">
+            <div style="font-size:10px;font-weight:800;color:#d97706;text-transform:uppercase;margin-bottom:2px">🏢 Makao Makuu / HQ</div>
+            <b style="font-size:13px;color:#111827">${r.company.name}</b><br/>
+            <span style="font-size:11px;color:#4b5563">${[r.company.addressText, r.company.district, r.company.region].filter(Boolean).join(', ') || 'Tanzania'}</span><br/>
+            ${r.distanceKm !== null ? `<span style="font-size:11px;font-weight:700;color:#059669">${formatDistanceKm(r.distanceKm)} ${t('away')}</span><br/>` : ''}
+            <a href="/company/${r.company.slug}" style="display:inline-block;margin-top:6px;background:#eab308;color:#1f2937;font-weight:800;font-size:11px;padding:4px 10px;border-radius:8px;text-decoration:none">${t('Angalia Kampuni')}</a>
+          </div>`
+        });
+      }
+
+      // 2. Individual Store Pins under this Company
+      (r.companyStores || []).forEach(st => {
+        const hasStoreCoords = typeof st.latitude === 'number' && typeof st.longitude === 'number' && isFinite(st.latitude) && isFinite(st.longitude);
+        const storeCoords = hasStoreCoords
+          ? { lat: st.latitude, lng: st.longitude }
+          : (r.coords ? jitterCompanyCoords(r.coords.lat, r.coords.lng, (st.id || 1) * 31) : null);
+        if (!storeCoords) return;
+        const storeDist = customerLoc ? haversineKm(customerLoc.lat, customerLoc.lng, storeCoords.lat, storeCoords.lng) : null;
+        list.push({
+          lat: storeCoords.lat,
+          lng: storeCoords.lng,
+          title: `🏪 ${st.name} — ${r.company.name}`,
+          popupHtml: `<div style="min-width:190px">
+            <div style="font-size:10px;font-weight:800;color:#2563eb;text-transform:uppercase;margin-bottom:2px">🏪 Duka / Store</div>
+            <b style="font-size:13px;color:#111827">${st.name}</b><br/>
+            <span style="font-size:11px;color:#6b7280;font-weight:700">🏢 ${r.company.name}</span><br/>
+            <span style="font-size:11px;color:#4b5563">${[st.address, st.city].filter(Boolean).join(', ') || 'Duka Rasmi'}</span><br/>
+            ${st.phone ? `<span style="font-size:10px;color:#4b5563">📞 ${st.phone}</span><br/>` : ''}
+            ${storeDist !== null ? `<span style="font-size:11px;font-weight:700;color:#059669">${formatDistanceKm(storeDist)} ${t('away')}</span><br/>` : ''}
+            <a href="/company/${r.company.slug}" style="display:inline-block;margin-top:6px;background:#2563eb;color:#ffffff;font-weight:800;font-size:11px;padding:4px 10px;border-radius:8px;text-decoration:none">${t('Tembelea Duka')}</a>
+          </div>`
+        });
+      });
+    });
+    return list;
+  }, [rows, customerLoc, t]);
 
   const hasLocationCompanies = companies.some(c => c.isMarketplaceActive !== false && !!resolveCompanyCoords(c.latitude, c.longitude, c.region));
 
@@ -199,13 +243,13 @@ export default function MarketplaceDirectory({ companies, products, theme, t, re
         />
       ) : visible.length === 0 ? (
         <div className={`${th.card} ${th.cardBorder} rounded-2xl p-10 text-center`}>
-          <Store className={`w-10 h-10 mx-auto mb-3 ${th.textDim}`} />
+          <StoreIcon className={`w-10 h-10 mx-auto mb-3 ${th.textDim}`} />
           <div className={`text-sm font-black ${th.strongText}`}>{t('Hakuna kampuni zilizopatikana')}</div>
           <div className={`text-[11px] ${th.textMuted} font-semibold mt-1`}>{t('Try a different search or region.')}</div>
         </div>
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {visible.map(({ company: c, distanceKm, productCount, companyProducts }) => (
+          {visible.map(({ company: c, companyStores, distanceKm, productCount, companyProducts }) => (
             <div key={c.id} className={`${th.card} ${th.cardBorder} rounded-2xl overflow-hidden flex flex-col hover:-translate-y-1 transition duration-200`}>
               <div className="flex items-center gap-3 p-4">
                 {c.logoUrl ? (
@@ -219,7 +263,8 @@ export default function MarketplaceDirectory({ companies, products, theme, t, re
                     {c.isVerified && <VerifiedBadge milk={milk} t={t} />}
                   </div>
                   <div className={`text-[10px] ${th.textDim} font-semibold mt-0.5 flex items-center gap-1`}>
-                    <MapPin className="w-3 h-3 shrink-0" /> {[c.region, c.district, c.ward].filter(Boolean).join(', ') || (c.country || t('Address not set'))}
+                    <MapPin className="w-3 h-3 shrink-0 text-amber-500" />
+                    <span className="font-bold text-gray-700">HQ:</span> {[c.addressText, c.district, c.region].filter(Boolean).join(', ') || (c.country || t('Address not set'))}
                   </div>
                   {c.phone && (
                     <div className={`text-[10px] ${th.textDim} font-semibold mt-0.5 flex items-center gap-1`}>
@@ -231,6 +276,37 @@ export default function MarketplaceDirectory({ companies, products, theme, t, re
 
               {c.description && (
                 <div className={`px-4 pb-1 text-[10px] ${th.textMuted} font-medium leading-relaxed line-clamp-2`}>{c.description}</div>
+              )}
+
+              {/* Physical Stores / Maduka under this company */}
+              {companyStores && companyStores.length > 0 && (
+                <div className="px-4 pb-2 pt-1 border-t border-gray-100">
+                  <div className={`text-[9px] font-black uppercase tracking-wider mb-1 ${th.textDim} flex items-center gap-1`}>
+                    <StoreIcon className="w-3 h-3 text-blue-500" />
+                    {t('Maduka ya Mauzo (Stores)')} ({companyStores.length})
+                  </div>
+                  <div className="space-y-1">
+                    {companyStores.slice(0, 2).map(st => {
+                      const hasStoreCoords = typeof st.latitude === 'number' && typeof st.longitude === 'number' && isFinite(st.latitude) && isFinite(st.longitude);
+                      const storeDist = customerLoc && hasStoreCoords ? haversineKm(customerLoc.lat, customerLoc.lng, st.latitude!, st.longitude!) : null;
+                      return (
+                        <div key={st.id} className={`flex items-center justify-between text-[10px] rounded-lg px-2 py-1 bg-blue-500/5 ${th.cardBorder}`}>
+                          <span className={`font-bold truncate ${th.strongText}`}>
+                            🏪 {st.name} <span className={`text-[9px] font-normal ${th.textDim}`}>({[st.address, st.city].filter(Boolean).join(', ') || 'Duka Rasmi'})</span>
+                          </span>
+                          {storeDist !== null && (
+                            <span className="text-[9px] font-black text-emerald-600 shrink-0 ml-1">
+                              {formatDistanceKm(storeDist)}
+                            </span>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {companyStores.length > 2 && (
+                      <div className={`text-[9px] font-bold px-2 ${th.brandText}`}>+{companyStores.length - 2} {t('maduka mengine')}</div>
+                    )}
+                  </div>
+                </div>
               )}
 
               {/* This company's products */}
