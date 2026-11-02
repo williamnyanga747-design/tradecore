@@ -495,6 +495,8 @@ export interface Expense {
   receiptUrl?: string; // Data URL or receipt image/document URL
   receiptName?: string;
   receiptUploadedAt?: string;
+  paidFromDrawerFloat?: boolean; // Paid directly out of active POS drawer cash float
+  posShiftId?: number | null; // Linked POS Shift ID for drawer cash reconciliation
 }
 
 export interface Tax {
@@ -711,6 +713,8 @@ export interface PosShift {
   status: 'Open' | 'Closed';
   variance?: number;
   notes?: string;
+  drawerExpensesTotal?: number; // Total cash expenses disbursed directly from this drawer float
+  expenseIds?: number[]; // Array of Expense IDs linked to this register session
 }
 
 export interface StockTransfer {
@@ -720,10 +724,17 @@ export interface StockTransfer {
   fromStoreId: number;
   toStoreId: number;
   qty: number;
-  status: 'Pending' | 'In-Transit' | 'Completed' | 'Rejected';
+  status: 'Pending' | 'In-Transit' | 'Completed' | 'Rejected' | 'Discrepancy Reconciled';
   createdAt: string;
   sentAt?: string;
   receivedAt?: string;
+  dispatchedBy?: string;
+  receivedBy?: string;
+  receivedQty?: number;
+  damagedQty?: number;
+  missingQty?: number;
+  discrepancyReason?: string;
+  lossRecorded?: boolean;
 }
 
 export interface ContactMessage {

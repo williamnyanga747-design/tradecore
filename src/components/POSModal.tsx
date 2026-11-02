@@ -1,13 +1,13 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Customer, StockItem, SalesOrder, Store, Settings, SOItem, PosShift } from '../types';
-import { X, Search, Plus, Minus, Trash2, ShoppingBag, AlertTriangle, CheckCircle, Info, Printer, TrendingUp, Calculator, Lock, Share2, Mail, Check, Clock, Layers } from 'lucide-react';
+import { Customer, StockItem, SalesOrder, Store, Settings, SOItem, PosShift, Expense } from '../types';
+import { X, Search, Plus, Minus, Trash2, ShoppingBag, AlertTriangle, CheckCircle, Info, Printer, TrendingUp, Calculator, Lock, Share2, Mail, Check, Clock, Layers, ArrowDownRight, DollarSign, Receipt } from 'lucide-react';
 import { formatMoney } from '../utils/format';
 import { ConfirmActionModal } from './ConfirmActionModal';
 import { handlePrintWithFallback } from '../utils/printHelper';
 import { safeLower } from '../utils/stateHelpers';
 import { toast } from '../utils/toast';
 import { cleanCategoryName } from '../utils/categoryHelper';
-import { calculateFIFOCost, getFIFOBatchBreakdown } from '../utils/fifo';
+import { calculateFIFOCost, getFIFOBatchBreakdown, getDaysUntilExpiry, getExpiryStatus } from '../utils/fifo';
 import { connectBluetoothPrinter, isBluetoothPrinterConnected, sendEscPosBytes, buildReceiptEscPosBuffer } from '../utils/escposPrinter';
 import { enqueueOfflineSale } from '../utils/offlinePersistence';
 import { SmartMessagingModal } from './SmartMessagingModal';
@@ -27,6 +27,7 @@ interface POSModalProps {
     customers: Customer[];
     auditTrails: any[];
     posShifts: PosShift[];
+    expenses: Expense[];
     settings: Settings;
   }>) => void;
   logAction: (action: string, details: string) => void;
@@ -34,6 +35,7 @@ interface POSModalProps {
   t: (text: string) => string;
   currentUser: any;
   posShifts: PosShift[];
+  expenses?: Expense[];
   currency?: string;
   exchangeRate?: number;
 }
@@ -52,6 +54,7 @@ export default function POSModal({
   t,
   currentUser,
   posShifts = [],
+  expenses = [],
   currency,
   exchangeRate
 }: POSModalProps) {
@@ -203,6 +206,12 @@ export default function POSModal({
   const [closingNotes, setClosingNotes] = useState('');
   const [showClosingModal, setShowClosingModal] = useState(false);
   const [reconciledShiftSummary, setReconciledShiftSummary] = useState<any | null>(null);
+
+  // Drawer Expense Payout States (Petty cash disbursement directly from float)
+  const [showDrawerExpenseModal, setShowDrawerExpenseModal] = useState(false);
+  const [drawerExpenseAmount, setDrawerExpenseAmount] = useState('');
+  const [drawerExpenseCategory, setDrawerExpenseCategory] = useState('Utilities');
+  const [drawerExpenseDescription, setDrawerExpenseDescription] = useState('');
 
   // Physical Denomination Count States
   const [denomCounts, setDenomCounts] = useState<Record<string, number>>({});
@@ -808,11 +817,66 @@ export default function POSModal({
     logAction('Open POS Shift', `Opened register shift for cashier ${currentUser?.name || 'Cashier'} with float amount ${floatAmount}`);
   };
 
+  // Disburse petty cash expense directly from active drawer float
+  const handleDisburseDrawerExpense = () => {
+    if (!activeShift) return;
+    const rawAmt = parseFloat(drawerExpenseAmount);
+    if (isNaN(rawAmt) || rawAmt <= 0) {
+      toast.error(t('Please enter a valid expense amount'));
+      return;
+    }
+    const currentDrawerCash = (activeShift.openingFloat || 0) + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0);
+    const usdAmount = activeCurrency === 'TZS' ? rawAmt / activeExchangeRate : rawAmt;
+
+    if (usdAmount > currentDrawerCash) {
+      toast.warning(t('Warning: Disbursed amount exceeds available cash in register drawer float.'));
+    }
+
+    const maxExpId = (expenses || []).length > 0 ? Math.max(...(expenses || []).map(e => e.id)) : 0;
+    const newExpId = maxExpId + 1;
+    const newExp: Expense = {
+      id: newExpId,
+      expenseNumber: `EXP-POS-${String(newExpId).padStart(4, '0')}`,
+      category: drawerExpenseCategory || 'Utilities',
+      description: drawerExpenseDescription.trim() || `Drawer petty cash payout - Shift #${activeShift.id}`,
+      amount: usdAmount,
+      date: new Date().toISOString().split('T')[0],
+      storeId: selectedStoreId as number,
+      companyId: currentUser?.companyId || null,
+      paymentMethod: 'Cash',
+      paidFromDrawerFloat: true,
+      posShiftId: activeShift.id
+    };
+
+    const updatedShifts = posShifts.map(s => {
+      if (s.id === activeShift.id) {
+        return {
+          ...s,
+          drawerExpensesTotal: (s.drawerExpensesTotal || 0) + usdAmount,
+          expenseIds: [...(s.expenseIds || []), newExpId]
+        };
+      }
+      return s;
+    });
+
+    saveAllData({
+      posShifts: updatedShifts,
+      expenses: [newExp, ...(expenses || [])]
+    });
+
+    logAction('Drawer Expense Disbursed', `Cashier ${currentUser?.name || activeShift.username} disbursed ${usdAmount} USD from POS drawer for ${newExp.description}`);
+    toast.success(t('Drawer expense recorded and deducted from cash float!'));
+    setShowDrawerExpenseModal(false);
+    setDrawerExpenseAmount('');
+    setDrawerExpenseDescription('');
+  };
+
   // Close POS register shift
   const handleCloseShift = () => {
     if (!activeShift) return;
     const actualCash = parseFloat(closingCashActualStr) || 0;
-    const expectedTotal = activeShift.openingFloat + (activeShift.expectedCashSales || 0);
+    const drawerExpenses = activeShift.drawerExpensesTotal || 0;
+    const expectedTotal = activeShift.openingFloat + (activeShift.expectedCashSales || 0) - drawerExpenses;
     const variance = actualCash - expectedTotal;
 
     const updatedShifts = posShifts.map(s => {
@@ -842,7 +906,7 @@ export default function POSModal({
       posShifts: updatedShifts
     });
 
-    logAction('Close POS Shift', `Closed register shift with variance: ${variance}`);
+    logAction('Close POS Shift', `Closed register shift with variance: ${variance} (Deducted ${drawerExpenses} USD in drawer expenses)`);
     setReconciledShiftSummary(reconciledShift);
     setShowClosingModal(false);
   };
@@ -852,7 +916,8 @@ export default function POSModal({
   // Render finalized shift summary slip
   if (reconciledShiftSummary) {
     const storeObj = stores.find(s => sameId(s.id, reconciledShiftSummary.storeId));
-    const expectedTotal = reconciledShiftSummary.openingFloat + (reconciledShiftSummary.expectedCashSales || 0);
+    const drawerExpTotal = reconciledShiftSummary.drawerExpensesTotal || 0;
+    const expectedTotal = reconciledShiftSummary.openingFloat + (reconciledShiftSummary.expectedCashSales || 0) - drawerExpTotal;
     const varAmount = reconciledShiftSummary.variance || 0;
     
     return (
@@ -900,6 +965,12 @@ export default function POSModal({
                 <span className="text-gray-400">Expected Register Cash Sales</span>
                 <span className="font-bold text-emerald-700">+{formatMoney(reconciledShiftSummary.expectedCashSales || 0, activeCurrency, activeExchangeRate)}</span>
               </div>
+              {drawerExpTotal > 0 && (
+                <div className="flex justify-between font-semibold border-b pb-2 text-rose-700">
+                  <span className="text-rose-600 font-bold">{t('Drawer Expenses Paid Out')}</span>
+                  <span className="font-bold">-{formatMoney(drawerExpTotal, activeCurrency, activeExchangeRate)}</span>
+                </div>
+              )}
               <div className="flex justify-between font-semibold border-b pb-2">
                 <span className="text-gray-400">Theoretical Drawer Cash (Expected)</span>
                 <span className="font-bold text-gray-900">{formatMoney(expectedTotal, activeCurrency, activeExchangeRate)}</span>
@@ -1395,15 +1466,34 @@ export default function POSModal({
             </span>
             {activeShift && (
               <span className="text-[10px] bg-brand/20 border border-brand/50 text-brand px-2 py-0.5 rounded-full font-black uppercase tracking-wider">
-                Shift: {activeShift.username} | Float: {formatMoney(activeShift.openingFloat, activeCurrency, activeExchangeRate)} | Drawer: {formatMoney(activeShift.openingFloat + (activeShift.expectedCashSales || 0), activeCurrency, activeExchangeRate)}
+                Shift: {activeShift.username} | Float: {formatMoney(activeShift.openingFloat, activeCurrency, activeExchangeRate)} | Drawer: {formatMoney(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0), activeCurrency, activeExchangeRate)}
+                {(activeShift.drawerExpensesTotal || 0) > 0 && (
+                  <span className="text-rose-300 ml-1">(-{formatMoney(activeShift.drawerExpensesTotal || 0, activeCurrency, activeExchangeRate)})</span>
+                )}
               </span>
             )}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3">
+            {activeShift && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDrawerExpenseAmount('');
+                  setDrawerExpenseCategory('Utilities');
+                  setDrawerExpenseDescription('');
+                  setShowDrawerExpenseModal(true);
+                }}
+                className="bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition flex items-center gap-1 shadow-sm cursor-pointer"
+                title={t('Disburse petty cash expense directly out of the active POS drawer float')}
+              >
+                <ArrowDownRight className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{t('Cash Out Expense')}</span>
+              </button>
+            )}
             {activeShift && isAdminUser && (
               <button
                 onClick={() => {
-                  setClosingCashActualStr(String(activeShift.openingFloat + (activeShift.expectedCashSales || 0)));
+                  setClosingCashActualStr(String(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0)));
                   setClosingNotes('');
                   setShowClosingModal(true);
                 }}
@@ -1579,9 +1669,9 @@ export default function POSModal({
                       <div className="p-3">
                         <div className="h-28 bg-gray-50 rounded-lg overflow-hidden border border-gray-100 flex items-center justify-center relative">
                           {item.batches?.[selectedStoreId as number]?.some(b => b.qty > 0) && (
-                            <span className="absolute top-2 left-2 text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase bg-purple-600 text-white flex items-center gap-1 shadow-2xs z-10" title={t('Uses FIFO Batch Stocking')}>
+                            <span className="absolute top-2 left-2 text-[9px] px-1.5 py-0.5 rounded font-extrabold uppercase bg-purple-600 text-white flex items-center gap-1 shadow-2xs z-10" title={t('Uses FEFO / FIFO Batch Stocking')}>
                               <Layers className="w-2.5 h-2.5" />
-                              FIFO ({item.batches[selectedStoreId as number].filter(b => b.qty > 0).length})
+                              FEFO ({item.batches[selectedStoreId as number].filter(b => b.qty > 0).length})
                             </span>
                           )}
                           {item.imageUrl ? (
@@ -1603,7 +1693,45 @@ export default function POSModal({
                         <div className="mt-3.5">
                           <span className="text-[10px] bg-indigo-50 text-indigo-700 font-extrabold px-1.5 py-0.5 rounded uppercase">{cleanCategoryName(item.category)}</span>
                           <h4 className="font-black text-gray-900 text-xs mt-1 block truncate">{item.name}</h4>
-                          <span className="text-[9px] font-mono text-gray-400 mt-0.5 block tracking-widest">SKU: {item.code}</span>
+                          <div className="flex items-center justify-between gap-1 mt-0.5">
+                            <span className="text-[9px] font-mono text-gray-400 block tracking-widest truncate">SKU: {item.code}</span>
+                            {(() => {
+                              const storeBatches = item.batches?.[selectedStoreId as number] || [];
+                              const expiries = storeBatches
+                                .filter(b => b.qty > 0 && b.expiryDate)
+                                .map(b => b.expiryDate as string);
+                              const directExp = item.expiryDates?.[selectedStoreId as number] || item.expiryDate;
+                              if (directExp) expiries.push(directExp);
+                              if (expiries.length === 0) return null;
+                              expiries.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+                              const earliest = expiries[0];
+                              const days = getDaysUntilExpiry(earliest);
+                              const status = getExpiryStatus(earliest);
+
+                              if (status === 'expired') {
+                                return (
+                                  <span className="text-[9px] font-mono font-black text-rose-700 bg-rose-50 border border-rose-200 px-1 rounded shrink-0">
+                                    EXPIRED
+                                  </span>
+                                );
+                              }
+                              if (status === 'urgent') {
+                                return (
+                                  <span className="text-[9px] font-mono font-bold text-red-600 bg-red-50 border border-red-200 px-1 rounded shrink-0" title={t('Critical: 7 days or less')}>
+                                    FEFO: {days}d left
+                                  </span>
+                                );
+                              }
+                              if (status === 'warning') {
+                                return (
+                                  <span className="text-[9px] font-mono font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1 rounded shrink-0" title={t('Early warning: 30 days or less')}>
+                                    FEFO: {days}d left
+                                  </span>
+                                );
+                              }
+                              return null;
+                            })()}
+                          </div>
                         </div>
                       </div>
 
@@ -2196,9 +2324,15 @@ export default function POSModal({
                     <span className="text-gray-400">{t('Total Shift Cash Sales')}:</span>
                     <span className="font-bold text-emerald-600">+{formatMoney(activeShift.expectedCashSales || 0, activeCurrency, activeExchangeRate)}</span>
                   </div>
+                  {(activeShift.drawerExpensesTotal || 0) > 0 && (
+                    <div className="flex justify-between text-rose-600">
+                      <span className="font-bold">{t('Drawer Cash Expenses Paid Out')}:</span>
+                      <span className="font-bold font-mono">-{formatMoney(activeShift.drawerExpensesTotal || 0, activeCurrency, activeExchangeRate)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between border-t pt-2 font-black text-gray-900">
                     <span>{t('Expected Total Drawer Cash')}:</span>
-                    <span>{formatMoney(activeShift.openingFloat + (activeShift.expectedCashSales || 0), activeCurrency, activeExchangeRate)}</span>
+                    <span>{formatMoney(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0), activeCurrency, activeExchangeRate)}</span>
                   </div>
                 </div>
 
@@ -2233,7 +2367,8 @@ export default function POSModal({
 
                 {/* Live Discrepancy Tracking Card */}
                 {(() => {
-                  const expectedTotal = activeShift.openingFloat + (activeShift.expectedCashSales || 0);
+                  const drawerExp = activeShift.drawerExpensesTotal || 0;
+                  const expectedTotal = activeShift.openingFloat + (activeShift.expectedCashSales || 0) - drawerExp;
                   const actualCash = parseFloat(closingCashActualStr) || 0;
                   const discrepancy = actualCash - expectedTotal;
 
@@ -2296,6 +2431,106 @@ export default function POSModal({
                     className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs transition shadow-sm"
                   >
                     {t('Close Session & Reconcile')}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Drawer Expense Modal (Petty Cash Payout directly from active Float) */}
+        {showDrawerExpenseModal && activeShift && (
+          <div className="fixed inset-0 z-55 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+              <div className="px-5 py-4 border-b flex items-center justify-between bg-amber-700 text-white">
+                <span className="font-bold flex items-center gap-2 text-sm">
+                  <ArrowDownRight className="w-5 h-5 text-amber-200" /> {t('Drawer Petty Cash Payout')}
+                </span>
+                <button onClick={() => setShowDrawerExpenseModal(false)} className="p-1 hover:bg-amber-800 rounded text-amber-100 hover:text-white">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-4">
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 space-y-1">
+                  <div className="flex justify-between font-bold">
+                    <span>{t('Active Shift Drawer Session')}:</span>
+                    <span className="font-mono">#{activeShift.id} ({activeShift.username})</span>
+                  </div>
+                  <div className="flex justify-between font-bold">
+                    <span>{t('Available Drawer Cash Float')}:</span>
+                    <span className="font-mono text-emerald-700">
+                      {formatMoney(
+                        activeShift.openingFloat + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0),
+                        activeCurrency,
+                        activeExchangeRate
+                      )}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-amber-700 font-medium pt-1">
+                    {t('Disbursed amounts will be recorded as a cash expense and subtracted from your closing shift reconciliation balance.')}
+                  </p>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-500 block">{t('Expense Amount')} ({activeCurrency})</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">{activeCurrency}</span>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={drawerExpenseAmount}
+                      onChange={(e) => setDrawerExpenseAmount(e.target.value)}
+                      className="w-full pl-12 pr-3 py-2 border rounded-lg text-xs font-black outline-none focus:border-amber-600 focus:ring-1 focus:ring-amber-600"
+                      placeholder="0.00"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-500 block">{t('Expense Category')}</label>
+                  <select
+                    value={drawerExpenseCategory}
+                    onChange={(e) => setDrawerExpenseCategory(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-xs font-semibold outline-none bg-white focus:border-amber-600"
+                  >
+                    <option value="Utilities">{t('Utilities (Water / Power)')}</option>
+                    <option value="Transport">{t('Transport / Delivery / Fuel')}</option>
+                    <option value="Packaging">{t('Packaging Supplies')}</option>
+                    <option value="Salaries">{t('Day Wages / Casual Labor')}</option>
+                    <option value="Marketing">{t('Marketing / Promo')}</option>
+                    <option value="Rent">{t('Depot Rent / Levy')}</option>
+                    <option value="Other">{t('Other Operating Expense')}</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-500 block">{t('Purpose / Description')}</label>
+                  <input
+                    type="text"
+                    value={drawerExpenseDescription}
+                    onChange={(e) => setDrawerExpenseDescription(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-xs font-semibold outline-none focus:border-amber-600"
+                    placeholder={t('e.g. Courier delivery fee for urgent supplies')}
+                  />
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowDrawerExpenseModal(false)}
+                    className="flex-1 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-lg text-xs transition"
+                  >
+                    {t('Cancel')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisburseDrawerExpense}
+                    disabled={!drawerExpenseAmount || parseFloat(drawerExpenseAmount) <= 0}
+                    className="flex-1 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white font-bold rounded-lg text-xs transition shadow-sm cursor-pointer"
+                  >
+                    {t('Disburse & Deduct Float')}
                   </button>
                 </div>
               </div>

@@ -1,8 +1,59 @@
 import { StockItem, InventoryBatch } from '../types';
 
+export type ExpiryStatus = 'expired' | 'urgent' | 'warning' | 'good' | 'none';
+
 /**
- * Calculates FIFO (First-In, First-Out) Cost of Goods Sold (COGS) and updates batch quantities.
- * Older stock batches (by received date) are consumed first.
+ * Returns the number of days until the given expiration date (negative if past expiration).
+ */
+export function getDaysUntilExpiry(expiryDate?: string): number | null {
+  if (!expiryDate) return null;
+  const exp = new Date(expiryDate);
+  if (isNaN(exp.getTime())) return null;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const target = new Date(exp.getFullYear(), exp.getMonth(), exp.getDate()).getTime();
+  return Math.ceil((target - today) / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * Tiered expiration alert evaluation:
+ * - expired: <= 0 days (Crimson)
+ * - urgent: 1 to 7 days (Red / Urgent Alert)
+ * - warning: 8 to 30 days (Amber / Early Warning)
+ * - good: > 30 days
+ */
+export function getExpiryStatus(expiryDate?: string): ExpiryStatus {
+  const days = getDaysUntilExpiry(expiryDate);
+  if (days === null) return 'none';
+  if (days <= 0) return 'expired';
+  if (days <= 7) return 'urgent';
+  if (days <= 30) return 'warning';
+  return 'good';
+}
+
+/**
+ * FEFO (First-Expired, First-Out) batch comparator.
+ * Batches with known earliest expiry date are consumed first.
+ * Fallback to receivedDate (FIFO) when expiry dates are absent or equal.
+ */
+export function compareBatchesFEFO(a: InventoryBatch, b: InventoryBatch): number {
+  if (a.expiryDate && b.expiryDate) {
+    const timeA = new Date(a.expiryDate).getTime();
+    const timeB = new Date(b.expiryDate).getTime();
+    if (!isNaN(timeA) && !isNaN(timeB) && timeA !== timeB) {
+      return timeA - timeB;
+    }
+  } else if (a.expiryDate && !b.expiryDate) {
+    return -1; // Batches with known expiry date consumed first
+  } else if (!a.expiryDate && b.expiryDate) {
+    return 1;
+  }
+  return new Date(a.receivedDate).getTime() - new Date(b.receivedDate).getTime();
+}
+
+/**
+ * Calculates FEFO/FIFO Cost of Goods Sold (COGS) and updates batch quantities.
+ * Prioritizes batches with earliest expiration date (FEFO), with fallback to received date.
  */
 export function calculateFIFOCost(
   product: StockItem,
@@ -38,10 +89,10 @@ export function calculateFIFOCost(
     }
   }
 
-  // Sort batches by received date (oldest first)
+  // Sort batches by FEFO (earliest expiry first, fallback to received date)
   const sortedBatches = existingBatches
     .map(b => ({ ...b }))
-    .sort((a, b) => new Date(a.receivedDate).getTime() - new Date(b.receivedDate).getTime());
+    .sort(compareBatchesFEFO);
 
   let remainingToDeduct = requiredBaseUnits;
   let totalCost = 0;
@@ -215,10 +266,10 @@ export function getFIFOBatchBreakdown(
     };
   }
 
-  // Sort by received date (oldest first)
+  // Sort by FEFO (earliest expiry first, fallback to received date)
   const sortedBatches = [...storeBatches]
     .filter(b => b.qty > 0)
-    .sort((a, b) => new Date(a.receivedDate).getTime() - new Date(b.receivedDate).getTime());
+    .sort(compareBatchesFEFO);
 
   let remaining = requiredBaseUnits;
   let totalCost = 0;

@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Expense, Store, Branch } from '../types';
+import { Expense, Store, Branch, PosShift } from '../types';
 import { formatMoney, exportToExcel } from '../utils/format';
 import { handlePrintWithFallback } from '../utils/printHelper';
 import { safeLower } from '../utils/stateHelpers';
 import { compressImageFile, formatByteSize } from '../utils/imageCompression';
-import { Plus, Trash2, Pencil, Search, Calendar, CreditCard, Receipt, AlertCircle, FileSpreadsheet, Printer, Camera, Upload, X, CheckCircle2, FileText } from 'lucide-react';
+import { Plus, Trash2, Pencil, Search, Calendar, CreditCard, Receipt, AlertCircle, FileSpreadsheet, Printer, Camera, Upload, X, CheckCircle2, FileText, ArrowDownRight } from 'lucide-react';
 import { ConfirmActionModal } from './ConfirmActionModal';
 import { sameId } from '../utils/idUtils';
 import ExpenseReceiptModal from './ExpenseReceiptModal';
@@ -23,6 +23,8 @@ interface ExpensesProps {
   logAction: (action: string, details: string) => void;
   onUpdateExpenses: (newExpenses: Expense[]) => void;
   translate: (t: string) => string;
+  posShifts?: PosShift[];
+  onUpdateShifts?: (newShifts: PosShift[]) => void;
 }
 
 export default function Expenses({
@@ -36,7 +38,9 @@ export default function Expenses({
   isAdmin,
   logAction,
   onUpdateExpenses,
-  translate
+  translate,
+  posShifts = [],
+  onUpdateShifts
 }: ExpensesProps) {
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingExpenseId, setEditingExpenseId] = useState<number | null>(null);
