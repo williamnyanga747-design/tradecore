@@ -217,10 +217,18 @@ export const defaultCollectionSettings: CollectionSetting[] = [
   }
 ];
 
+export const defaultTaxes: Tax[] = [
+  { id: 1, name: 'VAT', rate: 18, type: 'Percentage', isGlobal: true },
+  { id: 2, name: 'Withholding', rate: 2, type: 'Percentage', isGlobal: true }
+];
+
 export const defaultSettings: Settings = {
   language: 'en',
   currency: 'USD',
   exchangeRate: 1,
+  taxPolicyMode: 'global',
+  globalTaxes: defaultTaxes,
+  companyTaxes: {},
   subscriptionMeta: defaultSubscriptionMeta,
   currencies: defaultCurrencies,
   subscriptionPlans: defaultTradePlans,
@@ -360,11 +368,6 @@ export const defaultUsers: User[] = [
 ];
 
 export const defaultCategories: string[] = ['Cereals', 'Oil', 'Household', 'Building', 'Electronics'];
-
-export const defaultTaxes: Tax[] = [
-  { id: 1, name: 'VAT', rate: 18, type: 'Percentage' },
-  { id: 2, name: 'Withholding', rate: 2, type: 'Percentage' }
-];
 
 export const defaultSuppliers: Supplier[] = [
   { id: 1, name: 'Singida Grain Millers', phone: '+255 26 250 1001', email: 'orders@singidagrain.co.tz', contact: 'Juma M.' },

@@ -2,9 +2,10 @@ import React, { useState, useEffect } from 'react';
 import {
   Company, Branch, Store, Customer, Supplier, Tax, StockItem, User
 } from '../types';
+import { defaultTaxes } from '../initialData';
 import {
   Plus, Pencil, Trash2, X, Store as StoreIcon, Database, RefreshCw, FileText, MessageSquare,
-  Search, Loader2
+  Search, Loader2, Globe, Building2, CheckCircle2, AlertCircle, Copy, Lock, ShieldCheck
 } from 'lucide-react';
 import { formatMoney } from '../utils/format';
 import { ConfirmActionModal } from './ConfirmActionModal';
@@ -83,6 +84,7 @@ export default function MasterData({
   const [showOnlyNoTin, setShowOnlyNoTin] = useState(false);
   const [activeStoreDetailsId, setActiveStoreDetailsId] = useState<number | null>(null);
   const [categoryFilterStore, setCategoryFilterStore] = useState<string>('');
+  const [taxCompanyFilter, setTaxCompanyFilter] = useState<string>('all');
 
   const userAssignedBranchIds = React.useMemo(() => {
     const raw = [
@@ -389,6 +391,63 @@ export default function MasterData({
     });
   };
 
+  const isGlobalTaxPolicy = (settings?.taxPolicyMode || 'global') === 'global';
+
+  const handleToggleTaxPolicy = (newMode: 'global' | 'individual') => {
+    if (!isSuperAdmin) {
+      toast.error(t('Only Super Admin can change the Tax Policy mode'));
+      return;
+    }
+    const currentGlobal = (settings?.globalTaxes && settings.globalTaxes.length > 0)
+      ? settings.globalTaxes
+      : (taxes.filter(t => t.isGlobal || !t.companyId).length > 0 ? taxes.filter(t => t.isGlobal || !t.companyId) : taxes);
+
+    const updatedSettings = {
+      ...settings,
+      taxPolicyMode: newMode,
+      globalTaxes: currentGlobal
+    };
+    saveAllData({ settings: updatedSettings });
+    logAction('Tax Policy Mode Changed', `Super Admin set Tax Policy to ${newMode === 'global' ? 'GLOBAL (All Companies)' : 'INDIVIDUAL (Per-Company)'}`);
+    toast.success(
+      newMode === 'global'
+        ? t('Global Tax Mode activated! All companies now use the unified global tax rates.')
+        : t('Individual Tax Mode activated! Each company admin now configures their own independent tax rates.')
+    );
+  };
+
+  const handleCopyGlobalRatesToCompany = (targetCid: string | number) => {
+    const globalRates: Tax[] = (settings?.globalTaxes && settings.globalTaxes.length > 0)
+      ? settings.globalTaxes
+      : (taxes.filter(t => t.isGlobal || !t.companyId).length > 0 ? taxes.filter(t => t.isGlobal || !t.companyId) : taxes);
+
+    const nextBaseId = Math.max(0, ...taxes.map(t => Number(t.id) || 0)) + 1;
+    const clonedRates: Tax[] = globalRates.map((gt, idx) => ({
+      ...gt,
+      id: nextBaseId + idx,
+      companyId: targetCid,
+      isGlobal: false
+    }));
+
+    const updatedCompanyTaxes = {
+      ...(settings?.companyTaxes || {}),
+      [targetCid]: clonedRates
+    };
+
+    const otherTaxes = taxes.filter(t => !sameId(t.companyId, targetCid));
+    saveAllData({
+      taxes: [...otherTaxes, ...clonedRates],
+      settings: {
+        ...settings,
+        companyTaxes: updatedCompanyTaxes
+      }
+    });
+
+    const compName = companies.find(c => sameId(c.id, targetCid))?.name || `Company #${targetCid}`;
+    logAction('Copy Global Tax Rates', `Copied global tax rates to ${compName}`);
+    toast.success(t(`Global tax rates copied to ${compName} successfully!`));
+  };
+
   const saveCompanyTaxes = (updatedTaxes: Tax[]) => {
     const compId = currentCompanyId ?? currentUser?.companyId ?? null;
     if (compId != null) {
@@ -407,16 +466,46 @@ export default function MasterData({
   };
 
   const handleDeleteTax = (id: number) => {
-    const tx = taxes.find(t => t.id === id);
+    const tx = taxes.find(t => t.id === id) || (settings?.globalTaxes || []).find((t: any) => t.id === id);
     const txName = tx ? `${tx.name} (${tx.rate}%)` : `ID ${id}`;
+
+    if (isGlobalTaxPolicy && !isSuperAdmin) {
+      toast.error(t('Global tax rates can only be deleted by Super Admin'));
+      return;
+    }
+
     setConfirmModal({
       isOpen: true,
       title: t('Delete Tax Rate'),
       description: `${t('Are you sure you want to permanently delete tax rate')} "${txName}"?`,
       onConfirm: () => {
-        const updatedTaxes = taxes.filter(t => t.id !== id);
-        saveCompanyTaxes(updatedTaxes);
-        logAction('Delete Tax', `Deleted Tax ID: ${id}`);
+        if (isGlobalTaxPolicy) {
+          const updatedTaxes = taxes.filter(t => t.id !== id);
+          const updatedGlobal = (settings?.globalTaxes || taxes).filter((t: any) => t.id !== id);
+          saveAllData({
+            taxes: updatedTaxes,
+            settings: { ...settings, globalTaxes: updatedGlobal }
+          });
+          logAction('Delete Global Tax', `Deleted Global Tax: ${txName}`);
+        } else {
+          const targetCid = tx?.companyId ?? (taxCompanyFilter !== 'all' ? taxCompanyFilter : (currentCompanyId ?? currentUser?.companyId ?? null));
+          const existingComp = (settings?.companyTaxes?.[targetCid] || taxes.filter(t => sameId(t.companyId, targetCid)));
+          const updatedComp = existingComp.filter((t: any) => t.id !== id);
+          const updatedAll = taxes.filter(t => t.id !== id);
+
+          saveAllData({
+            taxes: updatedAll,
+            settings: {
+              ...settings,
+              companyTaxes: {
+                ...(settings?.companyTaxes || {}),
+                ...(targetCid ? { [targetCid]: updatedComp } : {})
+              }
+            }
+          });
+          logAction('Delete Company Tax', `Deleted Tax ID: ${id} for Company #${targetCid}`);
+        }
+        toast.success(t('Tax rate deleted successfully'));
       }
     });
   };
@@ -787,24 +876,108 @@ export default function MasterData({
       logAction('Create Category', `Created Category: ${cleanName}${targetStoreId ? ` for Store #${targetStoreId}` : ''}`);
       toast.success(t('Category created successfully!'));
     } else if (type === 'tax') {
+      const isGlobalPolicy = (settings?.taxPolicyMode || 'global') === 'global';
+      if (isGlobalPolicy && !isSuperAdmin) {
+        toast.error(t('Global tax rates can only be modified by Super Admin'));
+        setEditingItem(null);
+        return;
+      }
       const rate = parseFloat(data.rate) || 0;
-      const compId = currentCompanyId ?? currentUser?.companyId ?? null;
-      const cleanData = { 
-        ...data, 
-        rate, 
-        type: 'Percentage',
-        storeId: data.storeId !== undefined ? data.storeId : currentStoreId,
-        companyId: compId != null ? compId : (data.companyId ?? null)
-      };
-      if (data.id) {
-        const updated = taxes.map(t => t.id === data.id ? cleanData : t);
-        saveCompanyTaxes(updated);
-        logAction('Edit Tax', `Modified Tax: ${data.name}`);
+      const taxName = (data.name || '').trim();
+      if (!taxName) {
+        toast.error(t('Tax Name is required'));
+        return;
+      }
+
+      if (isGlobalPolicy) {
+        // Global tax rate:
+        const cleanData: Tax = {
+          ...data,
+          name: taxName,
+          rate,
+          type: 'Percentage',
+          storeId: data.storeId || null,
+          companyId: null,
+          isGlobal: true
+        };
+
+        const currentGlobalList: Tax[] = (settings?.globalTaxes && settings.globalTaxes.length > 0)
+          ? settings.globalTaxes
+          : (taxes.filter(t => t.isGlobal || !t.companyId).length > 0 ? taxes.filter(t => t.isGlobal || !t.companyId) : taxes);
+
+        let updatedGlobal: Tax[];
+        let updatedAll: Tax[];
+
+        if (data.id) {
+          updatedGlobal = currentGlobalList.map(t => t.id === data.id ? cleanData : t);
+          updatedAll = taxes.map(t => t.id === data.id ? cleanData : t);
+          logAction('Edit Global Tax', `Modified global tax: ${cleanData.name} (${cleanData.rate}%)`);
+        } else {
+          const nextId = Math.max(0, ...taxes.map(t => Number(t.id) || 0), ...(currentGlobalList.map(t => Number(t.id) || 0))) + 1;
+          const newTax: Tax = { ...cleanData, id: nextId };
+          updatedGlobal = [...currentGlobalList, newTax];
+          updatedAll = [...taxes, newTax];
+          logAction('Create Global Tax', `Registered new global tax: ${cleanData.name} (${cleanData.rate}%)`);
+        }
+
+        saveAllData({
+          taxes: updatedAll,
+          settings: {
+            ...settings,
+            taxPolicyMode: 'global',
+            globalTaxes: updatedGlobal
+          }
+        });
+        toast.success(t('Global tax rate saved successfully!'));
       } else {
-        const nextId = Math.max(0, ...taxes.map(t => t.id)) + 1;
-        const newTax = { ...cleanData, id: nextId };
-        saveCompanyTaxes([...taxes, newTax]);
-        logAction('Create Tax', `Registered new Tax: ${data.name}`);
+        // Individual / Independent Mode:
+        const targetCid = data.companyId || (taxCompanyFilter !== 'all' ? taxCompanyFilter : null) || currentCompanyId || currentUser?.companyId || (companies.length > 0 ? companies[0].id : null);
+        if (!targetCid) {
+          toast.error(t('Please select a company for this tax rate'));
+          return;
+        }
+
+        const cleanData: Tax = {
+          ...data,
+          name: taxName,
+          rate,
+          type: 'Percentage',
+          storeId: data.storeId || null,
+          companyId: targetCid,
+          isGlobal: false
+        };
+
+        const existingCompTaxes: Tax[] = (settings?.companyTaxes?.[targetCid] && settings.companyTaxes[targetCid].length > 0)
+          ? settings.companyTaxes[targetCid]
+          : taxes.filter(t => sameId(t.companyId, targetCid));
+
+        let updatedCompTaxes: Tax[];
+        let updatedAllTaxes: Tax[];
+
+        if (data.id) {
+          updatedCompTaxes = existingCompTaxes.map(t => t.id === data.id ? cleanData : t);
+          updatedAllTaxes = taxes.map(t => t.id === data.id ? cleanData : t);
+          logAction('Edit Company Tax', `Modified tax for Company #${targetCid}: ${cleanData.name} (${cleanData.rate}%)`);
+        } else {
+          const nextId = Math.max(0, ...taxes.map(t => Number(t.id) || 0), ...(existingCompTaxes.map(t => Number(t.id) || 0))) + 1;
+          const newTax: Tax = { ...cleanData, id: nextId };
+          updatedCompTaxes = [...existingCompTaxes, newTax];
+          updatedAllTaxes = [...taxes, newTax];
+          logAction('Create Company Tax', `Created tax for Company #${targetCid}: ${cleanData.name} (${cleanData.rate}%)`);
+        }
+
+        saveAllData({
+          taxes: updatedAllTaxes,
+          settings: {
+            ...settings,
+            taxPolicyMode: 'individual',
+            companyTaxes: {
+              ...(settings?.companyTaxes || {}),
+              [targetCid]: updatedCompTaxes
+            }
+          }
+        });
+        toast.success(t('Company tax rate saved successfully!'));
       }
     }
 
@@ -1571,72 +1744,330 @@ export default function MasterData({
       );
     }
 
-    case 'taxes':
+    case 'taxes': {
+      const isGlobalMode = (settings?.taxPolicyMode || 'global') === 'global';
+      const effectiveCoId = isSuperAdmin
+        ? (taxCompanyFilter !== 'all' ? taxCompanyFilter : null)
+        : (userCompanyId || currentCompanyId || (companies[0]?.id));
+      const selectedCompany = effectiveCoId ? companies.find(c => sameId(c.id, effectiveCoId)) : null;
+
+      // Global tax rate baseline
+      const globalTaxList: Tax[] = (settings?.globalTaxes && settings.globalTaxes.length > 0)
+        ? settings.globalTaxes
+        : (taxes.filter(t => t.isGlobal || !t.companyId).length > 0 ? taxes.filter(t => t.isGlobal || !t.companyId) : defaultTaxes);
+
+      // Determine taxes to show
+      let displayedTaxes: Tax[] = [];
+      let isInheritedGlobalForCompany = false;
+
+      if (isGlobalMode) {
+        displayedTaxes = globalTaxList;
+      } else if (isSuperAdmin && taxCompanyFilter === 'all') {
+        const indList = taxes.filter(t => !t.isGlobal && t.companyId);
+        displayedTaxes = indList.length > 0 ? indList : globalTaxList;
+        if (indList.length === 0) isInheritedGlobalForCompany = true;
+      } else if (effectiveCoId) {
+        const compTaxes = (settings?.companyTaxes?.[effectiveCoId] && settings.companyTaxes[effectiveCoId].length > 0)
+          ? settings.companyTaxes[effectiveCoId]
+          : taxes.filter(t => sameId(t.companyId, effectiveCoId));
+        if (compTaxes.length > 0) {
+          displayedTaxes = compTaxes;
+        } else {
+          displayedTaxes = [];
+          isInheritedGlobalForCompany = true;
+        }
+      }
+
+      // Can current operator add/edit in current mode
+      const canManageCurrentView = isSuperAdmin || (!isGlobalMode && isAdmin);
+
       return (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm mx-auto mt-6">
-          <div className="p-4 border-b flex items-center justify-between">
-            <h3 className="font-bold text-gray-900 text-sm">{t('Tax Rates')}</h3>
-            {isAdmin && (
-              <button
-                onClick={() => setEditingItem({ type: 'tax', data: { name: '', rate: 0 } })}
-                className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition"
-              >
-                <Plus className="w-3.5 h-3.5" /> {t('Add Tax')}
-              </button>
-            )}
+        <div className="space-y-6 mx-auto mt-4 max-w-5xl">
+          {/* TOP GOVERNANCE BANNER: SUPERADMIN GLOBAL VS INDIVIDUAL TAX POLICY */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 text-white shadow-sm">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                    <Globe className="w-5 h-5" />
+                  </div>
+                  <h2 className="text-base font-bold text-white tracking-wide">
+                    {t('Tax Rate Policy & Scope Mode')}
+                  </h2>
+                  <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1.5 ${
+                    isGlobalMode
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                  }`}>
+                    {isGlobalMode ? <ShieldCheck className="w-3.5 h-3.5" /> : <Building2 className="w-3.5 h-3.5" />}
+                    {isGlobalMode ? t('Global Rates Active (All Companies)') : t('Individual Rates Active (Per Company)')}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
+                  {isGlobalMode
+                    ? t('Global Policy Mode: All registered companies across the entire TradeCore system share the unified global tax rate structure. Company-specific overrides are locked.')
+                    : t('Individual / Independent Policy Mode: Every company operates independently. Company Admins configure and manage their own specific tax rates (e.g. VAT, local withholding, or custom levies).')}
+                </p>
+              </div>
+
+              {/* SUPERADMIN SWITCHER BUTTONS */}
+              {isSuperAdmin ? (
+                <div className="flex items-center bg-slate-950 p-1.5 rounded-xl border border-slate-800 shrink-0 shadow-inner">
+                  <button
+                    type="button"
+                    onClick={() => handleToggleTaxPolicy('global')}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all ${
+                      isGlobalMode
+                        ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <Globe className="w-4 h-4" />
+                    {t('Global (All Companies)')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleTaxPolicy('individual')}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all ${
+                      !isGlobalMode
+                        ? 'bg-amber-500 text-slate-950 shadow-md font-extrabold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <Building2 className="w-4 h-4" />
+                    {t('Individual / Independent')}
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-xs font-bold px-3 py-2 rounded-lg bg-slate-800/80 border border-slate-700/60 text-slate-300">
+                  {isGlobalMode ? (
+                    <>
+                      <Lock className="w-4 h-4 text-amber-400" />
+                      <span>{t('Managed Centrally by Super Admin')}</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                      <span>{t('Independent Company Control Active')}</span>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-[13px] text-left">
-              <thead className="bg-gray-50 border-b text-gray-500 text-[10px] uppercase font-bold tracking-wider">
-                <tr>
-                  <th className="px-6 py-3">{t('Product Scope')}</th>
-                  <th className="px-6 py-3">{t('Tax Name')}</th>
-                  <th className="px-6 py-3">{t('Assigned Store')}</th>
-                  <th className="px-6 py-3 text-center">{t('Active Items')}</th>
-                  <th className="px-6 py-3 text-center">{t('Rate (%)')}</th>
-                  <th className="px-6 py-3 w-32 text-right"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {taxes.filter(t => !t.storeId || t.storeId === currentStoreId).map(tData => (
-                  <tr key={tData.id} className="hover:bg-gray-50/50">
-                    <td className="px-6 py-4 font-bold text-brand">{t('Various Products')}</td>
-                    <td className="px-6 py-4 font-bold text-gray-900">{tData.name}</td>
-                    <td className="px-6 py-4 text-gray-600 font-semibold whitespace-nowrap">
-                      {tData.storeId ? stores.find(st => st.id === tData.storeId)?.name || t('Unknown Store') : t('All Stores')}
-                    </td>
-                    <td className="px-6 py-4 text-center font-bold text-gray-500">{stockItems.length}</td>
-                    <td className="px-6 py-4 text-center font-bold text-gray-700">{tData.rate}%</td>
-                    <td className="px-6 py-4 text-right">
-                      {isAdmin && (
-                        <div className="flex justify-end gap-1.5">
-                          <button
-                            onClick={() => setEditingItem({ type: 'tax', data: tData })}
-                            className="p-1 px-2 text-[10px] font-bold rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition inline-flex items-center gap-1"
-                            title={t('Edit')}
-                          >
-                            <Pencil className="w-3.5 h-3.5" />
-                            {t('Edit')}
-                          </button>
-                          <button
-                            onClick={() => handleDeleteTax(tData.id)}
-                            className="p-1 px-2 text-[10px] font-bold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
-                            title={t('Delete')}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                            {t('Delete')}
-                          </button>
-                        </div>
-                      )}
-                    </td>
+
+          {/* INDIVIDUAL MODE: SUPERADMIN COMPANY SELECTOR OR COMPANY ADMIN NOTICE */}
+          {!isGlobalMode && (
+            <div className="bg-white border border-gray-200 rounded-xl p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-blue-50 text-blue-700 border border-blue-100">
+                  <Building2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-gray-900 uppercase tracking-wider">
+                    {isSuperAdmin ? t('Target Company Scope') : t('Active Company')}
+                  </h4>
+                  <p className="text-xs text-gray-500">
+                    {isSuperAdmin
+                      ? t('Select a company to inspect or configure its specific tax rates, or view all.')
+                      : `${t('Configuring independent tax rates for')}: ${selectedCompany?.name || t('Your Company')}`}
+                  </p>
+                </div>
+              </div>
+
+              {isSuperAdmin && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-bold text-gray-600 whitespace-nowrap">{t('Company')}:</label>
+                  <select
+                    value={taxCompanyFilter}
+                    onChange={(e) => setTaxCompanyFilter(e.target.value)}
+                    className="text-xs font-bold text-gray-800 bg-gray-50 border border-gray-300 rounded-lg px-3 py-2 outline-none focus:border-brand cursor-pointer"
+                  >
+                    <option value="all">{t('All Companies Overview')}</option>
+                    {companies.map(c => {
+                      const count = (settings?.companyTaxes?.[c.id]?.length) || (taxes.filter(t => sameId(t.companyId, c.id)).length);
+                      return (
+                        <option key={c.id} value={c.id}>
+                          {c.name} {count > 0 ? `(${count} custom rates)` : `(${t('Using default')})`}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAX RATES TABLE CARD */}
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            <div className="p-4 border-b flex flex-wrap items-center justify-between gap-3 bg-gray-50/50">
+              <div>
+                <h3 className="font-bold text-gray-900 text-sm flex items-center gap-2">
+                  {isGlobalMode ? (
+                    <>
+                      <Globe className="w-4 h-4 text-amber-500" />
+                      {t('Global Tax Rates (Enforced on All Companies)')}
+                    </>
+                  ) : (
+                    <>
+                      <Building2 className="w-4 h-4 text-blue-600" />
+                      {taxCompanyFilter === 'all' && isSuperAdmin
+                        ? t('All Companies Tax Register')
+                        : `${t('Tax Rates for')}: ${selectedCompany?.name || t('Selected Company')}`}
+                    </>
+                  )}
+                </h3>
+                <p className="text-[11px] text-gray-500 mt-0.5">
+                  {isGlobalMode
+                    ? t('Standard rates applied uniformly during sales, checkout, invoices, and TRA EFD compliance.')
+                    : t('Independent rates applied exclusively to transactions of the assigned company.')}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {!isGlobalMode && effectiveCoId && isInheritedGlobalForCompany && canManageCurrentView && (
+                  <button
+                    type="button"
+                    onClick={() => handleCopyGlobalRatesToCompany(effectiveCoId)}
+                    className="bg-blue-50 border border-blue-200 text-blue-700 px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-100 flex items-center gap-1.5 transition"
+                    title={t('Bootstrap company with standard global tax rates')}
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    {t('Copy Global Rates')}
+                  </button>
+                )}
+
+                {canManageCurrentView ? (
+                  <button
+                    onClick={() => {
+                      const defaultCid = !isGlobalMode
+                        ? (effectiveCoId && effectiveCoId !== 'all' ? effectiveCoId : (companies[0]?.id || null))
+                        : null;
+                      setEditingItem({
+                        type: 'tax',
+                        data: {
+                          name: '',
+                          rate: 18,
+                          companyId: defaultCid,
+                          isGlobal: isGlobalMode
+                        }
+                      });
+                    }}
+                    className="bg-brand text-white px-3.5 py-2 rounded-lg text-xs font-bold hover:bg-brand-hover flex items-center gap-1.5 transition shadow-sm"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    {isGlobalMode ? t('Add Global Tax') : t('Add Tax Rate')}
+                  </button>
+                ) : (
+                  <div className="text-[11px] font-bold text-gray-500 bg-gray-100 px-3 py-1.5 rounded-lg flex items-center gap-1.5 border border-gray-200">
+                    <Lock className="w-3 h-3 text-gray-400" />
+                    {t('Locked (Global Super Admin Policy)')}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-[13px] text-left">
+                <thead className="bg-gray-50 border-b text-gray-500 text-[10px] uppercase font-bold tracking-wider">
+                  <tr>
+                    <th className="px-6 py-3">{t('Scope')}</th>
+                    <th className="px-6 py-3">{t('Tax Name')}</th>
+                    <th className="px-6 py-3">{t('Assigned Store')}</th>
+                    <th className="px-6 py-3 text-center">{t('Rate (%)')}</th>
+                    <th className="px-6 py-3 text-center">{t('Status')}</th>
+                    <th className="px-6 py-3 w-32 text-right">{t('Actions')}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {displayedTaxes.map(tData => {
+                    const rowComp = tData.companyId ? companies.find(c => sameId(c.id, tData.companyId)) : null;
+                    const canEditRow = isSuperAdmin || (!isGlobalMode && isAdmin && sameId(tData.companyId, userCompanyId));
+
+                    return (
+                      <tr key={tData.id} className="hover:bg-gray-50/60 transition-colors">
+                        <td className="px-6 py-4">
+                          {isGlobalMode || tData.isGlobal || !tData.companyId ? (
+                            <span className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                              <Globe className="w-3 h-3 text-amber-500" />
+                              {t('Global (All Companies)')}
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md inline-flex items-center gap-1">
+                              <Building2 className="w-3 h-3 text-blue-500" />
+                              {rowComp?.name || `Company #${tData.companyId}`}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 font-bold text-gray-900">
+                          {tData.name}
+                        </td>
+                        <td className="px-6 py-4 text-gray-600 font-medium whitespace-nowrap">
+                          {tData.storeId
+                            ? stores.find(st => sameId(st.id, tData.storeId))?.name || t('Unknown Store')
+                            : t('All Stores')}
+                        </td>
+                        <td className="px-6 py-4 text-center font-bold text-gray-900 text-sm">
+                          {tData.rate}%
+                        </td>
+                        <td className="px-6 py-4 text-center">
+                          <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                            {t('Active')}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          {canEditRow ? (
+                            <div className="flex justify-end gap-1.5">
+                              <button
+                                onClick={() => setEditingItem({ type: 'tax', data: tData })}
+                                className="p-1 px-2.5 text-[11px] font-bold rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 transition inline-flex items-center gap-1"
+                                title={t('Edit')}
+                              >
+                                <Pencil className="w-3 h-3" />
+                                {t('Edit')}
+                              </button>
+                              <button
+                                onClick={() => handleDeleteTax(tData.id)}
+                                className="p-1 px-2.5 text-[11px] font-bold rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 transition inline-flex items-center gap-1"
+                                title={t('Delete')}
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                {t('Delete')}
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-[11px] font-semibold text-gray-400 inline-flex items-center gap-1">
+                              <Lock className="w-3 h-3" /> {t('Read Only')}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {displayedTaxes.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-6 py-10 text-center text-gray-400">
+                        <div className="max-w-xs mx-auto space-y-2">
+                          <AlertCircle className="w-8 h-8 text-gray-300 mx-auto" />
+                          <p className="text-sm font-semibold text-gray-600">
+                            {t('No tax rates configured for this view')}
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            {t('Click "Copy Global Rates" to import baseline rates or "+ Add Tax Rate" to create a new one.')}
+                          </p>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
           {renderEditModal()}
         </div>
       );
+    }
 
     case 'data-recovery': {
       const allowAdminAccess = settings?.allowAdminDataRecovery || false;
@@ -3038,31 +3469,96 @@ export default function MasterData({
                 </div>
               )}
 
-              {type === 'tax' && (
-                <>
-                  <div>
-                    <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Tax Name')} *</label>
-                    <input
-                      type="text"
-                      required
-                      value={data.name || ''}
-                      onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, name: e.target.value } })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Rate (%)')} *</label>
-                    <input
-                      type="number"
-                      step="any"
-                      required
-                      value={data.rate !== undefined && !Number.isNaN(Number(data.rate)) ? String(data.rate) : '0'}
-                      onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, rate: e.target.value } })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
-                    />
-                  </div>
-                </>
-              )}
+              {type === 'tax' && (() => {
+                const isGlobalMode = (settings?.taxPolicyMode || 'global') === 'global';
+                const effectiveCoId = data.companyId || (taxCompanyFilter !== 'all' ? taxCompanyFilter : null) || currentCompanyId || currentUser?.companyId || (companies[0]?.id || null);
+                const assignedCompany = companies.find(c => sameId(c.id, effectiveCoId));
+
+                return (
+                  <>
+                    <div className="p-3 rounded-lg border bg-slate-50 border-slate-200">
+                      <div className="flex items-center gap-2">
+                        {isGlobalMode ? (
+                          <>
+                            <Globe className="w-4 h-4 text-amber-500" />
+                            <span className="text-xs font-bold text-slate-800">{t('Global Tax Policy Scope')}</span>
+                          </>
+                        ) : (
+                          <>
+                            <Building2 className="w-4 h-4 text-blue-600" />
+                            <span className="text-xs font-bold text-slate-800">{t('Individual Company Tax Scope')}</span>
+                          </>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        {isGlobalMode
+                          ? t('This tax rate will apply universally to all companies and stores across the system.')
+                          : `${t('This tax rate will apply specifically to')}: ${assignedCompany?.name || t('Selected Company')}`}
+                      </p>
+                    </div>
+
+                    {!isGlobalMode && isSuperAdmin && (
+                      <div>
+                        <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Assign to Company')} *</label>
+                        <select
+                          value={data.companyId || effectiveCoId || ''}
+                          onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, companyId: e.target.value } })}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-semibold focus:border-brand"
+                        >
+                          {companies.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Tax Name')} *</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder={t('e.g. VAT (18%), Withholding, Service Levy')}
+                        value={data.name || ''}
+                        onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, name: e.target.value } })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Rate (%)')} *</label>
+                      <input
+                        type="number"
+                        step="any"
+                        min="0"
+                        max="100"
+                        required
+                        value={data.rate !== undefined && !Number.isNaN(Number(data.rate)) ? String(data.rate) : '0'}
+                        onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, rate: e.target.value } })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-brand"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-gray-600 mb-1.5 block uppercase tracking-wider">{t('Assigned Store (Optional)')}</label>
+                      <select
+                        value={data.storeId || ''}
+                        onChange={(e) => setEditingItem({ ...editingItem, data: { ...data, storeId: e.target.value ? Number(e.target.value) : null } })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-semibold focus:border-brand"
+                      >
+                        <option value="">{t('All Stores')}</option>
+                        {stores
+                          .filter(st => isGlobalMode || !effectiveCoId || sameId(st.companyId, effectiveCoId))
+                          .map(st => (
+                            <option key={st.id} value={st.id}>{st.name}</option>
+                          ))}
+                      </select>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        {t('Leave as "All Stores" to apply across all retail and wholesale locations of this scope.')}
+                      </p>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
             <div className="flex justify-end gap-2 p-4 border-t bg-gray-50">

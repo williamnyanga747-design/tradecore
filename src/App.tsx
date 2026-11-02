@@ -1848,12 +1848,35 @@ export default function App() {
     return settings.exchangeRate || 1;
   };
 
-  const getActiveTaxes = (specificCompId?: number): Tax[] => {
+  const getActiveTaxes = (specificCompId?: number | string): Tax[] => {
     const targetCompId = specificCompId || currentCompanyId || currentUser?.companyId || (companies.length > 0 ? companies[0].id : undefined);
-    if (targetCompId && settings.companyTaxes && Array.isArray(settings.companyTaxes[targetCompId])) {
-      return settings.companyTaxes[targetCompId];
+    const policyMode = settings.taxPolicyMode || 'global';
+    
+    // Global mode: All companies use the exact same unified rate structure
+    if (policyMode === 'global') {
+      if (Array.isArray(settings.globalTaxes) && settings.globalTaxes.length > 0) {
+        return settings.globalTaxes;
+      }
+      const globalFromState = taxes.filter(t => t.isGlobal || !t.companyId);
+      if (globalFromState.length > 0) return globalFromState;
+      return taxes.length > 0 ? taxes : defaultTaxes;
     }
-    return defaultTaxes;
+
+    // Individual / Independent mode: Each company uses its own custom setup
+    if (targetCompId != null && targetCompId !== 'all') {
+      const cTaxes = (settings.companyTaxes as any)?.[targetCompId] ?? (settings.companyTaxes as any)?.[String(targetCompId)];
+      if (Array.isArray(cTaxes) && cTaxes.length > 0) {
+        return cTaxes;
+      }
+      const compSpecific = taxes.filter(t => sameId(t.companyId, targetCompId));
+      if (compSpecific.length > 0) return compSpecific;
+    }
+
+    // Fallback for new companies or unconfigured companies
+    if (Array.isArray(settings.globalTaxes) && settings.globalTaxes.length > 0) {
+      return settings.globalTaxes;
+    }
+    return taxes.length > 0 ? taxes : defaultTaxes;
   };
 
   const activeLanguage = getActiveLanguage();
@@ -17030,7 +17053,7 @@ try {
             customers={customers}
             suppliers={suppliers}
             categories={categories}
-            taxes={getActiveTaxes()}
+            taxes={taxes && taxes.length > 0 ? taxes : getActiveTaxes()}
             stockItems={stockItems}
             users={users}
             currentCompanyId={!isSuperScopeUser(currentUser) && currentUser?.companyId != null ? String(currentUser.companyId) : currentCompanyId}

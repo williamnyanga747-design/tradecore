@@ -505,7 +505,8 @@ export interface Tax {
   rate: number;
   type: 'Percentage';
   storeId?: number | null;
-  companyId?: number | null;
+  companyId?: number | string | null;
+  isGlobal?: boolean;
 }
 
 export interface Supplier {
@@ -612,7 +613,9 @@ export interface Settings {
   companyLanguages?: Record<number, LanguageType>;
   companyCurrencies?: Record<number, CurrencyType>;
   companyExchangeRates?: Record<number, number>;
-  companyTaxes?: Record<number, Tax[]>;
+  taxPolicyMode?: 'global' | 'individual'; // 'global' = all companies use unified global rates; 'individual' = independent per-company rates set by company admin
+  globalTaxes?: Tax[];
+  companyTaxes?: Record<string | number, Tax[]>;
   userCurrencies?: Record<string, CurrencyType>;
   userExchangeRates?: Record<string, number>;
   allowNegativeStock?: boolean;
