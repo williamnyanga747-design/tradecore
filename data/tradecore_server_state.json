@@ -1388,7 +1388,8 @@
         "created_at": 1792225850,
         "createdAt": "2026-10-17T08:30:50.074Z"
       }
-    ]
+    ],
+    "accountingAccounts": []
   },
   "inMemoryCompanies": [
     {
@@ -1958,6 +1959,6 @@
       "cancelledAt": 1791216473386
     }
   ],
-  "inMemoryStateVersion": 1792764630886,
-  "savedAt": "2026-10-23T14:10:30.886Z"
+  "inMemoryStateVersion": 1793623127289,
+  "savedAt": "2026-11-02T12:38:47.289Z"
 }

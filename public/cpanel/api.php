@@ -221,22 +221,143 @@ function tcEnsureNormalizedTables($pdo) {
 
         // Sponsors / Wadhamini table (Build 08-20 - Tanzaniatradecore.co.tz)
         $pdo->exec("CREATE TABLE IF NOT EXISTS sponsors (
-          id VARCHAR(36) PRIMARY KEY,
-          sponsor_id VARCHAR(36) UNIQUE,
-          company_id VARCHAR(36) NULL COMMENT 'NULL=global homepage, co_xxx=specific company',
+          id VARCHAR(64) PRIMARY KEY,
+          sponsor_id VARCHAR(64) UNIQUE,
+          company_id VARCHAR(64) NULL COMMENT 'NULL=global homepage, co_xxx=specific company',
           name VARCHAR(255) NOT NULL,
-          logo_url VARCHAR(500) NULL,
+          logo_url TEXT NULL,
           website_url VARCHAR(500) NULL,
           description TEXT NULL,
           tier ENUM('platinum','gold','silver','bronze') DEFAULT 'gold',
           is_active TINYINT(1) DEFAULT 1,
           sort_order INT DEFAULT 0,
           status VARCHAR(20) DEFAULT 'ACTIVE',
+          start_date VARCHAR(32) NULL,
+          end_date VARCHAR(32) NULL,
+          is_archived TINYINT(1) DEFAULT 0,
+          archived_at BIGINT NULL,
           created_at BIGINT NOT NULL,
           updated_at BIGINT NOT NULL,
           deleted_at BIGINT NULL,
           INDEX idx_company (company_id),
           INDEX idx_active_sort (is_active, sort_order)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // Audit Logs (operator trail)
+        $pdo->exec("CREATE TABLE IF NOT EXISTS audit_logs (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          timestamp DATETIME NOT NULL,
+          operator_username VARCHAR(160) NOT NULL,
+          role VARCHAR(100) NOT NULL,
+          action_performed VARCHAR(160) NOT NULL,
+          details VARCHAR(1000) DEFAULT NULL,
+          ip_address VARCHAR(45) DEFAULT NULL,
+          INDEX idx_al_ts (timestamp),
+          INDEX idx_al_action (action_performed)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // POS Shifts
+        $pdo->exec("CREATE TABLE IF NOT EXISTS pos_shifts (
+          id VARCHAR(64) PRIMARY KEY,
+          company_id VARCHAR(64) NOT NULL,
+          store_id VARCHAR(64) NOT NULL,
+          user_id VARCHAR(64) NOT NULL,
+          username VARCHAR(100) NOT NULL,
+          open_time VARCHAR(50) NOT NULL,
+          close_time VARCHAR(50) DEFAULT NULL,
+          opening_float DECIMAL(15,2) NOT NULL DEFAULT 0,
+          closing_cash_actual DECIMAL(15,2) DEFAULT NULL,
+          expected_cash_sales DECIMAL(15,2) DEFAULT NULL,
+          sales_order_ids JSON DEFAULT NULL,
+          drawer_expenses_total DECIMAL(15,2) DEFAULT 0,
+          expense_ids JSON DEFAULT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'Open',
+          variance DECIMAL(15,2) DEFAULT NULL,
+          notes TEXT DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          deleted_at BIGINT DEFAULT NULL,
+          INDEX idx_shift_company (company_id, store_id),
+          INDEX idx_shift_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // Stock Transfers
+        $pdo->exec("CREATE TABLE IF NOT EXISTS stock_transfers (
+          id VARCHAR(64) PRIMARY KEY,
+          company_id VARCHAR(64) NOT NULL,
+          transfer_number VARCHAR(64) NOT NULL,
+          product_id VARCHAR(64) NOT NULL,
+          from_store_id VARCHAR(64) NOT NULL,
+          to_store_id VARCHAR(64) NOT NULL,
+          qty DECIMAL(15,3) NOT NULL,
+          status VARCHAR(50) NOT NULL DEFAULT 'Pending',
+          dispatched_by VARCHAR(100) DEFAULT NULL,
+          received_by VARCHAR(100) DEFAULT NULL,
+          received_qty DECIMAL(15,3) DEFAULT NULL,
+          damaged_qty DECIMAL(15,3) DEFAULT NULL,
+          missing_qty DECIMAL(15,3) DEFAULT NULL,
+          discrepancy_reason TEXT DEFAULT NULL,
+          loss_recorded TINYINT(1) DEFAULT 0,
+          sent_at VARCHAR(50) DEFAULT NULL,
+          received_at VARCHAR(50) DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          deleted_at BIGINT DEFAULT NULL,
+          INDEX idx_st_company (company_id),
+          INDEX idx_st_stores (from_store_id, to_store_id),
+          INDEX idx_st_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // Contact Messages
+        $pdo->exec("CREATE TABLE IF NOT EXISTS contact_messages (
+          id VARCHAR(64) PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          email VARCHAR(190) NOT NULL,
+          phone VARCHAR(32) NOT NULL,
+          subject VARCHAR(255) NOT NULL,
+          message TEXT NOT NULL,
+          status VARCHAR(20) NOT NULL DEFAULT 'new',
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          deleted_at BIGINT DEFAULT NULL,
+          INDEX idx_cm_email (email),
+          INDEX idx_cm_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        // Accounting Accounts & Journal Vouchers
+        $pdo->exec("CREATE TABLE IF NOT EXISTS accounting_accounts (
+          id VARCHAR(64) PRIMARY KEY,
+          company_id VARCHAR(64) NOT NULL,
+          code VARCHAR(64) NOT NULL,
+          name VARCHAR(255) NOT NULL,
+          type ENUM('Asset','Liability','Equity','Income','Expense') NOT NULL,
+          category VARCHAR(64) NOT NULL,
+          opening_balance DECIMAL(18,2) NOT NULL DEFAULT 0,
+          current_balance DECIMAL(18,2) NOT NULL DEFAULT 0,
+          description TEXT DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          deleted_at BIGINT DEFAULT NULL,
+          INDEX idx_acc_company_code (company_id, code),
+          INDEX idx_acc_type (type)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+        $pdo->exec("CREATE TABLE IF NOT EXISTS journal_vouchers (
+          id VARCHAR(64) PRIMARY KEY,
+          company_id VARCHAR(64) NOT NULL,
+          voucher_no VARCHAR(64) NOT NULL,
+          date VARCHAR(32) NOT NULL,
+          type VARCHAR(30) NOT NULL DEFAULT 'Journal',
+          narration TEXT DEFAULT NULL,
+          entries JSON NOT NULL,
+          total_debit DECIMAL(18,2) NOT NULL DEFAULT 0,
+          total_credit DECIMAL(18,2) NOT NULL DEFAULT 0,
+          created_by VARCHAR(100) DEFAULT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL,
+          deleted_at BIGINT DEFAULT NULL,
+          INDEX idx_jv_company_voucher (company_id, voucher_no),
+          INDEX idx_jv_date (company_id, date)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 
         // BUILD 2026-09-08-17: legacy schemas (e.g. 001_multi_store_location.sql stores,
@@ -245,7 +366,7 @@ function tcEnsureNormalizedTables($pdo) {
         // 1789066134 into a DATETIME column dies with 'SQLSTATE[22007]: 1292 Incorrect datetime
         // value for column created_at'. Detect such columns, convert existing string rows to
         // epoch-seconds, then MODIFY to BIGINT so the epoch contract holds on every table.
-        tcEnsureEpochTimestamps($pdo, ['companies', 'stores', 'stock_categories', 'products', 'user_accounts', 'audit_trails', 'sponsors']);
+        tcEnsureEpochTimestamps($pdo, ['companies', 'branches', 'stores', 'stock_categories', 'products', 'user_accounts', 'audit_trails', 'sponsors', 'pos_shifts', 'stock_transfers', 'contact_messages', 'accounting_accounts', 'journal_vouchers']);
         $done = true;
     } catch (Throwable $e) {
         error_log('[TradeCore API] tcEnsureNormalizedTables failed: ' . $e->getMessage());

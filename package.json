@@ -9,7 +9,8 @@
     "start": "node server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "tsx src/__tests__/sanitize.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

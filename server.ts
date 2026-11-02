@@ -1546,6 +1546,182 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     return res.json({ success: true, id: String(id), server_ts: now });
   }
 
+  // --- POS SHIFTS ---
+  if (action === 'v2_list_pos_shifts') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.query.companyId || req.body?.companyId || '');
+    let list = Array.isArray(inMemoryPhpState?.posShifts) ? inMemoryPhpState.posShifts : [];
+    if (cid && cid !== 'all') {
+      list = list.filter((s: any) => String(s.companyId || s.company_id || '') === cid);
+    }
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_pos_shift') {
+    const entity = req.body?.entity || req.body?.data || req.body?.shift || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.posShifts)) inMemoryPhpState.posShifts = [];
+    const id = entity?.id || Date.now();
+    const existingIdx = inMemoryPhpState.posShifts.findIndex((s: any) => String(s.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.posShifts[existingIdx] = { ...inMemoryPhpState.posShifts[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.posShifts.unshift({ ...entity, id, created_at: now, updated_at: now });
+    }
+    inMemoryStateVersion = Date.now();
+    saveStateToDisk();
+    return res.json({ success: true, id: String(id), server_ts: now });
+  }
+
+  if (action === 'v2_delete_pos_shift') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.posShifts)) {
+      inMemoryPhpState.posShifts = inMemoryPhpState.posShifts.filter((s: any) => String(s.id) !== id);
+      inMemoryStateVersion = Date.now();
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- STOCK TRANSFERS ---
+  if (action === 'v2_list_stock_transfers') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.query.companyId || req.body?.companyId || '');
+    let list = Array.isArray(inMemoryPhpState?.stockTransfers) ? inMemoryPhpState.stockTransfers : [];
+    if (cid && cid !== 'all') {
+      list = list.filter((t: any) => String(t.companyId || t.company_id || '') === cid);
+    }
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_stock_transfer') {
+    const entity = req.body?.entity || req.body?.data || req.body?.transfer || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.stockTransfers)) inMemoryPhpState.stockTransfers = [];
+    const id = entity?.id || Date.now();
+    const existingIdx = inMemoryPhpState.stockTransfers.findIndex((t: any) => String(t.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.stockTransfers[existingIdx] = { ...inMemoryPhpState.stockTransfers[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.stockTransfers.unshift({ ...entity, id, created_at: now, updated_at: now });
+    }
+    inMemoryStateVersion = Date.now();
+    saveStateToDisk();
+    return res.json({ success: true, id: String(id), server_ts: now });
+  }
+
+  if (action === 'v2_delete_stock_transfer') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.stockTransfers)) {
+      inMemoryPhpState.stockTransfers = inMemoryPhpState.stockTransfers.filter((t: any) => String(t.id) !== id);
+      inMemoryStateVersion = Date.now();
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- CONTACT MESSAGES ---
+  if (action === 'v2_list_contact_messages') {
+    let list = Array.isArray(inMemoryPhpState?.contactMessages) ? inMemoryPhpState.contactMessages : [];
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_contact_message') {
+    const entity = req.body?.entity || req.body?.data || req.body?.message || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.contactMessages)) inMemoryPhpState.contactMessages = [];
+    const id = entity?.id || Date.now();
+    const existingIdx = inMemoryPhpState.contactMessages.findIndex((m: any) => String(m.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.contactMessages[existingIdx] = { ...inMemoryPhpState.contactMessages[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.contactMessages.unshift({ ...entity, id, created_at: now, updated_at: now });
+    }
+    inMemoryStateVersion = Date.now();
+    saveStateToDisk();
+    return res.json({ success: true, id: String(id), server_ts: now });
+  }
+
+  if (action === 'v2_delete_contact_message') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.contactMessages)) {
+      inMemoryPhpState.contactMessages = inMemoryPhpState.contactMessages.filter((m: any) => String(m.id) !== id);
+      inMemoryStateVersion = Date.now();
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- ACCOUNTING ACCOUNTS ---
+  if (action === 'v2_list_accounting_accounts') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.query.companyId || req.body?.companyId || '');
+    let list = Array.isArray(inMemoryPhpState?.accountingAccounts) ? inMemoryPhpState.accountingAccounts : [];
+    if (cid && cid !== 'all') {
+      list = list.filter((a: any) => String(a.companyId || a.company_id || '') === cid);
+    }
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_accounting_account') {
+    const entity = req.body?.entity || req.body?.data || req.body?.account || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.accountingAccounts)) inMemoryPhpState.accountingAccounts = [];
+    const id = entity?.id || `acc_${Date.now()}`;
+    const existingIdx = inMemoryPhpState.accountingAccounts.findIndex((a: any) => String(a.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.accountingAccounts[existingIdx] = { ...inMemoryPhpState.accountingAccounts[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.accountingAccounts.unshift({ ...entity, id, created_at: now, updated_at: now });
+    }
+    inMemoryStateVersion = Date.now();
+    saveStateToDisk();
+    return res.json({ success: true, id: String(id), server_ts: now });
+  }
+
+  if (action === 'v2_delete_accounting_account') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.accountingAccounts)) {
+      inMemoryPhpState.accountingAccounts = inMemoryPhpState.accountingAccounts.filter((a: any) => String(a.id) !== id);
+      inMemoryStateVersion = Date.now();
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
+  // --- JOURNAL VOUCHERS ---
+  if (action === 'v2_list_journal_vouchers') {
+    const cid = String(req.query.company_id || req.body?.company_id || req.query.companyId || req.body?.companyId || '');
+    let list = Array.isArray(inMemoryPhpState?.journalVouchers) ? inMemoryPhpState.journalVouchers : [];
+    if (cid && cid !== 'all') {
+      list = list.filter((v: any) => String(v.companyId || v.company_id || '') === cid);
+    }
+    return res.json({ success: true, list, count: list.length, server_ts: now });
+  }
+
+  if (action === 'v2_upsert_journal_voucher') {
+    const entity = req.body?.entity || req.body?.data || req.body?.voucher || req.body;
+    if (!inMemoryPhpState) inMemoryPhpState = {};
+    if (!Array.isArray(inMemoryPhpState.journalVouchers)) inMemoryPhpState.journalVouchers = [];
+    const id = entity?.id || `jv_${Date.now()}`;
+    const existingIdx = inMemoryPhpState.journalVouchers.findIndex((v: any) => String(v.id) === String(id));
+    if (existingIdx >= 0) {
+      inMemoryPhpState.journalVouchers[existingIdx] = { ...inMemoryPhpState.journalVouchers[existingIdx], ...entity, updated_at: now };
+    } else {
+      inMemoryPhpState.journalVouchers.unshift({ ...entity, id, created_at: now, updated_at: now });
+    }
+    inMemoryStateVersion = Date.now();
+    saveStateToDisk();
+    return res.json({ success: true, id: String(id), server_ts: now });
+  }
+
+  if (action === 'v2_delete_journal_voucher') {
+    const id = String(req.body?.id || req.query.id || '');
+    if (inMemoryPhpState && Array.isArray(inMemoryPhpState.journalVouchers)) {
+      inMemoryPhpState.journalVouchers = inMemoryPhpState.journalVouchers.filter((v: any) => String(v.id) !== id);
+      inMemoryStateVersion = Date.now();
+      saveStateToDisk();
+    }
+    return res.json({ success: true, id, server_ts: now });
+  }
+
   if (action === 'v2_list_chat_messages') {
     const convId = String(req.query.conversation_id || req.body?.conversation_id || req.query.conversationId || req.body?.conversationId || '');
     let list: any[] = Array.isArray(inMemoryPhpState?.chatMessages) ? inMemoryPhpState.chatMessages : [];
@@ -1640,6 +1816,11 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     resData.globalSponsors = activeGlobalSponsors;
     resData.chatConversations = Array.isArray(inMemoryPhpState?.chatConversations) ? inMemoryPhpState.chatConversations : [];
     resData.chatMessages = Array.isArray(inMemoryPhpState?.chatMessages) ? inMemoryPhpState.chatMessages : [];
+    resData.posShifts = Array.isArray(inMemoryPhpState?.posShifts) ? inMemoryPhpState.posShifts : [];
+    resData.stockTransfers = Array.isArray(inMemoryPhpState?.stockTransfers) ? inMemoryPhpState.stockTransfers : [];
+    resData.contactMessages = Array.isArray(inMemoryPhpState?.contactMessages) ? inMemoryPhpState.contactMessages : [];
+    resData.accountingAccounts = Array.isArray(inMemoryPhpState?.accountingAccounts) ? inMemoryPhpState.accountingAccounts : [];
+    resData.journalVouchers = Array.isArray(inMemoryPhpState?.journalVouchers) ? inMemoryPhpState.journalVouchers : [];
     resData._assembled = 1;
 
     let allProducts: any[] = Array.isArray(inMemoryPhpState?.marketplaceProducts) ? inMemoryPhpState.marketplaceProducts : [];
@@ -1902,6 +2083,19 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       incomingData.chatMessages.forEach((m: any) => { if (m?.id) msgMap.set(String(m.id), { ...msgMap.get(String(m.id)), ...m }); });
       inMemoryPhpState.chatMessages = Array.from(msgMap.values());
     }
+
+    const extraCollections = [
+      'posShifts', 'stockTransfers', 'contactMessages', 'accountingAccounts', 'journalVouchers',
+      'flashSales', 'stories', 'disputes', 'productReturns', 'installmentPlans', 'installmentOrders',
+      'installmentPayments', 'escrowTransactions', 'deliveries', 'offers', 'groupDeals', 'traReceipts'
+    ];
+    for (const key of extraCollections) {
+      if (incomingData?.[key] && Array.isArray(incomingData[key])) {
+        if (!inMemoryPhpState) inMemoryPhpState = {};
+        inMemoryPhpState[key] = mergeArrayCollectionById(inMemoryPhpState[key], incomingData[key]);
+      }
+    }
+
     inMemoryStateVersion = Date.now();
     saveStateToDisk();
     return res.json({

@@ -634,6 +634,203 @@ if ($action === 'v2_upsert_visual_search') {
 }
 
 // ============================================================================
+// POS SHIFTS
+// ============================================================================
+if ($action === 'v2_list_pos_shifts') {
+    $cid = (string)($v2in['company_id'] ?? '');
+    if ($cid === '') { echo json_encode(["success" => false, "error" => "Missing company_id"]); exit(); }
+    $rows = [];
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM pos_shifts WHERE company_id = ? AND deleted_at IS NULL ORDER BY created_at DESC");
+        $stmt->execute([$cid]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) { error_log('[API] v2_list_pos_shifts: ' . $e->getMessage()); }
+    echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_upsert_pos_shift') {
+    $e = $v2in['entity'] ?? $v2in['shift'] ?? null;
+    if (!$e || !isset($e['id'])) { echo json_encode(["success" => false, "error" => "Missing pos_shift.id"]); exit(); }
+    $cid = (string)($e['company_id'] ?? $v2in['company_id'] ?? '');
+    if ($cid === '') { echo json_encode(["success" => false, "error" => "Missing company_id"]); exit(); }
+    $fields = [
+        'company_id'=>'required','store_id'=>'required','user_id'=>'required','username'=>'required',
+        'open_time'=>'required','close_time'=>'','opening_float'=>'','closing_cash_actual'=>'','expected_cash_sales'=>'',
+        'sales_order_ids'=>'','drawer_expenses_total'=>'','expense_ids'=>'','status'=>'','variance'=>'','notes'=>''
+    ];
+    $e['company_id'] = $cid;
+    [$uS, $uV] = tcBuildUpdate($fields, $e);
+    [$iS, $iV] = tcBuildInsert('pos_shifts', $fields, $e, ['created_at' => $now, 'updated_at' => $now]);
+    $ok = tcUpsertRow($pdo, 'pos_shifts', $e['id'], $iS, $iV, $uS, $uV);
+    tcWriteAuditTrail($pdo, $cid, $e['store_id'] ?? null, $v2op, 'POS Shift Update', 'PosShift', $e['id'], $e['username'] ?? '');
+    echo json_encode(["success" => $ok, "id" => $e['id'], "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_delete_pos_shift') {
+    $id = (string)($v2in['id'] ?? '');
+    if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'pos_shifts', $id, $cid, false);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'POS Shift Delete', 'PosShift', $id, '');
+    echo json_encode(["success" => $ok, "server_ts" => $now]);
+    exit();
+}
+
+// ============================================================================
+// STOCK TRANSFERS
+// ============================================================================
+if ($action === 'v2_list_stock_transfers') {
+    $cid = (string)($v2in['company_id'] ?? '');
+    if ($cid === '') { echo json_encode(["success" => false, "error" => "Missing company_id"]); exit(); }
+    $rows = [];
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM stock_transfers WHERE company_id = ? AND deleted_at IS NULL ORDER BY created_at DESC");
+        $stmt->execute([$cid]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) { error_log('[API] v2_list_stock_transfers: ' . $e->getMessage()); }
+    echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_upsert_stock_transfer') {
+    $e = $v2in['entity'] ?? $v2in['transfer'] ?? null;
+    if (!$e || !isset($e['id'])) { echo json_encode(["success" => false, "error" => "Missing stock_transfer.id"]); exit(); }
+    $cid = (string)($e['company_id'] ?? $v2in['company_id'] ?? '');
+    if ($cid === '') { echo json_encode(["success" => false, "error" => "Missing company_id"]); exit(); }
+    $fields = [
+        'company_id'=>'required','transfer_number'=>'required','product_id'=>'required','from_store_id'=>'required',
+        'to_store_id'=>'required','qty'=>'required','status'=>'','dispatched_by'=>'','received_by'=>'',
+        'received_qty'=>'','damaged_qty'=>'','missing_qty'=>'','discrepancy_reason'=>'','loss_recorded'=>'',
+        'sent_at'=>'','received_at'=>''
+    ];
+    $e['company_id'] = $cid;
+    [$uS, $uV] = tcBuildUpdate($fields, $e);
+    [$iS, $iV] = tcBuildInsert('stock_transfers', $fields, $e, ['created_at' => $now, 'updated_at' => $now]);
+    $ok = tcUpsertRow($pdo, 'stock_transfers', $e['id'], $iS, $iV, $uS, $uV);
+    tcWriteAuditTrail($pdo, $cid, null, $v2op, 'Stock Transfer Update', 'StockTransfer', $e['id'], $e['transfer_number'] ?? '');
+    echo json_encode(["success" => $ok, "id" => $e['id'], "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_delete_stock_transfer') {
+    $id = (string)($v2in['id'] ?? '');
+    if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'stock_transfers', $id, $cid, false);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Stock Transfer Delete', 'StockTransfer', $id, '');
+    echo json_encode(["success" => $ok, "server_ts" => $now]);
+    exit();
+}
+
+// ============================================================================
+// CONTACT MESSAGES
+// ============================================================================
+if ($action === 'v2_list_contact_messages') {
+    $rows = [];
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM contact_messages WHERE deleted_at IS NULL ORDER BY created_at DESC");
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) { error_log('[API] v2_list_contact_messages: ' . $e->getMessage()); }
+    echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_upsert_contact_message') {
+    $e = $v2in['entity'] ?? $v2in['message'] ?? null;
+    if (!$e || !isset($e['id'])) { echo json_encode(["success" => false, "error" => "Missing contact_message.id"]); exit(); }
+    $fields = ['name'=>'required','email'=>'required','phone'=>'required','subject'=>'required','message'=>'required','status'=>''];
+    [$uS, $uV] = tcBuildUpdate($fields, $e);
+    [$iS, $iV] = tcBuildInsert('contact_messages', $fields, $e, ['created_at' => $now, 'updated_at' => $now]);
+    $ok = tcUpsertRow($pdo, 'contact_messages', $e['id'], $iS, $iV, $uS, $uV);
+    echo json_encode(["success" => $ok, "id" => $e['id'], "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_delete_contact_message') {
+    $id = (string)($v2in['id'] ?? '');
+    if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
+    $ok = tcV2ScopedDelete($pdo, 'contact_messages', $id, '', false);
+    echo json_encode(["success" => $ok, "server_ts" => $now]);
+    exit();
+}
+
+// ============================================================================
+// TALLY ACCOUNTING SYSTEM: Chart of Accounts
+// ============================================================================
+if ($action === 'v2_list_accounting_accounts') {
+    $cid = (string)($v2in['company_id'] ?? '');
+    if ($cid === '') { echo json_encode(["success" => false, "error" => "Missing company_id"]); exit(); }
+    $rows = [];
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM accounting_accounts WHERE company_id = ? AND deleted_at IS NULL ORDER BY code ASC");
+        $stmt->execute([$cid]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) { error_log('[API] v2_list_accounting_accounts: ' . $e->getMessage()); }
+    echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_upsert_accounting_account') {
+    $e = $v2in['entity'] ?? $v2in['account'] ?? null;
+    if (!$e || !isset($e['id'])) { echo json_encode(["success" => false, "error" => "Missing account.id"]); exit(); }
+    $cid = (string)($e['company_id'] ?? $v2in['company_id'] ?? '');
+    if ($cid === '') { echo json_encode(["success" => false, "error" => "Missing company_id"]); exit(); }
+    $fields = ['company_id'=>'required','code'=>'required','name'=>'required','type'=>'required','category'=>'required','opening_balance'=>'','current_balance'=>'','description'=>''];
+    $e['company_id'] = $cid;
+    [$uS, $uV] = tcBuildUpdate($fields, $e);
+    [$iS, $iV] = tcBuildInsert('accounting_accounts', $fields, $e, ['created_at' => $now, 'updated_at' => $now]);
+    $ok = tcUpsertRow($pdo, 'accounting_accounts', $e['id'], $iS, $iV, $uS, $uV);
+    tcWriteAuditTrail($pdo, $cid, null, $v2op, 'Chart of Account Update', 'Account', $e['id'], $e['name'] ?? '');
+    echo json_encode(["success" => $ok, "id" => $e['id'], "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_delete_accounting_account') {
+    $id = (string)($v2in['id'] ?? '');
+    if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'accounting_accounts', $id, $cid, false);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Account Delete', 'Account', $id, '');
+    echo json_encode(["success" => $ok, "server_ts" => $now]);
+    exit();
+}
+
+// ============================================================================
+// TALLY ACCOUNTING SYSTEM: Journal Vouchers
+// ============================================================================
+if ($action === 'v2_list_journal_vouchers') {
+    $cid = (string)($v2in['company_id'] ?? '');
+    if ($cid === '') { echo json_encode(["success" => false, "error" => "Missing company_id"]); exit(); }
+    $rows = [];
+    try {
+        $stmt = $pdo->prepare("SELECT * FROM journal_vouchers WHERE company_id = ? AND deleted_at IS NULL ORDER BY date DESC, created_at DESC");
+        $stmt->execute([$cid]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) { error_log('[API] v2_list_journal_vouchers: ' . $e->getMessage()); }
+    echo json_encode(["success" => true, "list" => $rows, "count" => count($rows), "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_upsert_journal_voucher') {
+    $e = $v2in['entity'] ?? $v2in['voucher'] ?? null;
+    if (!$e || !isset($e['id'])) { echo json_encode(["success" => false, "error" => "Missing voucher.id"]); exit(); }
+    $cid = (string)($e['company_id'] ?? $v2in['company_id'] ?? '');
+    if ($cid === '') { echo json_encode(["success" => false, "error" => "Missing company_id"]); exit(); }
+    $fields = ['company_id'=>'required','voucher_no'=>'required','date'=>'required','type'=>'','narration'=>'','entries'=>'required','total_debit'=>'','total_credit'=>'','created_by'=>''];
+    $e['company_id'] = $cid;
+    [$uS, $uV] = tcBuildUpdate($fields, $e);
+    [$iS, $iV] = tcBuildInsert('journal_vouchers', $fields, $e, ['created_at' => $now, 'updated_at' => $now]);
+    $ok = tcUpsertRow($pdo, 'journal_vouchers', $e['id'], $iS, $iV, $uS, $uV);
+    tcWriteAuditTrail($pdo, $cid, null, $v2op, 'Journal Voucher Post', 'Voucher', $e['id'], $e['voucher_no'] ?? '');
+    echo json_encode(["success" => $ok, "id" => $e['id'], "server_ts" => $now]);
+    exit();
+}
+if ($action === 'v2_delete_journal_voucher') {
+    $id = (string)($v2in['id'] ?? '');
+    if ($id === '') { echo json_encode(["success" => false, "error" => "Missing id"]); exit(); }
+    $cid = (string)($v2in['company_id'] ?? $v2in['companyId'] ?? '');
+    $ok = tcV2ScopedDelete($pdo, 'journal_vouchers', $id, $cid, false);
+    tcWriteAuditTrail($pdo, $cid !== '' ? $cid : null, '', $v2op, 'Voucher Delete', 'Voucher', $id, '');
+    echo json_encode(["success" => $ok, "server_ts" => $now]);
+    exit();
+}
+
+
+// ============================================================================
 // INSTALLMENT PLANS
 // ============================================================================
 if ($action === 'v2_list_installment_plans') {

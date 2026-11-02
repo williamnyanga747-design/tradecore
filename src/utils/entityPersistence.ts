@@ -463,3 +463,115 @@ export async function upsertInstallmentPayment(e: InstallmentPayment): Promise<b
   const r = await post<WriteRes>('v2_upsert_installment_payment', { entity: e });
   return !!r?.success;
 }
+
+// ============================================================================
+// POS SHIFTS
+// ============================================================================
+export interface PosShiftEntity {
+  id: string; company_id: string; store_id: string; user_id: string; username: string;
+  open_time: string; close_time?: string; opening_float: number;
+  closing_cash_actual?: number; expected_cash_sales?: number;
+  sales_order_ids?: number[] | string; drawer_expenses_total?: number; expense_ids?: number[] | string;
+  status?: string; variance?: number; notes?: string;
+  created_at?: number; updated_at?: number; deleted_at?: number;
+  [k: string]: unknown;
+}
+
+export async function listPosShifts(companyId: string | number): Promise<PosShiftEntity[]> {
+  const r = await post<ListRes<PosShiftEntity>>('v2_list_pos_shifts', ck(companyId));
+  return r?.list ?? [];
+}
+export async function upsertPosShift(e: PosShiftEntity, companyId?: string | number): Promise<boolean> {
+  const r = await post<WriteRes>('v2_upsert_pos_shift', { entity: e, ...ck(companyId ?? e.company_id) });
+  return !!r?.success;
+}
+export async function deletePosShift(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_pos_shift', id, companyId);
+}
+
+// ============================================================================
+// STOCK TRANSFERS
+// ============================================================================
+export interface StockTransferEntity {
+  id: string; company_id: string; transfer_number: string; product_id: string;
+  from_store_id: string; to_store_id: string; qty: number; status?: string;
+  dispatched_by?: string; received_by?: string; received_qty?: number;
+  damaged_qty?: number; missing_qty?: number; discrepancy_reason?: string; loss_recorded?: boolean | number;
+  sent_at?: string; received_at?: string; created_at?: number; updated_at?: number; deleted_at?: number;
+  [k: string]: unknown;
+}
+
+export async function listStockTransfers(companyId: string | number): Promise<StockTransferEntity[]> {
+  const r = await post<ListRes<StockTransferEntity>>('v2_list_stock_transfers', ck(companyId));
+  return r?.list ?? [];
+}
+export async function upsertStockTransfer(e: StockTransferEntity, companyId?: string | number): Promise<boolean> {
+  const r = await post<WriteRes>('v2_upsert_stock_transfer', { entity: e, ...ck(companyId ?? e.company_id) });
+  return !!r?.success;
+}
+export async function deleteStockTransfer(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_stock_transfer', id, companyId);
+}
+
+// ============================================================================
+// CONTACT MESSAGES
+// ============================================================================
+export interface ContactMessageEntity {
+  id: string; name: string; email: string; phone: string; subject: string; message: string;
+  status?: string; created_at?: number; updated_at?: number; deleted_at?: number;
+  [k: string]: unknown;
+}
+
+export async function listContactMessages(): Promise<ContactMessageEntity[]> {
+  const r = await post<ListRes<ContactMessageEntity>>('v2_list_contact_messages', {});
+  return r?.list ?? [];
+}
+export async function upsertContactMessage(e: ContactMessageEntity): Promise<boolean> {
+  const r = await post<WriteRes>('v2_upsert_contact_message', { entity: e });
+  return !!r?.success;
+}
+export async function deleteContactMessage(id: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_contact_message', id);
+}
+
+// ============================================================================
+// TALLY ACCOUNTING SYSTEM: Chart of Accounts & Journal Vouchers
+// ============================================================================
+export interface AccountingAccountEntity {
+  id: string; company_id: string; code: string; name: string; type: string; category: string;
+  opening_balance?: number; current_balance?: number; description?: string;
+  created_at?: number; updated_at?: number; deleted_at?: number;
+  [k: string]: unknown;
+}
+
+export async function listAccountingAccounts(companyId: string | number): Promise<AccountingAccountEntity[]> {
+  const r = await post<ListRes<AccountingAccountEntity>>('v2_list_accounting_accounts', ck(companyId));
+  return r?.list ?? [];
+}
+export async function upsertAccountingAccount(e: AccountingAccountEntity, companyId?: string | number): Promise<boolean> {
+  const r = await post<WriteRes>('v2_upsert_accounting_account', { entity: e, ...ck(companyId ?? e.company_id) });
+  return !!r?.success;
+}
+export async function deleteAccountingAccount(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_accounting_account', id, companyId);
+}
+
+export interface JournalVoucherEntity {
+  id: string; company_id: string; voucher_no: string; date: string; type?: string;
+  narration?: string; entries: any; total_debit?: number; total_credit?: number; created_by?: string;
+  created_at?: number; updated_at?: number; deleted_at?: number;
+  [k: string]: unknown;
+}
+
+export async function listJournalVouchers(companyId: string | number): Promise<JournalVoucherEntity[]> {
+  const r = await post<ListRes<JournalVoucherEntity>>('v2_list_journal_vouchers', ck(companyId));
+  return r?.list ?? [];
+}
+export async function upsertJournalVoucher(e: JournalVoucherEntity, companyId?: string | number): Promise<boolean> {
+  const r = await post<WriteRes>('v2_upsert_journal_voucher', { entity: e, ...ck(companyId ?? e.company_id) });
+  return !!r?.success;
+}
+export async function deleteJournalVoucher(id: string | number, companyId?: string | number): Promise<boolean> {
+  return deleteByKey('v2_delete_journal_voucher', id, companyId);
+}
+

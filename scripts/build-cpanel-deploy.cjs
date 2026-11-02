@@ -110,10 +110,42 @@ for (const f of fs.readdirSync(assetsSrc)) {
 if (fs.existsSync(zipPath)) {
   fs.rmSync(zipPath, { force: true });
 }
-const psCommand = `Compress-Archive -Path '${path.join(stage, "*")}' -DestinationPath '${zipPath}' -CompressionLevel Optimal -Force`;
-const zipRes = spawnSync("powershell", ["-NoProfile", "-Command", psCommand], { stdio: "inherit" });
-if (zipRes.status !== 0) {
-  console.error("Failed to create zip archive");
+
+let zipped = false;
+// Try zip command first if available
+const zipTry = spawnSync("zip", ["-r", zipPath, "."], { cwd: stage });
+if (zipTry.status === 0) {
+  zipped = true;
+}
+
+// Fallback to python3 -m zipfile
+if (!zipped) {
+  const pyCode = `import zipfile, os, sys
+stage, zip_path = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
+    for root, dirs, files in os.walk(stage):
+        for f in files:
+            full = os.path.join(root, f)
+            arcname = os.path.relpath(full, stage)
+            z.write(full, arcname)
+print("Archived successfully with python3 zipfile")`;
+  const pyRes = spawnSync("python3", ["-c", pyCode, stage, zipPath], { stdio: "inherit" });
+  if (pyRes.status === 0) {
+    zipped = true;
+  }
+}
+
+// Fallback to powershell on Windows
+if (!zipped) {
+  const psCommand = `Compress-Archive -Path '${path.join(stage, "*")}' -DestinationPath '${zipPath}' -CompressionLevel Optimal -Force`;
+  const zipRes = spawnSync("powershell", ["-NoProfile", "-Command", psCommand], { stdio: "inherit" });
+  if (zipRes.status === 0) {
+    zipped = true;
+  }
+}
+
+if (!zipped) {
+  console.error("Failed to create zip archive: neither zip, python3, nor powershell succeeded.");
   process.exit(1);
 }
 
