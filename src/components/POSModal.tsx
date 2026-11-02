@@ -207,12 +207,6 @@ export default function POSModal({
   const [showClosingModal, setShowClosingModal] = useState(false);
   const [reconciledShiftSummary, setReconciledShiftSummary] = useState<any | null>(null);
 
-  // Drawer Expense Payout States (Petty cash disbursement directly from float)
-  const [showDrawerExpenseModal, setShowDrawerExpenseModal] = useState(false);
-  const [drawerExpenseAmount, setDrawerExpenseAmount] = useState('');
-  const [drawerExpenseCategory, setDrawerExpenseCategory] = useState('Utilities');
-  const [drawerExpenseDescription, setDrawerExpenseDescription] = useState('');
-
   // Physical Denomination Count States
   const [denomCounts, setDenomCounts] = useState<Record<string, number>>({});
   const [showDenomOpen, setShowDenomOpen] = useState(false);
@@ -308,11 +302,41 @@ export default function POSModal({
     return !!(currentUser && ['Super Admin', 'Admin', 'Store Admin', 'Branch Administrator'].includes(currentUser.role));
   }, [currentUser]);
 
+  // Strict Company Administrator check: Only Company Admin (Super Admin / Admin / ROOT_MANDATE) can Close Cash Drawer & Reconcile
+  const isCompanyAdmin = useMemo(() => {
+    if (!currentUser) return false;
+    const r = String(currentUser.role || '').trim().toLowerCase();
+    return r === 'admin' || r === 'super admin' || r === 'superadmin' || r === 'root_mandate';
+  }, [currentUser]);
+
   const activeShift = useMemo(() => {
     return (posShifts || []).find(
       s => s.status === 'Open' && sameId(s.storeId, selectedStoreId)
     );
   }, [posShifts, selectedStoreId]);
+
+  // Auto-linked expenses for this active shift:
+  // Dynamically aggregates all expenses linked directly by posShiftId,
+  // or present in activeShift.expenseIds, or logged with paidFromDrawerFloat === true for this store during the shift!
+  const linkedShiftExpenses = useMemo(() => {
+    if (!activeShift) return [];
+    return (expenses || []).filter(e => {
+      if (e.isDeleted) return false;
+      if (e.posShiftId != null && e.posShiftId === activeShift.id) return true;
+      if (activeShift.expenseIds && activeShift.expenseIds.includes(e.id)) return true;
+      if (e.paidFromDrawerFloat && sameId(e.storeId, activeShift.storeId)) {
+        const shiftDate = activeShift.openTime ? activeShift.openTime.split('T')[0] : '';
+        if (!shiftDate || e.date >= shiftDate) return true;
+      }
+      return false;
+    });
+  }, [expenses, activeShift]);
+
+  // Total drawer cash expenses automatically computed from linkedShiftExpenses:
+  const autoDrawerExpensesTotal = useMemo(() => {
+    const sumLinked = linkedShiftExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+    return Math.max(sumLinked, activeShift?.drawerExpensesTotal || 0);
+  }, [linkedShiftExpenses, activeShift]);
 
   // Confirm Modal state
   const [confirmModal, setConfirmModal] = useState<{
@@ -699,11 +723,15 @@ export default function POSModal({
       creditOutstanding = totals.total;
     }
 
+    const storeObj = stores.find(s => sameId(s.id, selectedStoreId));
+    const effectiveCompanyId = (storeObj as any)?.companyId ?? currentUser?.company_id ?? currentUser?.companyId ?? 1;
+
     const newSO: SalesOrder = {
       id: maxId + 1,
       soNumber: `SO-2024-${String(5004 + maxId).padStart(4, '0')}`,
       customerId: selectedCustomerId,
       storeId: selectedStoreId as number,
+      companyId: effectiveCompanyId,
       date: new Date().toISOString().split('T')[0],
       priceType: priceType,
       items: cart.map(c => {
@@ -817,67 +845,18 @@ export default function POSModal({
     logAction('Open POS Shift', `Opened register shift for cashier ${currentUser?.name || 'Cashier'} with float amount ${floatAmount}`);
   };
 
-  // Disburse petty cash expense directly from active drawer float
-  const handleDisburseDrawerExpense = () => {
-    if (!activeShift) return;
-    const rawAmt = parseFloat(drawerExpenseAmount);
-    if (isNaN(rawAmt) || rawAmt <= 0) {
-      toast.error(t('Please enter a valid expense amount'));
-      return;
-    }
-    const currentDrawerCash = (activeShift.openingFloat || 0) + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0);
-    const usdAmount = activeCurrency === 'TZS' ? rawAmt / activeExchangeRate : rawAmt;
-
-    if (usdAmount > currentDrawerCash) {
-      toast.warning(t('Warning: Disbursed amount exceeds available cash in register drawer float.'));
-    }
-
-    const maxExpId = (expenses || []).length > 0 ? Math.max(...(expenses || []).map(e => e.id)) : 0;
-    const newExpId = maxExpId + 1;
-    const newExp: Expense = {
-      id: newExpId,
-      expenseNumber: `EXP-POS-${String(newExpId).padStart(4, '0')}`,
-      category: drawerExpenseCategory || 'Utilities',
-      description: drawerExpenseDescription.trim() || `Drawer petty cash payout - Shift #${activeShift.id}`,
-      amount: usdAmount,
-      date: new Date().toISOString().split('T')[0],
-      storeId: selectedStoreId as number,
-      companyId: currentUser?.companyId || null,
-      paymentMethod: 'Cash',
-      paidFromDrawerFloat: true,
-      posShiftId: activeShift.id
-    };
-
-    const updatedShifts = posShifts.map(s => {
-      if (s.id === activeShift.id) {
-        return {
-          ...s,
-          drawerExpensesTotal: (s.drawerExpensesTotal || 0) + usdAmount,
-          expenseIds: [...(s.expenseIds || []), newExpId]
-        };
-      }
-      return s;
-    });
-
-    saveAllData({
-      posShifts: updatedShifts,
-      expenses: [newExp, ...(expenses || [])]
-    });
-
-    logAction('Drawer Expense Disbursed', `Cashier ${currentUser?.name || activeShift.username} disbursed ${usdAmount} USD from POS drawer for ${newExp.description}`);
-    toast.success(t('Drawer expense recorded and deducted from cash float!'));
-    setShowDrawerExpenseModal(false);
-    setDrawerExpenseAmount('');
-    setDrawerExpenseDescription('');
-  };
-
-  // Close POS register shift
+  // Close POS register shift (strictly restricted to Company Admin)
   const handleCloseShift = () => {
     if (!activeShift) return;
+    if (!isCompanyAdmin) {
+      toast.error(t('Access Denied: Only a Company Administrator has permission to close the cash drawer and reconcile the shift.'));
+      return;
+    }
     const actualCash = parseFloat(closingCashActualStr) || 0;
-    const drawerExpenses = activeShift.drawerExpensesTotal || 0;
+    const drawerExpenses = autoDrawerExpensesTotal;
     const expectedTotal = activeShift.openingFloat + (activeShift.expectedCashSales || 0) - drawerExpenses;
     const variance = actualCash - expectedTotal;
+    const allLinkedExpIds = Array.from(new Set([...(activeShift.expenseIds || []), ...linkedShiftExpenses.map(e => e.id)]));
 
     const updatedShifts = posShifts.map(s => {
       if (s.id === activeShift.id) {
@@ -885,6 +864,8 @@ export default function POSModal({
           ...s,
           closeTime: new Date().toISOString(),
           closingCashActual: actualCash,
+          drawerExpensesTotal: drawerExpenses,
+          expenseIds: allLinkedExpIds,
           variance: variance,
           notes: closingNotes,
           status: 'Closed' as const
@@ -897,6 +878,9 @@ export default function POSModal({
       ...activeShift,
       closeTime: new Date().toISOString(),
       closingCashActual: actualCash,
+      drawerExpensesTotal: drawerExpenses,
+      expenseIds: allLinkedExpIds,
+      linkedExpenses: linkedShiftExpenses,
       variance,
       notes: closingNotes,
       status: 'Closed' as const
@@ -906,7 +890,7 @@ export default function POSModal({
       posShifts: updatedShifts
     });
 
-    logAction('Close POS Shift', `Closed register shift with variance: ${variance} (Deducted ${drawerExpenses} USD in drawer expenses)`);
+    logAction('Close POS Shift', `Closed register shift with variance: ${variance} (Deducted ${drawerExpenses} USD in auto-linked drawer expenses)`);
     setReconciledShiftSummary(reconciledShift);
     setShowClosingModal(false);
   };
@@ -966,9 +950,21 @@ export default function POSModal({
                 <span className="font-bold text-emerald-700">+{formatMoney(reconciledShiftSummary.expectedCashSales || 0, activeCurrency, activeExchangeRate)}</span>
               </div>
               {drawerExpTotal > 0 && (
-                <div className="flex justify-between font-semibold border-b pb-2 text-rose-700">
-                  <span className="text-rose-600 font-bold">{t('Drawer Expenses Paid Out')}</span>
-                  <span className="font-bold">-{formatMoney(drawerExpTotal, activeCurrency, activeExchangeRate)}</span>
+                <div className="border-b pb-2 text-rose-700 space-y-1">
+                  <div className="flex justify-between font-semibold">
+                    <span className="text-rose-600 font-bold">{t('Drawer Expenses Paid Out')}</span>
+                    <span className="font-bold">-{formatMoney(drawerExpTotal, activeCurrency, activeExchangeRate)}</span>
+                  </div>
+                  {reconciledShiftSummary.linkedExpenses && reconciledShiftSummary.linkedExpenses.length > 0 && (
+                    <div className="bg-rose-50/60 p-2 rounded text-[10px] space-y-1 font-mono">
+                      {reconciledShiftSummary.linkedExpenses.map((exp: any) => (
+                        <div key={exp.id} className="flex justify-between text-gray-700">
+                          <span className="truncate max-w-[240px]">• {exp.description}</span>
+                          <span className="font-bold text-rose-600">-{formatMoney(exp.amount, activeCurrency, activeExchangeRate)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               <div className="flex justify-between font-semibold border-b pb-2">
@@ -1466,38 +1462,24 @@ export default function POSModal({
             </span>
             {activeShift && (
               <span className="text-[10px] bg-brand/20 border border-brand/50 text-brand px-2 py-0.5 rounded-full font-black uppercase tracking-wider">
-                Shift: {activeShift.username} | Float: {formatMoney(activeShift.openingFloat, activeCurrency, activeExchangeRate)} | Drawer: {formatMoney(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0), activeCurrency, activeExchangeRate)}
-                {(activeShift.drawerExpensesTotal || 0) > 0 && (
-                  <span className="text-rose-300 ml-1">(-{formatMoney(activeShift.drawerExpensesTotal || 0, activeCurrency, activeExchangeRate)})</span>
+                Shift: {activeShift.username} | Float: {formatMoney(activeShift.openingFloat, activeCurrency, activeExchangeRate)} | Drawer: {formatMoney(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - autoDrawerExpensesTotal, activeCurrency, activeExchangeRate)}
+                {autoDrawerExpensesTotal > 0 && (
+                  <span className="text-rose-300 ml-1 font-semibold" title={t(`Auto-linked from ${linkedShiftExpenses.length} expense(s)`)}>
+                    (-{formatMoney(autoDrawerExpensesTotal, activeCurrency, activeExchangeRate)})
+                  </span>
                 )}
               </span>
             )}
           </div>
           <div className="flex items-center gap-2 sm:gap-3">
-            {activeShift && (
-              <button
-                type="button"
-                onClick={() => {
-                  setDrawerExpenseAmount('');
-                  setDrawerExpenseCategory('Utilities');
-                  setDrawerExpenseDescription('');
-                  setShowDrawerExpenseModal(true);
-                }}
-                className="bg-amber-600 hover:bg-amber-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition flex items-center gap-1 shadow-sm cursor-pointer"
-                title={t('Disburse petty cash expense directly out of the active POS drawer float')}
-              >
-                <ArrowDownRight className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{t('Cash Out Expense')}</span>
-              </button>
-            )}
-            {activeShift && isAdminUser && (
+            {activeShift && isCompanyAdmin && (
               <button
                 onClick={() => {
-                  setClosingCashActualStr(String(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0)));
+                  setClosingCashActualStr(String(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - autoDrawerExpensesTotal));
                   setClosingNotes('');
                   setShowClosingModal(true);
                 }}
-                className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition"
+                className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wider transition cursor-pointer"
               >
                 {t('Close Drawer / Shift')}
               </button>
@@ -2303,7 +2285,7 @@ export default function POSModal({
         </div>
 
         {/* Close shift submodal form */}
-        {showClosingModal && activeShift && (
+        {showClosingModal && activeShift && isCompanyAdmin && (
           <div className="fixed inset-0 z-55 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
             <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
               <div className="px-5 py-4 border-b flex items-center justify-between bg-red-900 text-white">
@@ -2324,15 +2306,34 @@ export default function POSModal({
                     <span className="text-gray-400">{t('Total Shift Cash Sales')}:</span>
                     <span className="font-bold text-emerald-600">+{formatMoney(activeShift.expectedCashSales || 0, activeCurrency, activeExchangeRate)}</span>
                   </div>
-                  {(activeShift.drawerExpensesTotal || 0) > 0 && (
-                    <div className="flex justify-between text-rose-600">
-                      <span className="font-bold">{t('Drawer Cash Expenses Paid Out')}:</span>
-                      <span className="font-bold font-mono">-{formatMoney(activeShift.drawerExpensesTotal || 0, activeCurrency, activeExchangeRate)}</span>
+                  {autoDrawerExpensesTotal > 0 && (
+                    <div className="space-y-1.5 pt-1 border-t border-dashed border-slate-200">
+                      <div className="flex justify-between text-rose-600">
+                        <span className="font-bold flex items-center gap-1">
+                          <ArrowDownRight className="w-3.5 h-3.5" />
+                          {t('Drawer Cash Expenses Paid Out')}:
+                        </span>
+                        <span className="font-bold font-mono">-{formatMoney(autoDrawerExpensesTotal, activeCurrency, activeExchangeRate)}</span>
+                      </div>
+                      {linkedShiftExpenses.length > 0 && (
+                        <div className="bg-rose-50/80 border border-rose-200/80 rounded-lg p-2 max-h-24 overflow-y-auto space-y-1">
+                          {linkedShiftExpenses.map(exp => (
+                            <div key={exp.id} className="flex justify-between items-center text-[10px] text-gray-700">
+                              <span className="truncate max-w-[190px]" title={exp.description}>
+                                • {exp.description} <span className="text-gray-400 font-mono">({exp.category})</span>
+                              </span>
+                              <span className="font-mono font-bold text-rose-700 shrink-0">
+                                -{formatMoney(exp.amount, activeCurrency, activeExchangeRate)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                   <div className="flex justify-between border-t pt-2 font-black text-gray-900">
                     <span>{t('Expected Total Drawer Cash')}:</span>
-                    <span>{formatMoney(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0), activeCurrency, activeExchangeRate)}</span>
+                    <span>{formatMoney(activeShift.openingFloat + (activeShift.expectedCashSales || 0) - autoDrawerExpensesTotal, activeCurrency, activeExchangeRate)}</span>
                   </div>
                 </div>
 
@@ -2342,7 +2343,7 @@ export default function POSModal({
                     <button
                       type="button"
                       onClick={() => { setShowDenomClose(!showDenomClose); setDenomCounts({}); }}
-                      className="text-[10px] text-brand hover:underline font-bold flex items-center gap-1"
+                      className="text-[10px] text-brand hover:underline font-bold flex items-center gap-1 cursor-pointer"
                     >
                       <Calculator className="w-3 h-3" />
                       {showDenomClose ? t('Hide Calculator') : t('Count Denominations')}
@@ -2354,7 +2355,7 @@ export default function POSModal({
                       type="number"
                       value={closingCashActualStr}
                       onChange={(e) => setClosingCashActualStr(e.target.value)}
-                      className="w-full pl-12 pr-3 py-2 border rounded-lg text-xs font-black outline-none"
+                      className="w-full pl-12 pr-3 py-2 border rounded-lg text-xs font-black outline-none focus:border-brand"
                       placeholder={t('Enter exact cash amount in drawer')}
                     />
                   </div>
@@ -2367,7 +2368,7 @@ export default function POSModal({
 
                 {/* Live Discrepancy Tracking Card */}
                 {(() => {
-                  const drawerExp = activeShift.drawerExpensesTotal || 0;
+                  const drawerExp = autoDrawerExpensesTotal;
                   const expectedTotal = activeShift.openingFloat + (activeShift.expectedCashSales || 0) - drawerExp;
                   const actualCash = parseFloat(closingCashActualStr) || 0;
                   const discrepancy = actualCash - expectedTotal;
@@ -2428,109 +2429,9 @@ export default function POSModal({
                   <button
                     type="button"
                     onClick={handleCloseShift}
-                    className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs transition shadow-sm"
+                    className="flex-1 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xs transition shadow-sm cursor-pointer"
                   >
                     {t('Close Session & Reconcile')}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Drawer Expense Modal (Petty Cash Payout directly from active Float) */}
-        {showDrawerExpenseModal && activeShift && (
-          <div className="fixed inset-0 z-55 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
-              <div className="px-5 py-4 border-b flex items-center justify-between bg-amber-700 text-white">
-                <span className="font-bold flex items-center gap-2 text-sm">
-                  <ArrowDownRight className="w-5 h-5 text-amber-200" /> {t('Drawer Petty Cash Payout')}
-                </span>
-                <button onClick={() => setShowDrawerExpenseModal(false)} className="p-1 hover:bg-amber-800 rounded text-amber-100 hover:text-white">
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="p-6 space-y-4">
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 space-y-1">
-                  <div className="flex justify-between font-bold">
-                    <span>{t('Active Shift Drawer Session')}:</span>
-                    <span className="font-mono">#{activeShift.id} ({activeShift.username})</span>
-                  </div>
-                  <div className="flex justify-between font-bold">
-                    <span>{t('Available Drawer Cash Float')}:</span>
-                    <span className="font-mono text-emerald-700">
-                      {formatMoney(
-                        activeShift.openingFloat + (activeShift.expectedCashSales || 0) - (activeShift.drawerExpensesTotal || 0),
-                        activeCurrency,
-                        activeExchangeRate
-                      )}
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-amber-700 font-medium pt-1">
-                    {t('Disbursed amounts will be recorded as a cash expense and subtracted from your closing shift reconciliation balance.')}
-                  </p>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-500 block">{t('Expense Amount')} ({activeCurrency})</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">{activeCurrency}</span>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={drawerExpenseAmount}
-                      onChange={(e) => setDrawerExpenseAmount(e.target.value)}
-                      className="w-full pl-12 pr-3 py-2 border rounded-lg text-xs font-black outline-none focus:border-amber-600 focus:ring-1 focus:ring-amber-600"
-                      placeholder="0.00"
-                      autoFocus
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-500 block">{t('Expense Category')}</label>
-                  <select
-                    value={drawerExpenseCategory}
-                    onChange={(e) => setDrawerExpenseCategory(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-lg text-xs font-semibold outline-none bg-white focus:border-amber-600"
-                  >
-                    <option value="Utilities">{t('Utilities (Water / Power)')}</option>
-                    <option value="Transport">{t('Transport / Delivery / Fuel')}</option>
-                    <option value="Packaging">{t('Packaging Supplies')}</option>
-                    <option value="Salaries">{t('Day Wages / Casual Labor')}</option>
-                    <option value="Marketing">{t('Marketing / Promo')}</option>
-                    <option value="Rent">{t('Depot Rent / Levy')}</option>
-                    <option value="Other">{t('Other Operating Expense')}</option>
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase tracking-wider text-gray-500 block">{t('Purpose / Description')}</label>
-                  <input
-                    type="text"
-                    value={drawerExpenseDescription}
-                    onChange={(e) => setDrawerExpenseDescription(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-lg text-xs font-semibold outline-none focus:border-amber-600"
-                    placeholder={t('e.g. Courier delivery fee for urgent supplies')}
-                  />
-                </div>
-
-                <div className="flex gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowDrawerExpenseModal(false)}
-                    className="flex-1 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-lg text-xs transition"
-                  >
-                    {t('Cancel')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDisburseDrawerExpense}
-                    disabled={!drawerExpenseAmount || parseFloat(drawerExpenseAmount) <= 0}
-                    className="flex-1 py-2 bg-amber-600 hover:bg-amber-700 disabled:opacity-40 text-white font-bold rounded-lg text-xs transition shadow-sm cursor-pointer"
-                  >
-                    {t('Disburse & Deduct Float')}
                   </button>
                 </div>
               </div>

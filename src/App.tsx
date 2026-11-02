@@ -125,7 +125,7 @@ import { hashPassword, isHashedPassword, verifyPassword } from './utils/hash';
 import { filterActiveData } from './utils/cascadeDelete';
 import { generateSalesOrderPDF } from './utils/pdfGenerator';
 import { jsPDF } from 'jspdf';
-import { getFIFOInventoryValuation, cleanupEmptyBatches } from './utils/fifo';
+import { getFIFOInventoryValuation, cleanupEmptyBatches, getDaysUntilExpiry, getExpiryStatus } from './utils/fifo';
 import { saveSystemDataToPhp, fetchSystemDataFromPhp, connectPhpRealtimeSync, getPhpConfig, savePhpConfig, apiCollectionInitiate, apiCollectionStatus, fetchCheckTimestamp, getLastServerVersion, setLastServerVersion, apiDeleteProduct, apiAssignUser, discoverApiUrl, apiLoginAtomic, apiUpsertProduct, apiUpsertUser, apiUpsertSale, apiUpsertOrder, apiDeleteUser, apiChangePassword, consumeConflictData, mutateCollectionRecordToPhp, getAuditLogsFromPhp, fetchCompanySnapshot, purgeCompanyFromPhp, softDeleteCompanyFromPhp, getOperatorHeaders, buildSessionToken } from './utils/api';
 import { replaceQueue, queueMutations, getQueueSnapshot, clearQueue, drainSyncQueue, registerOnlineSync, cacheSystemState, getCachedSystemState, flushQueueNow } from './utils/offlinePersistence';
 import {
@@ -2822,7 +2822,16 @@ export default function App() {
   const [stockSearchQuery, setStockSearchQuery] = useState('');
   const [stockFilterCategory, setStockFilterCategory] = useState('');
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'in_stock' | 'out_of_stock' | 'low_stock'>('all');
-  const [transferFilter, setTransferFilter] = useState<'All' | 'Pending' | 'In-Transit' | 'Completed' | 'Rejected'>('All');
+  const [stockExpiryFilter, setStockExpiryFilter] = useState<'all' | 'expired' | 'urgent' | 'warning' | 'good'>('all');
+  const [transferFilter, setTransferFilter] = useState<'All' | 'Pending' | 'In-Transit' | 'Completed' | 'Rejected' | 'Discrepancy Reconciled'>('All');
+
+  // Stock Transfer 2-Step Inspection Handshake Modal states
+  const [inspectTransfer, setInspectTransfer] = useState<StockTransfer | null>(null);
+  const [inspectReceivedQty, setInspectReceivedQty] = useState<number>(0);
+  const [inspectDamagedQty, setInspectDamagedQty] = useState<number>(0);
+  const [inspectMissingQty, setInspectMissingQty] = useState<number>(0);
+  const [inspectNotes, setInspectNotes] = useState<string>('');
+
   const [currencySandboxAmount, setCurrencySandboxAmount] = useState<string>('1');
   const [localExchangeRateStr, setLocalExchangeRateStr] = useState<string>('');
 
@@ -15152,33 +15161,92 @@ try {
     toast.success(t('Stock transfer has been dispatched and is now IN-TRANSIT.'));
   };
 
-  const handleReceiveComplete = (transfer: StockTransfer) => {
-    const item = stockItems.find(p => p.id === transfer.productId);
-    if (!item) return;
-    const conversion = item.useSubUnitPricing ? (item.subUnitConversion || 1) : 1;
-    const transferQtyInBaseUnits = transfer.qty * conversion;
+  const handleOpenInspectTransfer = (transfer: StockTransfer) => {
+    setInspectTransfer(transfer);
+    setInspectReceivedQty(transfer.qty);
+    setInspectDamagedQty(0);
+    setInspectMissingQty(0);
+    setInspectNotes('');
+  };
 
-    // Add to receiving store!
+  const handleCommitTransferHandshake = () => {
+    if (!inspectTransfer) return;
+    const item = stockItems.find(p => p.id === inspectTransfer.productId);
+    if (!item) return;
+
+    const sourceStore = stores.find(s => s.id === inspectTransfer.fromStoreId);
+    const destStore = stores.find(s => s.id === inspectTransfer.toStoreId);
+
+    const conversion = item.useSubUnitPricing ? (item.subUnitConversion || 1) : 1;
+    const acceptedBaseUnits = inspectReceivedQty * conversion;
+    const hasDiscrepancy = inspectDamagedQty > 0 || inspectMissingQty > 0 || inspectReceivedQty < inspectTransfer.qty;
+
+    // Credit ONLY verified accepted intact stock to destination store
     const updatedStock = stockItems.map(p => {
-      if (p.id === transfer.productId) {
+      if (p.id === inspectTransfer.productId) {
         const nextStockObj = { ...p.stock };
-        nextStockObj[transfer.toStoreId] = (nextStockObj[transfer.toStoreId] || 0) + transferQtyInBaseUnits;
-        return { ...p, stock: nextStockObj };
+        nextStockObj[inspectTransfer.toStoreId] = (nextStockObj[inspectTransfer.toStoreId] || 0) + acceptedBaseUnits;
+
+        // Add new verified inventory batch for destination store
+        const nextBatches = { ...(p.batches || {}) };
+        const destBatches = [...(nextBatches[inspectTransfer.toStoreId] || [])];
+        const storePriceObj = p.storePrices?.[inspectTransfer.toStoreId];
+        const unitCost = storePriceObj?.purchasePrice ?? p.purchasePrice ?? 0;
+
+        if (acceptedBaseUnits > 0) {
+          destBatches.push({
+            id: `tr-batch-${inspectTransfer.id}-${Date.now()}`,
+            poNumber: inspectTransfer.transferNumber,
+            qty: acceptedBaseUnits,
+            initialQty: acceptedBaseUnits,
+            cost: unitCost,
+            receivedDate: new Date().toISOString().split('T')[0],
+            expiryDate: p.expiryDates?.[inspectTransfer.fromStoreId] || p.expiryDate
+          });
+          nextBatches[inspectTransfer.toStoreId] = destBatches;
+        }
+
+        return { ...p, stock: nextStockObj, batches: nextBatches };
       }
       return p;
     });
 
-    // Set transfer status to Completed
+    const status = hasDiscrepancy ? ('Discrepancy Reconciled' as const) : ('Completed' as const);
+
     const updatedTransfers = stockTransfers.map(t => {
-      if (t.id === transfer.id) {
-        return { ...t, status: 'Completed' as const, receivedAt: new Date().toISOString().split('T')[0] };
+      if (t.id === inspectTransfer.id) {
+        return {
+          ...t,
+          status,
+          receivedAt: new Date().toISOString().split('T')[0],
+          receivedBy: currentUser?.name || 'Receiving Manager',
+          receivedQty: inspectReceivedQty,
+          damagedQty: inspectDamagedQty,
+          missingQty: inspectMissingQty,
+          discrepancyReason: inspectNotes.trim() || undefined,
+          lossRecorded: hasDiscrepancy
+        };
       }
       return t;
     });
 
     saveAllData({ stockItems: updatedStock, stockTransfers: updatedTransfers });
-    logAction('Stock Transfer Completed', `Received ${transfer.qty}x ${item.name} at ${stores.find(s => s.id === transfer.toStoreId)?.name}.`);
-    toast.success(t('Stock transfer completed successfully! Inventory updated.'));
+
+    if (hasDiscrepancy) {
+      logAction(
+        'Stock Transfer Discrepancy & Shrinkage Loss Written Off',
+        `Transfer ${inspectTransfer.transferNumber} received at ${destStore?.name || 'Destination'}: ${inspectReceivedQty} accepted, ${inspectDamagedQty} damaged, ${inspectMissingQty} missing. Notes: ${inspectNotes.trim() || 'Discrepancy logged during delivery inspection'}`
+      );
+      toast.warning(t(`Transfer received with discrepancy: ${inspectReceivedQty} accepted, ${inspectDamagedQty + inspectMissingQty} loss written off.`));
+    } else {
+      logAction(
+        'Stock Transfer Completed (100% Intact)',
+        `Transfer ${inspectTransfer.transferNumber} verified 100% intact: ${inspectReceivedQty} units received at ${destStore?.name || 'Destination'}.`
+      );
+      toast.success(t('Stock transfer verified 100% intact and completed! Inventory updated.'));
+    }
+
+    setInspectTransfer(null);
   };
 
   const handleRejectTransfer = (transfer: StockTransfer) => {
@@ -15227,6 +15295,20 @@ try {
         if (stockStatusFilter === 'out_of_stock' && globalStock > 0) return false;
         if (stockStatusFilter === 'in_stock' && globalStock <= 0) return false;
         if (stockStatusFilter === 'low_stock' && (!isLow || globalStock <= 0)) return false;
+      }
+
+      if (stockExpiryFilter !== 'all') {
+        const expDate = p.expiryDates?.[storeId] || p.expiryDate || (
+          (p.batches?.[storeId] || [])
+            .map(b => b.expiryDate)
+            .filter(Boolean)
+            .sort()[0]
+        );
+        const status = getExpiryStatus(expDate);
+        if (stockExpiryFilter === 'expired' && status !== 'expired') return false;
+        if (stockExpiryFilter === 'urgent' && status !== 'urgent') return false;
+        if (stockExpiryFilter === 'warning' && status !== 'warning') return false;
+        if (stockExpiryFilter === 'good' && status !== 'good') return false;
       }
 
       return true;
@@ -15514,6 +15596,17 @@ try {
               <option value="in_stock">{t('In Stock (> 0)')}</option>
               <option value="out_of_stock">{t('Out of Stock / Sold Out (0)')}</option>
               <option value="low_stock">{t('Low Stock Alert')}</option>
+            </select>
+            <select
+              value={stockExpiryFilter}
+              onChange={(e) => setStockExpiryFilter(e.target.value as any)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none bg-white font-medium text-gray-700 hover:border-gray-400 focus:border-brand cursor-pointer"
+            >
+              <option value="all">{t('All Shelf Life / Expirations')}</option>
+              <option value="expired">⚠️ {t('Expired (Immediate Clearance)')}</option>
+              <option value="urgent">🔴 {t('Urgent (< 7 Days Shelf Life)')}</option>
+              <option value="warning">🟠 {t('Early Warning (< 30 Days)')}</option>
+              <option value="good">🟢 {t('Good Shelf Life (> 30 Days)')}</option>
             </select>
           </div>
 
@@ -15993,12 +16086,12 @@ try {
             </div>
             {/* Filter tabs */}
             <div className="flex items-center gap-1 overflow-x-auto bg-gray-100 p-1 rounded-lg shrink-0">
-              {(['All', 'Pending', 'In-Transit', 'Completed', 'Rejected'] as const).map(tab => (
+              {(['All', 'Pending', 'In-Transit', 'Completed', 'Discrepancy Reconciled', 'Rejected'] as const).map(tab => (
                 <button
                   key={tab}
                   type="button"
                   onClick={() => setTransferFilter(tab)}
-                  className={`px-3 py-1 rounded-md text-[10px] font-bold transition whitespace-nowrap ${
+                  className={`px-3 py-1 rounded-md text-[10px] font-bold transition whitespace-nowrap cursor-pointer ${
                     transferFilter === tab
                       ? 'bg-white text-gray-900 shadow-xs'
                       : 'text-gray-500 hover:text-gray-900'
@@ -16052,7 +16145,22 @@ try {
                             {destStore?.name || `Store #${transfer.toStoreId}`}
                           </span>
                         </td>
-                        <td className="p-3 text-center text-gray-900 font-bold">{transfer.qty}</td>
+                        <td className="p-3 text-center text-gray-900 font-bold">
+                          <div>{transfer.qty}</div>
+                          {transfer.receivedQty !== undefined && (
+                            <div className="text-[10px] text-gray-500 font-mono font-normal">
+                              {transfer.receivedQty === transfer.qty ? (
+                                <span className="text-emerald-600 font-bold">✓ {transfer.receivedQty} {t('intact')}</span>
+                              ) : (
+                                <div className="flex flex-col text-[9px]">
+                                  <span className="text-emerald-600 font-bold">✓ {transfer.receivedQty} {t('accepted')}</span>
+                                  {(transfer.damagedQty || 0) > 0 && <span className="text-amber-600">⚠️ {transfer.damagedQty} {t('damaged')}</span>}
+                                  {(transfer.missingQty || 0) > 0 && <span className="text-rose-600">✗ {transfer.missingQty} {t('missing')}</span>}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </td>
                         <td className="p-3 text-gray-500 font-mono text-[10px]">{transfer.createdAt}</td>
                         <td className="p-3">
                           <div className="flex flex-col gap-0.5 text-[10px] text-gray-500 font-mono">
@@ -16061,6 +16169,9 @@ try {
                             )}
                             {transfer.receivedAt && (
                               <span>📦 {t('Received')}: {transfer.receivedAt}</span>
+                            )}
+                            {transfer.receivedBy && (
+                              <span className="text-gray-400">👤 {t('By')}: {transfer.receivedBy}</span>
                             )}
                             {!transfer.sentAt && !transfer.receivedAt && (
                               <span className="text-gray-400 italic">{t('Not yet dispatched')}</span>
@@ -16086,6 +16197,12 @@ try {
                               {t('Completed')}
                             </span>
                           )}
+                          {transfer.status === 'Discrepancy Reconciled' && (
+                            <span className="px-2 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-300 flex items-center gap-1 w-max">
+                              <AlertTriangle className="w-3 h-3 text-amber-600" />
+                              {t('Discrepancy Reconciled')}
+                            </span>
+                          )}
                           {transfer.status === 'Rejected' && (
                             <span className="px-2 py-1 rounded-full text-[10px] font-bold bg-red-50 text-red-700 border border-red-200 flex items-center gap-1 w-max">
                               <XCircle className="w-3 h-3 text-red-500" />
@@ -16100,14 +16217,14 @@ try {
                                 <button
                                   type="button"
                                   onClick={() => handleApproveShip(transfer)}
-                                  className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-bold shadow-xs transition"
+                                  className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-[10px] font-bold shadow-xs transition cursor-pointer"
                                 >
                                   {t('Dispatch')}
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => handleRejectTransfer(transfer)}
-                                  className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded text-[10px] font-bold border border-red-200 transition"
+                                  className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-600 rounded text-[10px] font-bold border border-red-200 transition cursor-pointer"
                                 >
                                   {t('Reject')}
                                 </button>
@@ -16116,13 +16233,14 @@ try {
                             {transfer.status === 'In-Transit' && (
                               <button
                                 type="button"
-                                onClick={() => handleReceiveComplete(transfer)}
-                                className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold shadow-xs transition"
+                                onClick={() => handleOpenInspectTransfer(transfer)}
+                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-[10px] font-bold shadow-xs transition flex items-center gap-1 cursor-pointer"
                               >
-                                {t('Verify Receipt')}
+                                <CheckCircle className="w-3 h-3" />
+                                {t('Inspect & Receive')}
                               </button>
                             )}
-                            {['Completed', 'Rejected'].includes(transfer.status) && (
+                            {['Completed', 'Discrepancy Reconciled', 'Rejected'].includes(transfer.status) && (
                               <span className="text-[10px] text-gray-400 italic font-medium">
                                 {t('Reconciled')}
                               </span>
@@ -16131,7 +16249,7 @@ try {
                               <button
                                 type="button"
                                 onClick={() => handleDeleteTransfer(transfer.id)}
-                                className="p-1 text-red-600 hover:bg-red-50 hover:text-red-700 rounded transition border border-transparent hover:border-red-100"
+                                className="p-1 text-red-600 hover:bg-red-50 hover:text-red-700 rounded transition border border-transparent hover:border-red-100 cursor-pointer"
                                 title={t('Delete Manifest')}
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -16791,6 +16909,8 @@ try {
               logAction={logAction}
               onUpdateExpenses={(newExpenses) => saveAllData({ expenses: newExpenses })}
               translate={t}
+              posShifts={posShifts}
+              onUpdateShifts={(newShifts) => saveAllData({ posShifts: newShifts })}
             />
           </PanelErrorBoundary>
         );
@@ -16825,12 +16945,13 @@ try {
             <AccountingTally
               currentCompanyId={String(currentCompanyId || '1')}
               companies={companies}
+              stores={stores}
               accounts={accountingAccounts}
               vouchers={journalVouchers}
-              salesOrders={activeSalesOrders}
-              purchaseOrders={activePurchaseOrders}
-              expenses={activeExpenses}
-              stockItems={activeStockItems}
+              salesOrders={activeData.salesOrders}
+              purchaseOrders={activeData.purchaseOrders}
+              expenses={activeData.expenses}
+              stockItems={activeData.stockItems}
               customers={customers}
               suppliers={suppliers}
               onSelectCompany={(id) => setCurrentCompanyId(id)}
@@ -18763,6 +18884,7 @@ try {
         t={t}
         currentUser={currentUser}
         posShifts={posShifts}
+        expenses={activeExpenses}
         currency={activeCurrency}
         exchangeRate={activeExchangeRate}
       />
@@ -19925,6 +20047,151 @@ try {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Stock Transfer 2-Step Inspection Handshake Modal */}
+      {inspectTransfer && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col">
+            <div className="px-5 py-4 border-b flex items-center justify-between bg-emerald-800 text-white shrink-0">
+              <div className="flex items-center gap-2">
+                <Truck className="w-5 h-5 text-emerald-300" />
+                <div>
+                  <h3 className="font-bold text-sm">{t('Shipment Inspection & Delivery Confirmation')}</h3>
+                  <p className="text-[10px] text-emerald-200 font-mono">{inspectTransfer.transferNumber}</p>
+                </div>
+              </div>
+              <button onClick={() => setInspectTransfer(null)} className="p-1 hover:bg-emerald-900 rounded text-emerald-200 hover:text-white cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1.5 font-semibold">
+                <div className="flex justify-between">
+                  <span className="text-gray-400">{t('Product')}:</span>
+                  <span className="font-bold text-gray-900">{stockItems.find(p => p.id === inspectTransfer.productId)?.name}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">{t('Route')}:</span>
+                  <span className="font-mono text-gray-700">
+                    {stores.find(s => s.id === inspectTransfer.fromStoreId)?.name} → {stores.find(s => s.id === inspectTransfer.toStoreId)?.name}
+                  </span>
+                </div>
+                <div className="flex justify-between border-t border-slate-200 pt-1.5">
+                  <span className="text-gray-400">{t('Quantity Dispatched')}:</span>
+                  <span className="font-black text-blue-700 font-mono text-sm">{inspectTransfer.qty} {t('units')}</span>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-wider text-emerald-700 block mb-1">
+                      {t('Accepted Intact')}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max={inspectTransfer.qty}
+                      value={inspectReceivedQty}
+                      onChange={(e) => {
+                        const val = Math.max(0, parseInt(e.target.value) || 0);
+                        setInspectReceivedQty(val);
+                        const rem = Math.max(0, inspectTransfer.qty - val - inspectDamagedQty);
+                        setInspectMissingQty(rem);
+                      }}
+                      className="w-full px-3 py-2 border border-emerald-300 rounded-lg text-xs font-mono font-bold text-emerald-800 bg-emerald-50/50 outline-none focus:border-emerald-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-wider text-amber-700 block mb-1">
+                      {t('Damaged / Broken')}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max={inspectTransfer.qty}
+                      value={inspectDamagedQty}
+                      onChange={(e) => {
+                        const val = Math.max(0, parseInt(e.target.value) || 0);
+                        setInspectDamagedQty(val);
+                        const rem = Math.max(0, inspectTransfer.qty - inspectReceivedQty - val);
+                        setInspectMissingQty(rem);
+                      }}
+                      className="w-full px-3 py-2 border border-amber-300 rounded-lg text-xs font-mono font-bold text-amber-800 bg-amber-50/50 outline-none focus:border-amber-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-black uppercase tracking-wider text-rose-700 block mb-1">
+                      {t('Missing in Transit')}
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max={inspectTransfer.qty}
+                      value={inspectMissingQty}
+                      onChange={(e) => setInspectMissingQty(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full px-3 py-2 border border-rose-300 rounded-lg text-xs font-mono font-bold text-rose-800 bg-rose-50/50 outline-none focus:border-rose-600"
+                    />
+                  </div>
+                </div>
+
+                {/* Verification check card */}
+                <div className={`p-3 rounded-xl border text-xs font-semibold ${
+                  (inspectReceivedQty + inspectDamagedQty + inspectMissingQty === inspectTransfer.qty)
+                    ? (inspectDamagedQty > 0 || inspectMissingQty > 0)
+                      ? 'bg-amber-50 border-amber-200 text-amber-900'
+                      : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                    : 'bg-red-50 border-red-200 text-red-900'
+                }`}>
+                  <div className="flex justify-between items-center">
+                    <span>{t('Total Accounted For')}:</span>
+                    <span className="font-mono font-bold">
+                      {inspectReceivedQty + inspectDamagedQty + inspectMissingQty} / {inspectTransfer.qty}
+                    </span>
+                  </div>
+                  {(inspectDamagedQty > 0 || inspectMissingQty > 0) && (
+                    <p className="text-[10px] text-amber-800 mt-1 font-medium">
+                      ⚠️ {t('Automatic Loss Adjustment')}: {inspectDamagedQty + inspectMissingQty} {t('units will be written off as transit shrinkage with an audit log.')}
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="text-xs font-semibold text-gray-700 mb-1 block">
+                    {t('Inspection Remarks & Discrepancy Reason')}
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={inspectNotes}
+                    onChange={(e) => setInspectNotes(e.target.value)}
+                    placeholder={t('e.g. 2 boxes damaged upon arrival, carrier seal was broken')}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-xs outline-none focus:border-emerald-600"
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setInspectTransfer(null)}
+                  className="flex-1 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 font-bold rounded-lg text-xs transition cursor-pointer"
+                >
+                  {t('Cancel')}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCommitTransferHandshake}
+                  disabled={inspectReceivedQty + inspectDamagedQty + inspectMissingQty !== inspectTransfer.qty}
+                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold rounded-lg text-xs transition shadow-sm cursor-pointer"
+                >
+                  {t('Confirm Handshake & Receive')}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

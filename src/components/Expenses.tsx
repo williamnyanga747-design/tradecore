@@ -70,6 +70,7 @@ export default function Expenses({
   const activeStores = useMemo(() => stores.filter(s => !s.isDeleted), [stores]);
   const [storeId, setStoreId] = useState<string | number | null>(currentStoreId || (activeStores[0]?.id ?? null));
   const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Bank' | 'Mobile Money'>('Cash');
+  const [paidFromDrawerFloat, setPaidFromDrawerFloat] = useState(true);
   const [receiptUrl, setReceiptUrl] = useState<string>('');
   const [receiptName, setReceiptName] = useState<string>('');
 
@@ -86,6 +87,14 @@ export default function Expenses({
     }
   }, [currentStoreId]);
 
+  const effectiveStoreId = useMemo(() => {
+    return (storeId != null && storeId !== '' && storeId !== 'all') ? storeId : currentStoreId;
+  }, [storeId, currentStoreId]);
+
+  const activeShiftForStore = useMemo(() => {
+    return (posShifts || []).find(s => sameId(s.storeId, effectiveStoreId) && s.status === 'Open');
+  }, [posShifts, effectiveStoreId]);
+
   const handleOpenAdd = () => {
     setEditingExpenseId(null);
     setCategory('Utilities');
@@ -94,6 +103,7 @@ export default function Expenses({
     setDate(new Date().toISOString().split('T')[0]);
     if (currentStoreId) setStoreId(currentStoreId);
     setPaymentMethod('Cash');
+    setPaidFromDrawerFloat(true);
     setReceiptUrl('');
     setReceiptName('');
     setShowAddForm(true);
@@ -110,6 +120,7 @@ export default function Expenses({
     setDate(exp.date);
     setStoreId(exp.storeId);
     setPaymentMethod(exp.paymentMethod);
+    setPaidFromDrawerFloat(exp.paidFromDrawerFloat ?? false);
     setReceiptUrl(exp.receiptUrl || '');
     setReceiptName(exp.receiptName || '');
     setShowAddForm(true);
@@ -189,6 +200,9 @@ export default function Expenses({
 
     const cleanStoreId = storeId != null && storeId !== '' && storeId !== 'all' ? (selectedStore ? selectedStore.id : storeId) : null;
 
+    const isDrawerExpense = paymentMethod === 'Cash' && paidFromDrawerFloat;
+    const targetShiftId = isDrawerExpense && activeShiftForStore ? activeShiftForStore.id : (editingExpenseId !== null ? undefined : undefined);
+
     if (editingExpenseId !== null) {
       // Edit mode
       const updated = expenses.map(exp => {
@@ -202,6 +216,8 @@ export default function Expenses({
             storeId: cleanStoreId,
             companyId: exp.companyId || effectiveCompanyId,
             paymentMethod,
+            paidFromDrawerFloat: isDrawerExpense,
+            posShiftId: targetShiftId !== undefined ? targetShiftId : exp.posShiftId,
             receiptUrl: receiptUrl || undefined,
             receiptName: receiptName || undefined,
             receiptUploadedAt: receiptUrl ? (exp.receiptUploadedAt || new Date().toISOString()) : undefined
@@ -226,12 +242,32 @@ export default function Expenses({
         storeId: cleanStoreId,
         companyId: effectiveCompanyId,
         paymentMethod,
+        paidFromDrawerFloat: isDrawerExpense,
+        posShiftId: targetShiftId || null,
         receiptUrl: receiptUrl || undefined,
         receiptName: receiptName || undefined,
         receiptUploadedAt: receiptUrl ? new Date().toISOString() : undefined
       };
       await onUpdateExpenses([newExp, ...expenses]);
-      logAction("Logged Expense", `Added expense: ${newExp.expenseNumber} - ${description} (${usdAmount} USD)`);
+
+      if (isDrawerExpense && activeShiftForStore && onUpdateShifts) {
+        const updatedShifts = posShifts.map(s => {
+          if (s.id === activeShiftForStore.id) {
+            return {
+              ...s,
+              drawerExpensesTotal: (s.drawerExpensesTotal || 0) + usdAmount,
+              expenseIds: Array.from(new Set([...(s.expenseIds || []), newExp.id]))
+            };
+          }
+          return s;
+        });
+        onUpdateShifts(updatedShifts);
+      }
+
+      logAction("Logged Expense", `Added expense: ${newExp.expenseNumber} - ${description} (${usdAmount} USD)${isDrawerExpense ? ` [Paid from POS Drawer Shift #${activeShiftForStore?.id || 'Active'}]` : ''}`);
+      if (isDrawerExpense) {
+        toast.success(translate('Expense recorded and automatically linked to POS drawer shift!'));
+      }
     }
 
     setShowAddForm(false);
@@ -468,7 +504,7 @@ export default function Expenses({
                       key={method}
                       type="button"
                       onClick={() => setPaymentMethod(method)}
-                      className={`py-2 border rounded-lg text-xs font-semibold transition ${
+                      className={`py-2 border rounded-lg text-xs font-semibold transition cursor-pointer ${
                         paymentMethod === method
                           ? 'border-brand bg-brand-light text-brand'
                           : 'border-gray-200 hover:bg-gray-50 text-gray-700'
@@ -478,6 +514,29 @@ export default function Expenses({
                     </button>
                   ))}
                 </div>
+
+                {paymentMethod === 'Cash' && (
+                  <div className="mt-3 p-3 rounded-xl border border-amber-200 bg-amber-50/80 flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      id="paidFromDrawerFloat"
+                      checked={paidFromDrawerFloat}
+                      onChange={(e) => setPaidFromDrawerFloat(e.target.checked)}
+                      className="mt-0.5 accent-amber-600 w-4 h-4 cursor-pointer rounded"
+                    />
+                    <label htmlFor="paidFromDrawerFloat" className="cursor-pointer text-xs text-amber-950 font-medium select-none">
+                      <div className="font-bold flex items-center gap-1.5 text-amber-900">
+                        <ArrowDownRight className="w-4 h-4 text-amber-600" />
+                        {translate('Deduct directly from POS Register Cash Float')}
+                      </div>
+                      <div className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+                        {activeShiftForStore
+                          ? `${translate('Connected to Active POS Shift')} #${activeShiftForStore.id} (${activeShiftForStore.username}). ${translate('Will automatically subtract from expected closing cash in drawer. No duplicate entry required!')}`
+                          : translate('When an active shift is open for this store, cash is automatically deducted from the register drawer float.')}
+                      </div>
+                    </label>
+                  </div>
+                )}
               </div>
 
               <div className="md:col-span-2">
@@ -612,7 +671,17 @@ export default function Expenses({
                   </td>
                   <td className="px-5 py-3 font-medium text-gray-900">{exp.description}</td>
                   <td className="px-5 py-3 text-gray-600">{getStoreName(exp.storeId)}</td>
-                  <td className="px-5 py-3 text-gray-600 font-medium">{exp.paymentMethod}</td>
+                  <td className="px-5 py-3 text-gray-600 font-medium">
+                    <div className="flex flex-col">
+                      <span>{exp.paymentMethod}</span>
+                      {exp.paidFromDrawerFloat && (
+                        <span className="text-[10px] text-amber-700 font-mono font-bold flex items-center gap-0.5 mt-0.5">
+                          <ArrowDownRight className="w-3 h-3 text-amber-600" />
+                          {exp.posShiftId ? `Drawer Float (#${exp.posShiftId})` : 'Drawer Float'}
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-5 py-3 text-right font-bold text-gray-900">
                     {formatMoney(exp.amount, currency, exchangeRate)}
                   </td>

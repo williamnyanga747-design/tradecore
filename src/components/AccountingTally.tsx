@@ -38,6 +38,7 @@ import {
 interface AccountingTallyProps {
   currentCompanyId: string;
   companies: Company[];
+  stores?: any[];
   accounts: AccountingAccount[];
   vouchers: JournalVoucher[];
   onSaveAccounts: (accounts: AccountingAccount[]) => void;
@@ -59,6 +60,7 @@ type TabMode = 'trial_balance' | 'vouchers' | 'ledger' | 'chart_of_accounts';
 export const AccountingTally: React.FC<AccountingTallyProps> = ({
   currentCompanyId,
   companies,
+  stores = [],
   accounts: propAccounts = [],
   vouchers: propVouchers = [],
   onSaveAccounts,
@@ -98,12 +100,28 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
     };
   }, [companies, selectedCompanyId]);
 
-  // --- DYNAMIC METRICS COMPUTED FOR THIS SPECIFIC COMPANY ---
+  // Strict company entity matcher: matches direct companyId or indirectly via storeId -> companyId
+  const isCompanyMatch = React.useCallback((entity: any) => {
+    if (!entity) return false;
+    const cid = entity.companyId ?? entity.company_id;
+    if (cid != null && String(cid).trim() !== '') {
+      return String(cid) === String(selectedCompanyId);
+    }
+    if (entity.storeId != null && Array.isArray(stores)) {
+      const s = stores.find(st => String(st.id) === String(entity.storeId));
+      if (s && s.companyId != null) {
+        return String(s.companyId) === String(selectedCompanyId);
+      }
+    }
+    return String(selectedCompanyId) === '1' || companies.length <= 1;
+  }, [selectedCompanyId, stores, companies.length]);
+
+  // --- DYNAMIC METRICS & SYSTEM DATA COMPUTED FOR THIS SPECIFIC COMPANY ---
   // 1. Inventory / Stock valuation for active company
   const companyProducts = useMemo(() => {
     if (!Array.isArray(stockItems)) return [];
-    return stockItems.filter(p => !p.companyId || String(p.companyId) === String(selectedCompanyId));
-  }, [stockItems, selectedCompanyId]);
+    return stockItems.filter(p => !p.isDeleted && isCompanyMatch(p));
+  }, [stockItems, isCompanyMatch]);
 
   const companyInventoryValuation = useMemo(() => {
     return companyProducts.reduce((sum, p) => {
@@ -122,18 +140,18 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
   // 2. Sales Orders for active company
   const companySales = useMemo(() => {
     if (!Array.isArray(salesOrders)) return [];
-    return salesOrders.filter(so => !so.companyId || String(so.companyId) === String(selectedCompanyId));
-  }, [salesOrders, selectedCompanyId]);
+    return salesOrders.filter(so => !so.isDeleted && so.status !== 'Voided' && isCompanyMatch(so));
+  }, [salesOrders, isCompanyMatch]);
 
   const totalRetailSales = useMemo(() => {
     return companySales
-      .filter(so => so.orderType !== 'Wholesale')
+      .filter(so => so.orderType !== 'Wholesale' && so.priceType !== 'Wholesale')
       .reduce((sum, so) => sum + (Number(so.total) || 0), 0);
   }, [companySales]);
 
   const totalWholesaleSales = useMemo(() => {
     return companySales
-      .filter(so => so.orderType === 'Wholesale')
+      .filter(so => so.orderType === 'Wholesale' || so.priceType === 'Wholesale')
       .reduce((sum, so) => sum + (Number(so.total) || 0), 0);
   }, [companySales]);
 
@@ -141,8 +159,8 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
     return companySales.reduce((sum, so) => {
       if (Array.isArray(so.items) && so.items.length > 0) {
         return sum + so.items.reduce((s: number, item: any) => {
-          const qty = Number(item.quantity) || 0;
-          const cost = Number(item.costPrice || item.purchasePrice || (item.price * 0.7)) || 0;
+          const qty = Number(item.qty || item.quantity) || 0;
+          const cost = Number(item.cost || item.costPrice || item.purchasePrice || (item.price * 0.7)) || 0;
           return s + (qty * cost);
         }, 0);
       }
@@ -160,8 +178,8 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
   // 4. Purchase Orders & Accounts Payable for active company
   const companyPurchases = useMemo(() => {
     if (!Array.isArray(purchaseOrders)) return [];
-    return purchaseOrders.filter(po => !po.companyId || String(po.companyId) === String(selectedCompanyId));
-  }, [purchaseOrders, selectedCompanyId]);
+    return purchaseOrders.filter(po => !po.isDeleted && po.status !== 'Cancelled' && isCompanyMatch(po));
+  }, [purchaseOrders, isCompanyMatch]);
 
   const totalPayables = useMemo(() => {
     return companyPurchases
@@ -172,8 +190,8 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
   // 5. Operating Expenses for active company
   const companyExpensesList = useMemo(() => {
     if (!Array.isArray(expenses)) return [];
-    return expenses.filter(e => !e.companyId || String(e.companyId) === String(selectedCompanyId));
-  }, [expenses, selectedCompanyId]);
+    return expenses.filter(e => !e.isDeleted && isCompanyMatch(e));
+  }, [expenses, isCompanyMatch]);
 
   const expenseRent = useMemo(() => {
     return companyExpensesList
@@ -195,7 +213,7 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
 
   const expensePackagingLogistics = useMemo(() => {
     return companyExpensesList
-      .filter(e => !/rent|kodi|lease|salar|mshahara|wage|staff|utilit|umeme|maji|electric|water/i.test(e.category || ''))
+      .filter(e => /pack|logist|delivery|fuel|transport/i.test(e.category || ''))
       .reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
   }, [companyExpensesList]);
 
@@ -203,28 +221,6 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
   const totalVatPayable = useMemo(() => {
     return companySales.reduce((sum, so) => sum + (Number(so.taxAmount || so.vatAmount) || 0), 0);
   }, [companySales]);
-
-  // 7. Cash in Hand & Bank balances
-  const totalCashCollected = useMemo(() => {
-    return companySales
-      .filter(so => so.paymentMethod === 'Cash' || !so.paymentMethod)
-      .reduce((sum, so) => sum + (Number(so.paidAmount || so.total) || 0), 0);
-  }, [companySales]);
-
-  const totalBankCollected = useMemo(() => {
-    return companySales
-      .filter(so => so.paymentMethod && so.paymentMethod !== 'Cash')
-      .reduce((sum, so) => sum + (Number(so.paidAmount || so.total) || 0), 0);
-  }, [companySales]);
-
-  const totalExpensesPaid = useMemo(() => {
-    return companyExpensesList.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
-  }, [companyExpensesList]);
-
-  // Operational base float ensuring realistic liquidity
-  const calculatedCash = Math.max(500000, 1500000 + totalCashCollected - (totalExpensesPaid * 0.4));
-  const calculatedBank = Math.max(1000000, 3500000 + totalBankCollected - (totalExpensesPaid * 0.6));
-  const fixedAssets = 2500000;
 
   // Role checks for accounting module
   const isBranchAdmin = useMemo(() => {
@@ -269,59 +265,376 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
   const [editingVoucher, setEditingVoucher] = useState<JournalVoucher | null>(null);
   const [voucherToDelete, setVoucherToDelete] = useState<JournalVoucher | null>(null);
 
-  // Pre-seed standard accounts tailored specifically to this active company
+  // Pre-seed standard accounts tailored specifically to this active company with double-entry balanced initial state
   const defaultAccounts: AccountingAccount[] = useMemo(() => {
-    const totalAssets = calculatedCash + calculatedBank + totalReceivables + companyInventoryValuation + fixedAssets;
-    const totalLiabilities = totalPayables + totalVatPayable;
-    const calculatedEquity = Math.max(1000000, totalAssets - totalLiabilities);
+    const initialCash = 1000000;
+    const initialBank = 2000000;
+    const initialEquip = 1000000;
+    const initialEquity = initialCash + initialBank + initialEquip; // 4,000,000
 
     return [
-      { id: `acc_1010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1010', name: 'Cash in Hand', type: 'Asset', category: 'Current Assets', openingBalance: calculatedCash, currentBalance: calculatedCash, createdAt: new Date().toISOString() },
-      { id: `acc_1020_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1020', name: 'Bank Account (CRDB / NMB)', type: 'Asset', category: 'Current Assets', openingBalance: calculatedBank, currentBalance: calculatedBank, createdAt: new Date().toISOString() },
-      { id: `acc_1030_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1030', name: 'Accounts Receivable (Debtors)', type: 'Asset', category: 'Current Assets', openingBalance: totalReceivables, currentBalance: totalReceivables, createdAt: new Date().toISOString() },
-      { id: `acc_1040_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1040', name: 'Inventory / Stock Asset', type: 'Asset', category: 'Current Assets', openingBalance: companyInventoryValuation, currentBalance: companyInventoryValuation, createdAt: new Date().toISOString() },
-      { id: `acc_1050_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1050', name: 'Store Furniture & Equipment', type: 'Asset', category: 'Fixed Assets', openingBalance: fixedAssets, currentBalance: fixedAssets, createdAt: new Date().toISOString() },
-      { id: `acc_2010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '2010', name: 'Accounts Payable (Suppliers)', type: 'Liability', category: 'Current Liabilities', openingBalance: totalPayables, currentBalance: totalPayables, createdAt: new Date().toISOString() },
-      { id: `acc_2020_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '2020', name: 'TRA VAT Payable (18%)', type: 'Liability', category: 'Current Liabilities', openingBalance: totalVatPayable, currentBalance: totalVatPayable, createdAt: new Date().toISOString() },
-      { id: `acc_3010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '3010', name: "Owner's Equity & Capital", type: 'Equity', category: 'Equity', openingBalance: calculatedEquity, currentBalance: calculatedEquity, createdAt: new Date().toISOString() },
-      { id: `acc_4010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '4010', name: 'Sales Revenue - Retail', type: 'Income', category: 'Direct Incomes', openingBalance: 0, currentBalance: totalRetailSales, createdAt: new Date().toISOString() },
-      { id: `acc_4020_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '4020', name: 'Sales Revenue - Wholesale', type: 'Income', category: 'Direct Incomes', openingBalance: 0, currentBalance: totalWholesaleSales, createdAt: new Date().toISOString() },
-      { id: `acc_5010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5010', name: 'Cost of Goods Sold (COGS)', type: 'Expense', category: 'Direct Expenses', openingBalance: 0, currentBalance: totalCOGS, createdAt: new Date().toISOString() },
-      { id: `acc_5020_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5020', name: 'Store Rent Expense', type: 'Expense', category: 'Indirect Expenses', openingBalance: 0, currentBalance: expenseRent, createdAt: new Date().toISOString() },
-      { id: `acc_5030_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5030', name: 'Staff Salaries & Wages', type: 'Expense', category: 'Indirect Expenses', openingBalance: 0, currentBalance: expenseSalaries, createdAt: new Date().toISOString() },
-      { id: `acc_5040_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5040', name: 'Electricity & Water Utilities', type: 'Expense', category: 'Indirect Expenses', openingBalance: 0, currentBalance: expenseUtilities, createdAt: new Date().toISOString() },
-      { id: `acc_5050_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5050', name: 'Packaging & Logistics', type: 'Expense', category: 'Direct Expenses', openingBalance: 0, currentBalance: expensePackagingLogistics, createdAt: new Date().toISOString() }
+      { id: `acc_1010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1010', name: 'Cash in Hand', type: 'Asset', category: 'Current Assets', openingBalance: initialCash, currentBalance: initialCash, createdAt: new Date().toISOString() },
+      { id: `acc_1020_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1020', name: 'Bank & Mobile Money (CRDB / NMB / M-Pesa)', type: 'Asset', category: 'Current Assets', openingBalance: initialBank, currentBalance: initialBank, createdAt: new Date().toISOString() },
+      { id: `acc_1030_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1030', name: 'Accounts Receivable (Debtors)', type: 'Asset', category: 'Current Assets', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_1040_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1040', name: 'Inventory / Stock Asset', type: 'Asset', category: 'Current Assets', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_1050_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '1050', name: 'Store Furniture & Equipment', type: 'Asset', category: 'Fixed Assets', openingBalance: initialEquip, currentBalance: initialEquip, createdAt: new Date().toISOString() },
+      { id: `acc_2010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '2010', name: 'Accounts Payable (Creditors / Suppliers)', type: 'Liability', category: 'Current Liabilities', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_2020_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '2020', name: 'TRA VAT Payable (18%)', type: 'Liability', category: 'Current Liabilities', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_3010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '3010', name: "Owner's Equity & Initial Capital", type: 'Equity', category: 'Equity', openingBalance: initialEquity, currentBalance: initialEquity, createdAt: new Date().toISOString() },
+      { id: `acc_4010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '4010', name: 'Sales Revenue - Retail', type: 'Income', category: 'Direct Incomes', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_4020_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '4020', name: 'Sales Revenue - Wholesale', type: 'Income', category: 'Direct Incomes', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_5010_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5010', name: 'Cost of Goods Sold (COGS)', type: 'Expense', category: 'Direct Expenses', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_5020_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5020', name: 'Store Rent Expense', type: 'Expense', category: 'Indirect Expenses', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_5030_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5030', name: 'Staff Salaries & Wages', type: 'Expense', category: 'Indirect Expenses', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_5040_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5040', name: 'Electricity & Water Utilities', type: 'Expense', category: 'Indirect Expenses', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_5050_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5050', name: 'Packaging & Delivery Logistics', type: 'Expense', category: 'Direct Expenses', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() },
+      { id: `acc_5060_${selectedCompanyId}`, companyId: String(selectedCompanyId), code: '5060', name: 'General & Administrative Expenses', type: 'Expense', category: 'Indirect Expenses', openingBalance: 0, currentBalance: 0, createdAt: new Date().toISOString() }
     ];
-  }, [
-    selectedCompanyId,
-    calculatedCash,
-    calculatedBank,
-    totalReceivables,
-    companyInventoryValuation,
-    fixedAssets,
-    totalPayables,
-    totalVatPayable,
-    totalRetailSales,
-    totalWholesaleSales,
-    totalCOGS,
-    expenseRent,
-    expenseSalaries,
-    expenseUtilities,
-    expensePackagingLogistics
-  ]);
+  }, [selectedCompanyId]);
 
-  // Scoped accounts & vouchers strictly matching active company
+  // Scoped accounts strictly matching active company, guaranteeing all standard accounts exist
   const accounts = useMemo(() => {
     const list = propAccounts.filter(a => String(a.companyId) === String(selectedCompanyId));
     if (list.length === 0) {
       return defaultAccounts;
     }
-    return list;
+    const existingCodes = new Set(list.map(a => a.code));
+    const missingDefaults = defaultAccounts.filter(d => !existingCodes.has(d.code));
+    return [...list, ...missingDefaults];
   }, [propAccounts, selectedCompanyId, defaultAccounts]);
 
+  // --- AUTOMATED REAL-TIME DOUBLE-ENTRY JOURNAL VOUCHERS GENERATION ---
+  // Transforms ALL live sales, purchases, and expenses conducted in the system for this company into Tally vouchers
+  const systemGeneratedVouchers = useMemo(() => {
+    const list: JournalVoucher[] = [];
+    const dateToday = new Date().toISOString().split('T')[0];
+
+    const cashAcc = accounts.find(a => a.code === '1010') || accounts[0];
+    const bankAcc = accounts.find(a => a.code === '1020') || accounts[1] || accounts[0];
+    const debtorAcc = accounts.find(a => a.code === '1030') || accounts[0];
+    const stockAcc = accounts.find(a => a.code === '1040') || accounts[0];
+    const payableAcc = accounts.find(a => a.code === '2010') || accounts[1] || accounts[0];
+    const retailSalesAcc = accounts.find(a => a.code === '4010') || accounts[2] || accounts[0];
+    const wholesaleSalesAcc = accounts.find(a => a.code === '4020') || accounts[2] || accounts[0];
+    const rentAcc = accounts.find(a => a.code === '5020') || accounts[3] || accounts[0];
+    const salaryAcc = accounts.find(a => a.code === '5030') || accounts[3] || accounts[0];
+    const utilityAcc = accounts.find(a => a.code === '5040') || accounts[3] || accounts[0];
+    const packagingAcc = accounts.find(a => a.code === '5050') || accounts[3] || accounts[0];
+    const generalExpAcc = accounts.find(a => a.code === '5060') || packagingAcc || accounts[3] || accounts[0];
+
+    // 1. Live Sales Orders -> Sales Vouchers (SV)
+    companySales.forEach((so, idx) => {
+      const total = Number(so.total) || 0;
+      if (total <= 0) return;
+
+      const cust = customers.find(c => String(c.id) === String(so.customerId));
+      const customerName = cust?.name || so.customerName || 'Walk-in Customer';
+      const isWholesale = so.priceType === 'Wholesale' || so.orderType === 'Wholesale';
+      const salesAccount = isWholesale ? wholesaleSalesAcc : retailSalesAcc;
+      const soNum = so.soNumber || `SO-${so.id}`;
+      const vNo = `SV-${soNum}`;
+
+      const entries: JournalVoucherEntry[] = [];
+
+      // Determine Debit Leg: Cash, Bank, Split, or Credit / Debtors
+      if (so.paymentStatus === 'Credit') {
+        entries.push({
+          id: `ent_dr_ar_${so.id}_${idx}`,
+          accountId: debtorAcc.id,
+          accountName: debtorAcc.name,
+          type: 'Debit',
+          amount: total,
+          notes: `[${debtorAcc.code}] Credit receivables from ${customerName}`
+        });
+      } else if (so.paymentMethod === 'Split' && so.paymentSplit) {
+        const cashAmt = Number(so.paymentSplit.cash) || 0;
+        const bankAmt = (Number(so.paymentSplit.bank) || 0) + (Number(so.paymentSplit.mobile) || 0);
+        const creditAmt = Math.max(0, total - (cashAmt + bankAmt));
+
+        if (cashAmt > 0) {
+          entries.push({
+            id: `ent_dr_cash_${so.id}_${idx}`,
+            accountId: cashAcc.id,
+            accountName: cashAcc.name,
+            type: 'Debit',
+            amount: cashAmt,
+            notes: `[${cashAcc.code}] Cash receipt on Order #${soNum}`
+          });
+        }
+        if (bankAmt > 0) {
+          entries.push({
+            id: `ent_dr_bank_${so.id}_${idx}`,
+            accountId: bankAcc.id,
+            accountName: bankAcc.name,
+            type: 'Debit',
+            amount: bankAmt,
+            notes: `[${bankAcc.code}] Bank / Mobile transfer on Order #${soNum}`
+          });
+        }
+        if (creditAmt > 0) {
+          entries.push({
+            id: `ent_dr_ar_${so.id}_${idx}`,
+            accountId: debtorAcc.id,
+            accountName: debtorAcc.name,
+            type: 'Debit',
+            amount: creditAmt,
+            notes: `[${debtorAcc.code}] Credit portion receivable from ${customerName}`
+          });
+        }
+      } else if (so.paymentStatus === 'Partial') {
+        const paidAmt = Number(so.paidAmount) || (total * 0.5);
+        const unpaidAmt = Math.max(0, total - paidAmt);
+        const isBank = so.paymentMethod === 'Bank' || so.paymentMethod === 'Mobile Money';
+        const targetSettlementAcc = isBank ? bankAcc : cashAcc;
+
+        if (paidAmt > 0) {
+          entries.push({
+            id: `ent_dr_part_${so.id}_${idx}`,
+            accountId: targetSettlementAcc.id,
+            accountName: targetSettlementAcc.name,
+            type: 'Debit',
+            amount: paidAmt,
+            notes: `[${targetSettlementAcc.code}] Deposit collected on Order #${soNum}`
+          });
+        }
+        if (unpaidAmt > 0) {
+          entries.push({
+            id: `ent_dr_ar_${so.id}_${idx}`,
+            accountId: debtorAcc.id,
+            accountName: debtorAcc.name,
+            type: 'Debit',
+            amount: unpaidAmt,
+            notes: `[${debtorAcc.code}] Remaining balance receivable from ${customerName}`
+          });
+        }
+      } else {
+        // Paid in full
+        const isBank = so.paymentMethod === 'Bank' || so.paymentMethod === 'Mobile Money';
+        const targetSettlementAcc = isBank ? bankAcc : cashAcc;
+        entries.push({
+          id: `ent_dr_full_${so.id}_${idx}`,
+          accountId: targetSettlementAcc.id,
+          accountName: targetSettlementAcc.name,
+          type: 'Debit',
+          amount: total,
+          notes: `[${targetSettlementAcc.code}] Sales receipt (${so.paymentMethod || 'Cash'}) from ${customerName}`
+        });
+      }
+
+      // Credit Leg: Sales Revenue
+      entries.push({
+        id: `ent_cr_sales_${so.id}_${idx}`,
+        accountId: salesAccount.id,
+        accountName: salesAccount.name,
+        type: 'Credit',
+        amount: total,
+        notes: `[${salesAccount.code}] Revenue recognized on Order #${soNum} - ${customerName}`
+      });
+
+      const totalDr = entries.filter(e => e.type === 'Debit').reduce((s, e) => s + e.amount, 0);
+      const totalCr = entries.filter(e => e.type === 'Credit').reduce((s, e) => s + e.amount, 0);
+
+      list.push({
+        id: `sys_v_so_${so.id}`,
+        companyId: String(selectedCompanyId),
+        voucherNo: vNo,
+        date: so.date || dateToday,
+        type: 'Sales',
+        narration: `Sales Order #${soNum} - ${customerName} (${so.paymentMethod || 'Cash'}, ${so.paymentStatus || 'Paid'})`,
+        entries,
+        totalDebit: totalDr,
+        totalCredit: totalCr,
+        createdBy: 'Sales Terminal System',
+        createdAt: so.date || new Date().toISOString()
+      });
+    });
+
+    // 2. Live Purchase Orders -> Purchase Vouchers (PV)
+    companyPurchases.forEach((po, idx) => {
+      const total = Number(po.total) || 0;
+      if (total <= 0) return;
+
+      const supp = suppliers.find(s => String(s.id) === String(po.supplierId));
+      const supplierName = supp?.name || po.supplierName || 'Trade Supplier';
+      const poNum = po.poNumber || `PO-${po.id}`;
+      const vNo = `PV-${poNum}`;
+
+      const entries: JournalVoucherEntry[] = [];
+
+      // Debit Leg: Stock Asset
+      entries.push({
+        id: `ent_dr_stock_${po.id}_${idx}`,
+        accountId: stockAcc.id,
+        accountName: stockAcc.name,
+        type: 'Debit',
+        amount: total,
+        notes: `[${stockAcc.code}] Inventory stock receipt from ${supplierName}`
+      });
+
+      // Credit Leg: Accounts Payable or Cash / Bank
+      if (po.paymentStatus === 'Credit' || po.paymentStatus === 'Pending' || po.status === 'Pending') {
+        entries.push({
+          id: `ent_cr_ap_${po.id}_${idx}`,
+          accountId: payableAcc.id,
+          accountName: payableAcc.name,
+          type: 'Credit',
+          amount: total,
+          notes: `[${payableAcc.code}] Supplier payable obligation for PO #${poNum} (${supplierName})`
+        });
+      } else if (po.paymentStatus === 'Partial') {
+        const paidPart = Number(po.paidAmount) || (total * 0.5);
+        const unpaidPart = Math.max(0, total - paidPart);
+        const isBank = po.paymentMethod === 'Bank' || po.paymentMethod === 'Mobile Money';
+        const targetPaymentAcc = isBank ? bankAcc : cashAcc;
+
+        if (paidPart > 0) {
+          entries.push({
+            id: `ent_cr_paid_${po.id}_${idx}`,
+            accountId: targetPaymentAcc.id,
+            accountName: targetPaymentAcc.name,
+            type: 'Credit',
+            amount: paidPart,
+            notes: `[${targetPaymentAcc.code}] Down payment to ${supplierName}`
+          });
+        }
+        if (unpaidPart > 0) {
+          entries.push({
+            id: `ent_cr_ap_${po.id}_${idx}`,
+            accountId: payableAcc.id,
+            accountName: payableAcc.name,
+            type: 'Credit',
+            amount: unpaidPart,
+            notes: `[${payableAcc.code}] Outstanding supplier credit for PO #${poNum}`
+          });
+        }
+      } else {
+        // Paid in full
+        const isBank = po.paymentMethod === 'Bank' || po.paymentMethod === 'Mobile Money';
+        const targetPaymentAcc = isBank ? bankAcc : cashAcc;
+        entries.push({
+          id: `ent_cr_paid_${po.id}_${idx}`,
+          accountId: targetPaymentAcc.id,
+          accountName: targetPaymentAcc.name,
+          type: 'Credit',
+          amount: total,
+          notes: `[${targetPaymentAcc.code}] Payment disbursed for PO #${poNum} to ${supplierName}`
+        });
+      }
+
+      const totalDr = entries.filter(e => e.type === 'Debit').reduce((s, e) => s + e.amount, 0);
+      const totalCr = entries.filter(e => e.type === 'Credit').reduce((s, e) => s + e.amount, 0);
+
+      list.push({
+        id: `sys_v_po_${po.id}`,
+        companyId: String(selectedCompanyId),
+        voucherNo: vNo,
+        date: po.date || dateToday,
+        type: 'Purchase',
+        narration: `Purchase Order #${poNum} from ${supplierName} (${po.status || 'Received'})`,
+        entries,
+        totalDebit: totalDr,
+        totalCredit: totalCr,
+        createdBy: 'Procurement System',
+        createdAt: po.date || new Date().toISOString()
+      });
+    });
+
+    // 3. Live Operating Expenses -> Payment Vouchers (EXP)
+    companyExpensesList.forEach((e, idx) => {
+      const amount = Number(e.amount) || 0;
+      if (amount <= 0) return;
+
+      const expNum = e.expenseNumber || `EXP-${e.id}`;
+      const vNo = `EXP-${expNum}`;
+
+      let expAcc = generalExpAcc;
+      const cat = String(e.category || '').toLowerCase();
+      if (/rent|kodi|lease/i.test(cat)) expAcc = rentAcc;
+      else if (/salar|mshahara|wage|staff/i.test(cat)) expAcc = salaryAcc;
+      else if (/utilit|umeme|maji|electric|water|luku/i.test(cat)) expAcc = utilityAcc;
+      else if (/pack|logist|delivery|fuel|transport/i.test(cat)) expAcc = packagingAcc;
+
+      const isBank = e.paymentMethod === 'Bank' || e.paymentMethod === 'Mobile Money';
+      const sourcePaymentAcc = (e.paidFromDrawerFloat || !isBank) ? cashAcc : bankAcc;
+      const paymentTag = e.paidFromDrawerFloat ? 'POS Drawer Float' : (e.paymentMethod || 'Cash');
+
+      const entries: JournalVoucherEntry[] = [
+        {
+          id: `ent_dr_exp_${e.id}_${idx}`,
+          accountId: expAcc.id,
+          accountName: expAcc.name,
+          type: 'Debit',
+          amount: amount,
+          notes: `[${expAcc.code}] ${e.category || 'Expense'}: ${e.description || 'Operating disbursement'}`
+        },
+        {
+          id: `ent_cr_src_${e.id}_${idx}`,
+          accountId: sourcePaymentAcc.id,
+          accountName: sourcePaymentAcc.name,
+          type: 'Credit',
+          amount: amount,
+          notes: `[${sourcePaymentAcc.code}] Disbursed via ${paymentTag}`
+        }
+      ];
+
+      list.push({
+        id: `sys_v_exp_${e.id}`,
+        companyId: String(selectedCompanyId),
+        voucherNo: vNo,
+        date: e.date || dateToday,
+        type: 'Payment',
+        narration: `Operating Expense: [${e.category || 'General'}] ${e.description || 'Disbursement'} (${paymentTag})`,
+        entries,
+        totalDebit: amount,
+        totalCredit: amount,
+        createdBy: 'Expense Management System',
+        createdAt: e.date || new Date().toISOString()
+      });
+    });
+
+    return list;
+  }, [
+    companySales,
+    companyPurchases,
+    companyExpensesList,
+    accounts,
+    customers,
+    suppliers,
+    selectedCompanyId
+  ]);
+
+  // Combined Vouchers strictly matching active company:
+  // Merges custom/edited user vouchers with live system vouchers seamlessly
   const vouchers = useMemo(() => {
-    return propVouchers.filter(v => String(v.companyId) === String(selectedCompanyId));
-  }, [propVouchers, selectedCompanyId]);
+    const customVouchers = propVouchers.filter(v => String(v.companyId) === String(selectedCompanyId));
+    const customVoucherNos = new Set(customVouchers.map(v => v.voucherNo));
+    const activeSysVouchers = systemGeneratedVouchers.filter(sv => !customVoucherNos.has(sv.voucherNo));
+
+    return [...customVouchers, ...activeSysVouchers].sort((a, b) => {
+      const timeA = new Date(a.date).getTime() || 0;
+      const timeB = new Date(b.date).getTime() || 0;
+      return timeB - timeA;
+    });
+  }, [propVouchers, selectedCompanyId, systemGeneratedVouchers]);
+
+  // Voucher distribution stats by category
+  const voucherStats = useMemo(() => {
+    let salesCount = 0;
+    let purchaseCount = 0;
+    let expenseCount = 0;
+    let journalCount = 0;
+    let receiptCount = 0;
+
+    vouchers.forEach(v => {
+      if (v.type === 'Sales') salesCount++;
+      else if (v.type === 'Purchase') purchaseCount++;
+      else if (v.type === 'Payment') expenseCount++;
+      else if (v.type === 'Journal') journalCount++;
+      else if (v.type === 'Receipt') receiptCount++;
+    });
+
+    return { salesCount, purchaseCount, expenseCount, journalCount, receiptCount, total: vouchers.length };
+  }, [vouchers]);
 
   // Multi-Company isolated persistence helpers:
   // Preserves other companies' accounts and vouchers while saving active company updates
@@ -742,176 +1055,15 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
     });
   };
 
-  // Auto-Sync Company Transactions (Generates double-entry vouchers from live sales, purchases, and expenses for this company)
+  // Synchronize and persist all current double-entry vouchers for this company
   const handleSyncCompanyTransactions = () => {
     if (!isCompanyAdmin) {
-      alert('Action unauthorized: Only company administrators can auto-sync vouchers.');
+      alert('Action unauthorized: Only company administrators can persist or sync vouchers.');
       return;
     }
-    const newVouchers: JournalVoucher[] = [];
-    const dateToday = new Date().toISOString().split('T')[0];
-
-    const cashAcc = accounts.find(a => a.code === '1010') || accounts[0];
-    const bankAcc = accounts.find(a => a.code === '1020') || accounts[1];
-    const debtorAcc = accounts.find(a => a.code === '1030') || accounts[0];
-    const stockAcc = accounts.find(a => a.code === '1040') || accounts[0];
-    const payableAcc = accounts.find(a => a.code === '2010') || accounts[1];
-    const retailSalesAcc = accounts.find(a => a.code === '4010') || accounts[2];
-    const wholesaleSalesAcc = accounts.find(a => a.code === '4020') || accounts[2];
-    const rentAcc = accounts.find(a => a.code === '5020') || accounts[3];
-    const salaryAcc = accounts.find(a => a.code === '5030') || accounts[3];
-    const utilityAcc = accounts.find(a => a.code === '5040') || accounts[3];
-    const generalExpAcc = accounts.find(a => a.code === '5050') || accounts[3];
-
-    // 1. Sync from Sales Orders
-    companySales.forEach((so, idx) => {
-      const vNo = `SV-${so.id || (idx + 1)}`;
-      if (vouchers.some(v => v.voucherNo === vNo)) return;
-
-      const total = Number(so.total) || 0;
-      if (total <= 0) return;
-
-      const isWholesale = so.orderType === 'Wholesale';
-      const salesAccount = isWholesale ? wholesaleSalesAcc : retailSalesAcc;
-      const isCash = !so.paymentMethod || so.paymentMethod === 'Cash';
-      const isCredit = so.paymentStatus === 'Credit';
-      const settlementAcc = isCredit ? debtorAcc : (isCash ? cashAcc : bankAcc);
-
-      const entries: JournalVoucherEntry[] = [
-        {
-          id: `ent_dr_${so.id}`,
-          accountId: settlementAcc?.id || '',
-          accountName: settlementAcc?.name || 'Cash in Hand',
-          type: 'Debit',
-          amount: total,
-          notes: `[${settlementAcc?.code || '1010'}] Sales Receipt for Order #${so.orderNumber || so.id}`
-        },
-        {
-          id: `ent_cr_${so.id}`,
-          accountId: salesAccount?.id || '',
-          accountName: salesAccount?.name || 'Sales Revenue',
-          type: 'Credit',
-          amount: total,
-          notes: `[${salesAccount?.code || '4010'}] Revenue recognized on Order #${so.orderNumber || so.id}`
-        }
-      ];
-
-      newVouchers.push({
-        id: `v_sales_${so.id}_${Date.now()}`,
-        companyId: String(selectedCompanyId),
-        voucherNo: vNo,
-        date: so.date || dateToday,
-        type: 'Sales',
-        narration: `Automated Tally Sync: Sales Order #${so.orderNumber || so.id} - ${so.customerName || 'Customer'}`,
-        entries,
-        totalDebit: total,
-        totalCredit: total,
-        createdBy: currentUser?.name || 'TradeCore System',
-        createdAt: so.date || new Date().toISOString()
-      });
-    });
-
-    // 2. Sync from Purchase Orders
-    companyPurchases.forEach((po, idx) => {
-      const vNo = `PV-${po.id || (idx + 1)}`;
-      if (vouchers.some(v => v.voucherNo === vNo)) return;
-
-      const total = Number(po.total) || 0;
-      if (total <= 0) return;
-
-      const isCredit = po.paymentStatus === 'Credit' || po.status === 'Pending';
-      const creditAcc = isCredit ? payableAcc : bankAcc;
-
-      const entries: JournalVoucherEntry[] = [
-        {
-          id: `ent_dr_po_${po.id}`,
-          accountId: stockAcc?.id || '',
-          accountName: stockAcc?.name || 'Inventory Asset',
-          type: 'Debit',
-          amount: total,
-          notes: `[${stockAcc?.code || '1040'}] Inventory Purchase from ${po.supplierName || 'Supplier'}`
-        },
-        {
-          id: `ent_cr_po_${po.id}`,
-          accountId: creditAcc?.id || '',
-          accountName: creditAcc?.name || 'Accounts Payable',
-          type: 'Credit',
-          amount: total,
-          notes: `[${creditAcc?.code || '2010'}] Supplier obligation / payment for PO #${po.poNumber || po.id}`
-        }
-      ];
-
-      newVouchers.push({
-        id: `v_purch_${po.id}_${Date.now()}`,
-        companyId: String(selectedCompanyId),
-        voucherNo: vNo,
-        date: po.date || dateToday,
-        type: 'Purchase',
-        narration: `Automated Tally Sync: PO #${po.poNumber || po.id} from ${po.supplierName || 'Supplier'}`,
-        entries,
-        totalDebit: total,
-        totalCredit: total,
-        createdBy: currentUser?.name || 'TradeCore System',
-        createdAt: po.date || new Date().toISOString()
-      });
-    });
-
-    // 3. Sync from Expenses
-    companyExpensesList.forEach((e, idx) => {
-      const vNo = `EXP-${e.id || (idx + 1)}`;
-      if (vouchers.some(v => v.voucherNo === vNo)) return;
-
-      const amount = Number(e.amount) || 0;
-      if (amount <= 0) return;
-
-      let expAcc = generalExpAcc;
-      if (/rent|kodi/i.test(e.category || '')) expAcc = rentAcc;
-      else if (/salar|wage|mshahara/i.test(e.category || '')) expAcc = salaryAcc;
-      else if (/utilit|umeme|maji/i.test(e.category || '')) expAcc = utilityAcc;
-
-      const entries: JournalVoucherEntry[] = [
-        {
-          id: `ent_dr_exp_${e.id}`,
-          accountId: expAcc?.id || '',
-          accountName: expAcc?.name || 'Expense',
-          type: 'Debit',
-          amount: amount,
-          notes: `[${expAcc?.code || '5020'}] ${e.category || 'Operating Expense'}: ${e.title || ''}`
-        },
-        {
-          id: `ent_cr_exp_${e.id}`,
-          accountId: cashAcc?.id || '',
-          accountName: cashAcc?.name || 'Cash in Hand',
-          type: 'Credit',
-          amount: amount,
-          notes: `[${cashAcc?.code || '1010'}] Disbursement for ${e.category || 'Expense'}`
-        }
-      ];
-
-      newVouchers.push({
-        id: `v_exp_${e.id}_${Date.now()}`,
-        companyId: String(selectedCompanyId),
-        voucherNo: vNo,
-        date: e.date || dateToday,
-        type: 'Payment',
-        narration: `Automated Tally Sync: ${e.category || 'Expense'} - ${e.title || 'Store disbursement'}`,
-        entries,
-        totalDebit: amount,
-        totalCredit: amount,
-        createdBy: currentUser?.name || 'TradeCore System',
-        createdAt: e.date || new Date().toISOString()
-      });
-    });
-
-    if (newVouchers.length > 0) {
-      const merged = [...propVouchers, ...newVouchers];
-      onSaveVouchers(merged);
-      setSyncStatus(`Successfully synchronized ${newVouchers.length} double-entry vouchers for ${currentCompany.name}!`);
-      setTimeout(() => setSyncStatus(''), 4000);
-    } else {
-      setSyncStatus(`All current transactions for ${currentCompany.name} are already up to date in Tally.`);
-      setTimeout(() => setSyncStatus(''), 4000);
-    }
+    persistVouchers(vouchers);
+    setSyncStatus(`Successfully synchronized & saved ${vouchers.length} double-entry vouchers for ${currentCompany.name}! (${voucherStats.salesCount} Sales, ${voucherStats.purchaseCount} Purchases, ${voucherStats.expenseCount} Expenses)`);
+    setTimeout(() => setSyncStatus(''), 4000);
   };
 
   return (
@@ -1087,9 +1239,12 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
           </div>
 
           <div className="bg-slate-50 dark:bg-zinc-800/50 p-3 rounded-lg border border-slate-100 dark:border-zinc-800">
-            <span className="text-[11px] font-medium text-slate-500 block">Total Posted Vouchers</span>
+            <span className="text-[11px] font-medium text-slate-500 block">Total Live Vouchers</span>
             <span className="text-base font-bold font-mono tabular-nums text-indigo-600 dark:text-indigo-400">
               {vouchers.length} Vouchers
+            </span>
+            <span className="text-[10px] text-slate-500 dark:text-zinc-400 block truncate mt-0.5 font-medium">
+              {voucherStats.salesCount} Sales · {voucherStats.purchaseCount} Purchases · {voucherStats.expenseCount} Expenses
             </span>
           </div>
         </div>
@@ -1313,7 +1468,14 @@ export const AccountingTally: React.FC<AccountingTallyProps> = ({
                         {v.voucherNo}
                       </td>
                       <td className="px-4 py-3 font-sans">
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                          v.type === 'Sales' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800' :
+                          v.type === 'Purchase' ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300 border-blue-200 dark:border-blue-800' :
+                          v.type === 'Payment' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300 border-amber-200 dark:border-amber-800' :
+                          v.type === 'Receipt' ? 'bg-teal-50 text-teal-700 dark:bg-teal-950/60 dark:text-teal-300 border-teal-200 dark:border-teal-800' :
+                          v.type === 'Contra' ? 'bg-purple-50 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300 border-purple-200 dark:border-purple-800' :
+                          'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800'
+                        }`}>
                           {v.type}
                         </span>
                       </td>
