@@ -220,8 +220,21 @@ function loadStateFromDisk() {
         isMarketplaceActive: c.isMarketplaceActive !== false
       };
     });
-  if (inMemoryPhpState && Array.isArray(inMemoryPhpState.companies)) {
+  if (!inMemoryPhpState) inMemoryPhpState = {};
+  if (!Array.isArray(inMemoryPhpState.companies) || inMemoryPhpState.companies.length === 0) {
     inMemoryPhpState.companies = inMemoryCompanies;
+  }
+  if (!Array.isArray(inMemoryPhpState.branches) || inMemoryPhpState.branches.length === 0) {
+    inMemoryPhpState.branches = inMemoryBranches;
+  }
+  if (!Array.isArray(inMemoryPhpState.stores) || inMemoryPhpState.stores.length === 0) {
+    inMemoryPhpState.stores = inMemoryStores;
+  }
+  if (!Array.isArray(inMemoryPhpState.categories) || inMemoryPhpState.categories.length === 0) {
+    inMemoryPhpState.categories = inMemoryCategories;
+  }
+  if (!Array.isArray(inMemoryPhpState.users) || inMemoryPhpState.users.length === 0) {
+    inMemoryPhpState.users = inMemoryUsers;
   }
 }
 
@@ -1840,11 +1853,17 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       filteredOrders = allOrders.filter((o: any) => String(o.company_id ?? o.companyId ?? '') === companyId);
     }
 
-    resData.marketplaceProducts = filteredProducts;
-    resData.products = filteredProducts;
-    resData.salesOrders = filteredSales;
-    resData.marketplaceOrders = filteredOrders;
-    resData.users = filteredUsers;
+    resData.marketplaceProducts = allProducts;
+    resData.products = allProducts;
+    resData.salesOrders = allSales;
+    resData.marketplaceOrders = allOrders;
+    resData.users = allUsers;
+    resData.stockItems = Array.isArray(inMemoryPhpState?.stockItems) ? inMemoryPhpState.stockItems : (Array.isArray(resData.stockItems) ? resData.stockItems : []);
+    resData.purchaseOrders = Array.isArray(inMemoryPhpState?.purchaseOrders) ? inMemoryPhpState.purchaseOrders : (Array.isArray(resData.purchaseOrders) ? resData.purchaseOrders : []);
+    resData.expenses = Array.isArray(inMemoryPhpState?.expenses) ? inMemoryPhpState.expenses : (Array.isArray(resData.expenses) ? resData.expenses : []);
+    resData.suppliers = Array.isArray(inMemoryPhpState?.suppliers) ? inMemoryPhpState.suppliers : (Array.isArray(resData.suppliers) ? resData.suppliers : []);
+    resData.customers = Array.isArray(inMemoryPhpState?.customers) ? inMemoryPhpState.customers : (Array.isArray(resData.customers) ? resData.customers : []);
+    resData.taxes = Array.isArray(inMemoryPhpState?.taxes) ? inMemoryPhpState.taxes : (Array.isArray(resData.taxes) ? resData.taxes : []);
 
     if (since > 0) {
       const incProducts = filteredProducts.filter((p: any) => {
@@ -1886,8 +1905,6 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
         });
       }
 
-      resData.marketplaceProducts = filteredProducts;
-      resData.products = filteredProducts;
       return res.json({
         success: true,
         changed: true,
@@ -1896,16 +1913,27 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
         _version: inMemoryStateVersion,
         products: filteredProducts,
         marketplaceProducts: filteredProducts,
+        allProducts,
         incrementalProducts: incProducts,
         users: filteredUsers,
+        allUsers,
         sales: filteredSales,
+        salesOrders: allSales,
+        companySalesOrders: filteredSales,
         marketplaceOrders: filteredOrders,
+        allMarketplaceOrders: allOrders,
         chatMessages: resData.chatMessages,
         chatConversations: resData.chatConversations,
         companies: resData.companies,
         branches: resData.branches,
         stores: resData.stores,
         categories: resData.categories,
+        stockItems: resData.stockItems,
+        purchaseOrders: resData.purchaseOrders,
+        expenses: resData.expenses,
+        suppliers: resData.suppliers,
+        customers: resData.customers,
+        taxes: resData.taxes,
         state: resData
       });
     }
@@ -1927,10 +1955,21 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
       chatConversations: resData.chatConversations,
       chatMessages: resData.chatMessages,
       users: filteredUsers,
+      allUsers,
       products: filteredProducts,
       marketplaceProducts: filteredProducts,
+      allProducts,
       sales: filteredSales,
+      salesOrders: allSales,
+      companySalesOrders: filteredSales,
       marketplaceOrders: filteredOrders,
+      allMarketplaceOrders: allOrders,
+      stockItems: resData.stockItems,
+      purchaseOrders: resData.purchaseOrders,
+      expenses: resData.expenses,
+      suppliers: resData.suppliers,
+      customers: resData.customers,
+      taxes: resData.taxes,
       data: resData,
       state: resData
     });

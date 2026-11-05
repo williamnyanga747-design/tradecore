@@ -3603,25 +3603,62 @@ export default function App() {
     }
     const resolvedCategories = Array.from(combinedCatsSet);
 
+    // REBOOT-SAFE AND WIPE-PROOF MERGE FOR CRITICAL OPERATIONAL BUSINESS DATA:
+    // When the backend reboots or returns an empty or partial snapshot, NEVER let an incoming empty
+    // array silently wipe existing stock, sales, purchases, expenses, customers, suppliers, or taxes!
+    const mergeCollectionById = <T extends { id?: any }>(
+      incoming: T[] | undefined | null,
+      existing: T[] | undefined | null,
+      defaultSeed?: T[]
+    ): T[] => {
+      const curList = Array.isArray(existing) && existing.length > 0 ? existing : (defaultSeed || []);
+      if (!Array.isArray(incoming) || incoming.length === 0) {
+        return curList;
+      }
+      const map = new Map<string, T>();
+      // 1. Seed with existing local data
+      curList.forEach((item, idx) => {
+        if (!item) return;
+        const key = item.id != null ? String(item.id) : `idx_${idx}`;
+        map.set(key, item);
+      });
+      // 2. Merge incoming with newer timestamps or add new items
+      incoming.forEach((item, idx) => {
+        if (!item) return;
+        const key = item.id != null ? String(item.id) : `inc_${idx}`;
+        const prev = map.get(key);
+        if (!prev) {
+          map.set(key, item);
+        } else {
+          const prevTs = parseItemEpoch(prev);
+          const incTs = parseItemEpoch(item);
+          if (incTs >= prevTs) {
+            map.set(key, { ...prev, ...item });
+          }
+        }
+      });
+      return Array.from(map.values());
+    };
+
     const updatedState = {
       companies: rated.companies,
-      branches: parsed.branches ?? (dbStateRef.current.branches || []),
-      stores: parsed.stores ?? (dbStateRef.current.stores || []),
+      branches: mergeCollectionById(parsed.branches, dbStateRef.current?.branches, defaultBranches),
+      stores: mergeCollectionById(parsed.stores, dbStateRef.current?.stores, defaultStores),
       users: rawUsers,
       categories: resolvedCategories,
-      taxes: parsed.taxes ?? (dbStateRef.current.taxes || []),
-      suppliers: parsed.suppliers ?? (dbStateRef.current.suppliers || []),
-      customers: parsed.customers ?? (dbStateRef.current.customers || []),
-      stockItems: parsed.stockItems ?? (dbStateRef.current.stockItems || []),
-      purchaseOrders: parsed.purchaseOrders ?? (dbStateRef.current.purchaseOrders || []),
-      salesOrders: parsed.salesOrders ?? (dbStateRef.current.salesOrders || []),
-      expenses: parsed.expenses ?? (dbStateRef.current.expenses || []),
+      taxes: mergeCollectionById(parsed.taxes, dbStateRef.current?.taxes, defaultTaxes),
+      suppliers: mergeCollectionById(parsed.suppliers, dbStateRef.current?.suppliers, defaultSuppliers),
+      customers: mergeCollectionById(parsed.customers, dbStateRef.current?.customers, defaultCustomers),
+      stockItems: mergeCollectionById(parsed.stockItems, dbStateRef.current?.stockItems, defaultStockItems),
+      purchaseOrders: mergeCollectionById(parsed.purchaseOrders, dbStateRef.current?.purchaseOrders, defaultPurchaseOrders),
+      salesOrders: mergeCollectionById(parsed.salesOrders, dbStateRef.current?.salesOrders, defaultSalesOrders),
+      expenses: mergeCollectionById(parsed.expenses, dbStateRef.current?.expenses, defaultExpenses),
       auditTrails: parsed.auditTrails || defaultAuditTrails,
       securityLogs: parsed.securityLogs || defaultSecurityLogs,
       settings: parsedSettings,
       rolePermissions: parsed.rolePermissions ?? (dbStateRef.current.rolePermissions || defaultRolePermissions),
-      posShifts: parsed.posShifts ?? (dbStateRef.current.posShifts || []),
-      stockTransfers: parsed.stockTransfers ?? (dbStateRef.current.stockTransfers || []),
+      posShifts: mergeCollectionById(parsed.posShifts, dbStateRef.current?.posShifts, []),
+      stockTransfers: mergeCollectionById(parsed.stockTransfers, dbStateRef.current?.stockTransfers, []),
       contactMessages: parsed.contactMessages ?? (dbStateRef.current.contactMessages || []),
       marketplaceProducts: rated.products,
       marketplaceCustomers: parsed.marketplaceCustomers ?? (dbStateRef.current.marketplaceCustomers || []),

@@ -2467,12 +2467,12 @@ try {
                 // from >N to 0 in the merged result, restore the server version.
                 // This catches both: (a) client sends empty array in changedKeys, and
                 // (b) client sends empty array that the merge loop didn't restore.
-                $MAJOR_COLLECTIONS = ['users', 'marketplaceProducts', 'stockItems', 'expenses', 'salesOrders', 'purchaseOrders', 'companies', 'branches', 'stores'];
+                $MAJOR_COLLECTIONS = ['users', 'marketplaceProducts', 'stockItems', 'expenses', 'salesOrders', 'purchaseOrders', 'companies', 'branches', 'stores', 'customers', 'suppliers', 'taxes'];
                 $rejectedCollections = [];
                 foreach ($MAJOR_COLLECTIONS as $col) {
                     $serverCount = is_array($prevData[$col] ?? null) ? count($prevData[$col]) : 0;
                     $mergedCount = is_array($toPersist[$col] ?? null) ? count($toPersist[$col]) : 0;
-                    if ($serverCount > 3 && $mergedCount === 0) {
+                    if ($serverCount > 0 && $mergedCount === 0) {
                         $toPersist[$col] = $prevData[$col];
                         $rejectedCollections[] = $col . '(' . $serverCount . '->0)';
                     }
