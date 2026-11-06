@@ -369,6 +369,9 @@ export interface User {
   locale?: string; // en | sw | fr | es (default 'en')
   isRoot?: boolean; // ROOT_MANDATE God Mode — full platform control
   isDemo?: boolean;
+  fingerprintEnabled?: boolean;
+  fingerprintRegisteredAt?: string;
+  fingerprintCredentialId?: string;
 }
 
 export interface InventoryBatch {
@@ -653,6 +656,7 @@ export interface Settings {
   // --- MEGA Phase 2C: 7 killer features (ROOT_MANDATE editable) ---
   whatsappBot?: WhatsappBotSettings;
   loyalty?: LoyaltySettings;
+  manufacturing?: ManufacturingSettings;
 }
 
 export interface SubscriptionPlan {
@@ -1552,4 +1556,212 @@ export interface JournalVoucher {
   createdAt: string;
   createdBy: string;
 }
+
+// ============================================================================
+// MANUFACTURING INDUSTRY MODULE TYPES
+// ============================================================================
+
+export type CostAllocationMethod = 'by_weight' | 'by_market_value' | 'manual';
+
+export interface BomItem {
+  productId: number;
+  productName?: string;
+  productCode?: string;
+  quantity: number; // e.g. 1000 kg Raw Wheat Grain
+  unitCost: number; // Unit standard or purchase cost
+  unit?: string; // kg, L, bags
+  scrapAllowancePercent?: number; // expected normal scrap allowance
+}
+
+export interface BomOutput {
+  id: string | number;
+  bomId: string | number;
+  productId: number;
+  productName?: string;
+  productCode?: string;
+  isPrimary: boolean; // true = primary finished good (e.g. Super Flour), false = by-product (e.g. Bran / Pumba)
+  expectedQtyKg: number;
+  expectedMarketPrice: number; // Price per kg/unit for value-based cost allocation
+  allocationPercent?: number; // Optional for manual method (sum of all outputs = 100%)
+  sortOrder?: number;
+}
+
+export interface BOM {
+  id: string | number;
+  companyId?: string | number | null;
+  name: string; // e.g. "Wheat Flour Milling 1,000kg"
+  code: string; // BOM-WF-1000
+  description?: string;
+  category?: string; // e.g. "Grain Milling", "Beverage Production", "Packaging"
+  baseQuantity: number; // e.g. 1000 kg input
+  costAllocationMethod: CostAllocationMethod; // 'by_weight' | 'by_market_value' | 'manual'
+  items: BomItem[]; // Raw material inputs
+  outputs: BomOutput[]; // Joint / Multi-outputs (Finished goods + By-products)
+  packagingCost?: number;
+  laborCost?: number;
+  overheadCost?: number;
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type ProductionRunStatus = 'Planned' | 'In-Progress' | 'Quality Check' | 'Completed' | 'Cancelled';
+
+export interface ProductionRunOutputActual {
+  productId: number;
+  productName: string;
+  productCode?: string;
+  isPrimary: boolean;
+  expectedQtyKg: number;
+  actualQtyKg: number;
+  actualQty?: number; // Alias for actualQtyKg
+  allocatedCost: number; // Total batch cost portion allocated to this output
+  unitCost: number; // allocatedCost / actualQtyKg
+  calculatedUnitCost?: number; // Alias for unitCost
+  marketPrice: number;
+  allocationPercent?: number;
+}
+
+export interface ProductionRun {
+  id: string | number;
+  runNumber: string; // PR-2026-001
+  batchNumber: string; // LOT-WF-20261105-01
+  bomId: string | number;
+  bomName: string;
+  companyId?: string | number | null;
+  storeId: number; // Warehouse / Depot where materials deducted and outputs stocked
+  status: ProductionRunStatus;
+  plannedStartDate: string;
+  actualStartDate?: string;
+  completedDate?: string;
+  actualEndAt?: string; // Alias for completedDate
+  expiryDate?: string;
+  notes?: string;
+
+  // Actual raw materials consumed (if recorded specifically)
+  actualRawMaterials?: Array<{
+    productId: number;
+    consumedQty: number;
+    standardQty?: number;
+    unitCost?: number;
+  }>;
+
+  // Weight & Invisible Loss Tracking (Enhancement #2)
+  inputWeightKg: number; // Total raw weight weighed in (e.g. 1000 kg)
+  cleaningLossKg: number; // Stones, dust, chaff removed by cleaner (e.g. 12 kg)
+  millingScrapKg: number; // Spillage, off-spec flour, startup scrap (e.g. 10 kg)
+  invisibleLossKg: number; // Auto-calculated moisture loss: inputWeight - (actualOutputsSum + cleaningLoss + millingScrap)
+  moistureBeforePercent?: number; // e.g. 13.8%
+  moistureAfterPercent?: number; // e.g. 12.0%
+
+  // Financial costing
+  rawMaterialCost: number;
+  packagingCost: number;
+  laborCost: number;
+  overheadCost: number;
+  totalBatchCost: number; // Sum of all costs
+
+  // Outputs & Yields
+  outputs: ProductionRunOutputActual[];
+  totalOutputKg: number;
+  yieldPercent: number; // (totalOutputKg / inputWeightKg) * 100
+
+  // QC linkage
+  qcCheckId?: string | number;
+  qcStatus?: 'Pending' | 'Passed' | 'Passed with Variance' | 'Rework Required' | 'Rejected';
+
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface QCTemplateParameter {
+  id: string | number;
+  templateId: string | number;
+  paramName: string; // e.g. "Moisture Content", "Protein", "Ash Content", "Whiteness (L*)", "Sieve Retention"
+  unit: string; // "%", "min", "mg/100g", "index"
+  minValue?: number;
+  maxValue?: number;
+  targetValue?: number;
+  isCritical: boolean; // If out of range -> auto-reject or rework required
+  sortOrder?: number;
+}
+
+export interface QCTemplate {
+  id: string | number;
+  companyId?: string | number | null;
+  name: string; // e.g. "Wheat Flour Grade 1 (TBS EAS 44 Standard)"
+  productCategoryId?: string;
+  productId?: number;
+  standardRef?: string; // e.g. "TZS 438:2021 / EAS 44:2019"
+  parameters: QCTemplateParameter[];
+  isActive: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface QCLabResult {
+  parameterId: string | number;
+  paramName: string;
+  unit: string;
+  standardMin?: number;
+  standardMax?: number;
+  isCritical: boolean;
+  actualValue: number;
+  status: 'passed' | 'variance' | 'failed';
+}
+
+export interface BatchQCCheck {
+  id: string | number;
+  runId: string | number;
+  batchNumber: string;
+  productName: string;
+  templateId: string | number;
+  templateName: string;
+  labResults: QCLabResult[];
+  autoDecision: 'Passed' | 'Passed with Variance' | 'Rework Required' | 'Rejected';
+  finalDecision: 'Passed' | 'Passed with Variance' | 'Rework Required' | 'Rejected';
+  isOverridden?: boolean;
+  overrideReason?: string;
+  overrideBy?: string;
+  inspectorId: number | string;
+  inspectorName: string;
+  inspectorRole?: string;
+  signature: string; // Digital signature text / seal
+  checkDate: string;
+  complianceCertNumber?: string; // e.g. "TBS-QC-2026-0891"
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ManufacturingSettings {
+  flourInvisibleLossThreshold: number; // default 3 (%) - Below this is moisture loss, not theft
+  warningInvisibleLossThreshold: number; // default 5 (%) - Alert operator to inspect moisture meter
+  autoDeductRawMaterials: boolean;
+  autoCreateFinishedStock: boolean;
+  defaultAllocationMethod: CostAllocationMethod;
+  requireQCSignoffBeforeComplete: boolean;
+  tbsCertPrefix?: string;
+}
+
+export interface ProductionAuditLog {
+  id: string;
+  runId?: string | number;
+  productionRunId?: string | number;
+  batchNumber: string;
+  companyId?: string | number | null;
+  action?: 'STATUS_CHANGE' | 'MATERIAL_USAGE' | 'QC_OVERRIDE' | 'QC_INSPECTION' | 'RUN_CREATED' | 'RUN_COMPLETED' | string;
+  actionType?: 'STATUS_CHANGE' | 'MATERIAL_USAGE' | 'QC_EVALUATION' | 'QC_OVERRIDE' | 'BATCH_CREATED' | 'BATCH_COMPLETED' | 'LOSS_ADJUSTMENT' | string;
+  title?: string;
+  description?: string;
+  details?: string | Record<string, any>;
+  previousStatus?: string;
+  newStatus?: string;
+  performedBy: string;
+  userName?: string;
+  userRole?: string;
+  timestamp: string; // ISO format
+  metadata?: Record<string, any>;
+}
+
 

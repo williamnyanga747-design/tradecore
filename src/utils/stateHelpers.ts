@@ -61,7 +61,7 @@ export const COLLECTION_KEYS = [
   'traReceipts', 'escrowTransactions', 'chatConversations', 'chatMessages',
   'visualSearches', 'productReturns', 'disputes', 'disputeMessages',
   'flashSales', 'appNotifications', 'bulkUploads', 'stories', 'storyViews',
-  'sponsors',
+  'sponsors', 'boms', 'productionRuns', 'qcTemplates', 'qcChecks', 'productionAuditLogs'
 ] as const;
 
 /**

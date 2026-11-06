@@ -2126,7 +2126,9 @@ const handlePhpApi = (req: express.Request, res: express.Response) => {
     const extraCollections = [
       'posShifts', 'stockTransfers', 'contactMessages', 'accountingAccounts', 'journalVouchers',
       'flashSales', 'stories', 'disputes', 'productReturns', 'installmentPlans', 'installmentOrders',
-      'installmentPayments', 'escrowTransactions', 'deliveries', 'offers', 'groupDeals', 'traReceipts'
+      'installmentPayments', 'escrowTransactions', 'deliveries', 'offers', 'groupDeals', 'traReceipts',
+      'boms', 'bomOutputs', 'productionRuns', 'qcTemplates', 'qcTemplateParameters', 'qcChecks',
+      'productionAuditLogs'
     ];
     for (const key of extraCollections) {
       if (incomingData?.[key] && Array.isArray(incomingData[key])) {

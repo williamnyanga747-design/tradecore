@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Customer, StockItem, SalesOrder, Store, Settings, SOItem, PosShift, Expense } from '../types';
-import { X, Search, Plus, Minus, Trash2, ShoppingBag, AlertTriangle, CheckCircle, Info, Printer, TrendingUp, Calculator, Lock, Share2, Mail, Check, Clock, Layers, ArrowDownRight, DollarSign, Receipt } from 'lucide-react';
+import { X, Search, Plus, Minus, Trash2, ShoppingBag, ShoppingCart, AlertTriangle, CheckCircle, Info, Printer, TrendingUp, Calculator, Lock, Share2, Mail, Check, Clock, Layers, ArrowDownRight, DollarSign, Receipt, Barcode, Tag, Download } from 'lucide-react';
 import { formatMoney } from '../utils/format';
 import { ConfirmActionModal } from './ConfirmActionModal';
 import { handlePrintWithFallback } from '../utils/printHelper';
@@ -12,6 +12,7 @@ import { connectBluetoothPrinter, isBluetoothPrinterConnected, sendEscPosBytes, 
 import { enqueueOfflineSale } from '../utils/offlinePersistence';
 import { SmartMessagingModal } from './SmartMessagingModal';
 import { sameId } from '../utils/idUtils';
+import { encodeCode128B, generateBarcodeSvgString, CustomerPriceTier } from '../utils/barcodeUtils';
 
 interface POSModalProps {
   isOpen: boolean;
@@ -94,6 +95,46 @@ export default function POSModal({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [completedOrder, setCompletedOrder] = useState<SalesOrder | null>(null);
   const [activeTab, setActiveTab] = useState<'catalog' | 'cart'>('catalog');
+
+  // Barcode Studio & Shelf Label Generator States
+  const [showBarcodeModal, setShowBarcodeModal] = useState<boolean>(false);
+  const [barcodeSelectedProduct, setBarcodeSelectedProduct] = useState<StockItem | null>(null);
+  const [barcodePriceTier, setBarcodePriceTier] = useState<CustomerPriceTier>('Retail');
+  const [barcodeLabelQty, setBarcodeLabelQty] = useState<number>(1);
+  const [barcodeSearchTerm, setBarcodeSearchTerm] = useState<string>('');
+  const [barcodePrintLayout, setBarcodePrintLayout] = useState<'thermal' | 'shelf' | 'sheet'>('thermal');
+
+  const handleOpenBarcodeStudio = (product?: StockItem) => {
+    if (product) {
+      setBarcodeSelectedProduct(product);
+    } else if (stockItems.length > 0 && !barcodeSelectedProduct) {
+      setBarcodeSelectedProduct(stockItems[0]);
+    }
+    if (selectedCustomer?.type) {
+      setBarcodePriceTier(selectedCustomer.type as CustomerPriceTier);
+    } else {
+      setBarcodePriceTier(priceType as CustomerPriceTier);
+    }
+    setShowBarcodeModal(true);
+  };
+
+  const handleDownloadBarcodeSvg = (sku: string, name: string) => {
+    try {
+      const svgStr = generateBarcodeSvgString(sku, 50, 2);
+      const blob = new Blob([svgStr], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `barcode-${sku.toLowerCase().replace(/[^a-z0-9]/g, '_')}.svg`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success(`${t('Barcode SVG downloaded for')} ${name}`);
+    } catch (err: any) {
+      toast.error('Could not download SVG file');
+    }
+  };
 
   // Negative Stock and Held Carts features
   const [allowNegativeStock, setAllowNegativeStock] = useState<boolean>(false);
@@ -1550,7 +1591,10 @@ export default function POSModal({
                           if (stockQty > 0 || allowNegativeStock) {
                             handleAddToCart(exactMatch);
                             setSearchQuery('');
-                            toast.success(`${exactMatch.name} added to cart!`);
+                            const appliedPrice = getProductPrice(exactMatch, 'main');
+                            const tierLabel = priceType === 'Wholesale' ? t('Wholesale') : priceType === 'Preferred' ? t('Preferred') : t('Retail');
+                            const custNote = selectedCustomer ? ` (${selectedCustomer.name} - ${tierLabel})` : ` (${tierLabel})`;
+                            toast.success(`⚡ [${exactMatch.code}] ${exactMatch.name} - ${formatMoney(appliedPrice, activeCurrency, activeExchangeRate)}${custNote}`);
                           } else {
                             setErrorMsg(`${exactMatch.name} is out of stock!`);
                           }
@@ -1560,6 +1604,16 @@ export default function POSModal({
                     className="w-full pl-9 pr-3 py-1.5 bg-white border border-gray-300 rounded-lg text-xs font-semibold outline-none focus:ring-2 focus:ring-brand/20 focus:border-brand"
                   />
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => handleOpenBarcodeStudio()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-300 hover:border-brand hover:text-brand rounded-lg text-xs font-bold text-gray-700 transition shadow-2xs shrink-0 cursor-pointer"
+                  title={t('Generate Barcode & Shelf Price Tags for Retailer, Wholesaler & Preferred Customers')}
+                >
+                  <Barcode className="w-3.5 h-3.5 text-brand" />
+                  <span>{t('Barcode Studio')}</span>
+                </button>
                 
                 <div className="flex flex-wrap items-center gap-3">
                   <div className="flex items-center gap-2 max-w-full overflow-x-auto whitespace-nowrap scrollbar-none py-1">
@@ -1721,12 +1775,25 @@ export default function POSModal({
                         <span className="text-[13px] font-black text-brand">
                           {formatMoney(currentPrice, activeCurrency, activeExchangeRate)}
                         </span>
-                        <button
-                          disabled={isBlocked}
-                          className={`${isBlocked ? 'bg-gray-300' : 'bg-brand group-hover:bg-brand-hover'} text-white p-1 rounded transition-colors`}
-                        >
-                          <Plus className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenBarcodeStudio(item);
+                            }}
+                            className="p-1 rounded text-gray-400 hover:text-gray-800 hover:bg-gray-200 transition-colors cursor-pointer"
+                            title={t('Print Barcode & Shelf Price Tag')}
+                          >
+                            <Barcode className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            disabled={isBlocked}
+                            className={`${isBlocked ? 'bg-gray-300' : 'bg-brand group-hover:bg-brand-hover'} text-white p-1 rounded transition-colors`}
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -2573,9 +2640,441 @@ export default function POSModal({
               </div>
             </div>
           </div>
-        )}
+        {/* ========================================================================= */}
+        {/* POS BARCODE STUDIO & SHELF LABEL GENERATOR (RETAILER / WHOLESALER / PREFERRED) */}
+        {/* ========================================================================= */}
+        {showBarcodeModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/75 backdrop-blur-xs animate-fade-in">
+            <div className="bg-white w-full max-w-4xl max-h-[92vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden border border-gray-200">
+              
+              {/* Modal Header */}
+              <div className="px-6 py-4 bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 text-white flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-400/20 border border-amber-400/30 flex items-center justify-center text-amber-400">
+                    <Barcode className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-base font-black tracking-wide text-white">
+                        {t('POS Barcode Studio & Label Generator')}
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-extrabold uppercase bg-amber-400 text-gray-900">
+                        Code 128
+                      </span>
+                    </div>
+                    <p className="text-xs text-gray-400">
+                      {t('Generate vector barcodes with Retailer, Wholesaler & Preferred Customer price mapping')}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowBarcodeModal(false)}
+                  className="p-1.5 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
 
-      </div>
-    </div>
-  );
-}
+              {/* Modal Body */}
+              <div className="p-6 overflow-y-auto flex-1 space-y-6">
+                
+                {/* Product Picker & Search */}
+                <div className="bg-gray-50 p-4 rounded-xl border border-gray-200/80 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex-1">
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">
+                        {t('Select Catalog Product')}
+                      </label>
+                      <div className="relative">
+                        <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                        <input
+                          type="text"
+                          placeholder={t('Search by product name or SKU...')}
+                          value={barcodeSearchTerm}
+                          onChange={(e) => setBarcodeSearchTerm(e.target.value)}
+                          className="w-full pl-9 pr-3 py-2 bg-white border border-gray-300 rounded-lg text-xs font-semibold outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">
+                          {t('Label Copies')}
+                        </label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="100"
+                          value={barcodeLabelQty}
+                          onChange={(e) => setBarcodeLabelQty(Math.max(1, Math.min(100, parseInt(e.target.value) || 1)))}
+                          className="w-20 px-2.5 py-2 bg-white border border-gray-300 rounded-lg text-xs font-bold text-center outline-none focus:border-brand"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">
+                          {t('Label Format')}
+                        </label>
+                        <select
+                          value={barcodePrintLayout}
+                          onChange={(e: any) => setBarcodePrintLayout(e.target.value)}
+                          className="px-3 py-2 bg-white border border-gray-300 rounded-lg text-xs font-bold outline-none focus:border-brand"
+                        >
+                          <option value="thermal">🏷️ {t('Thermal Label (50x30mm)')}</option>
+                          <option value="shelf">📌 {t('Shelf Edge Tag')}</option>
+                          <option value="sheet">📄 {t('A4 Sticker Sheet (24/page)')}</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Filtered Products Horizontal Scroll List */}
+                  {barcodeSearchTerm.trim() && (
+                    <div className="max-h-36 overflow-y-auto space-y-1 border-t pt-2">
+                      {stockItems
+                        .filter(item =>
+                          safeLower(item.name).includes(barcodeSearchTerm.toLowerCase()) ||
+                          safeLower(item.code).includes(barcodeSearchTerm.toLowerCase())
+                        )
+                        .slice(0, 8)
+                        .map(item => (
+                          <div
+                            key={item.id}
+                            onClick={() => {
+                              setBarcodeSelectedProduct(item);
+                              setBarcodeSearchTerm('');
+                            }}
+                            className={`p-2 rounded-lg text-xs flex items-center justify-between cursor-pointer transition ${
+                              barcodeSelectedProduct?.id === item.id
+                                ? 'bg-brand/10 border border-brand font-bold text-brand'
+                                : 'hover:bg-white bg-white/70 border border-transparent'
+                            }`}
+                          >
+                            <span className="truncate">{item.name} <span className="font-mono text-gray-400">({item.code})</span></span>
+                            <span className="font-bold text-gray-700">{formatMoney(item.retailPrice, activeCurrency, activeExchangeRate)}</span>
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Customer Price Tier Selector */}
+                {barcodeSelectedProduct && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-black text-gray-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <Tag className="w-4 h-4 text-brand" />
+                        <span>{t('Customer Pricing Tier for Barcode Label')}</span>
+                      </label>
+                      <span className="text-[11px] font-semibold text-gray-500">
+                        {t('Choose which price to print or choose Multi-Tier Shelf Tag')}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      {/* Retailer Tier */}
+                      <button
+                        type="button"
+                        onClick={() => setBarcodePriceTier('Retail')}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          barcodePriceTier === 'Retail'
+                            ? 'border-blue-500 bg-blue-50/60 ring-2 ring-blue-500/20 shadow-xs'
+                            : 'border-gray-200 hover:border-gray-300 bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] font-black uppercase text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded">
+                            {t('Retailer')}
+                          </span>
+                          {barcodePriceTier === 'Retail' && <CheckCircle className="w-4 h-4 text-blue-600" />}
+                        </div>
+                        <p className="text-sm font-black text-gray-900 mt-1">
+                          {formatMoney(barcodeSelectedProduct.retailPrice, activeCurrency, activeExchangeRate)}
+                        </p>
+                        <p className="text-[10px] text-gray-500 mt-0.5">{t('Standard Rejareja Price')}</p>
+                      </button>
+
+                      {/* Wholesaler Tier */}
+                      <button
+                        type="button"
+                        onClick={() => setBarcodePriceTier('Wholesale')}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          barcodePriceTier === 'Wholesale'
+                            ? 'border-amber-500 bg-amber-50/60 ring-2 ring-amber-500/20 shadow-xs'
+                            : 'border-gray-200 hover:border-gray-300 bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] font-black uppercase text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded">
+                            {t('Wholesaler')}
+                          </span>
+                          {barcodePriceTier === 'Wholesale' && <CheckCircle className="w-4 h-4 text-amber-600" />}
+                        </div>
+                        <p className="text-sm font-black text-gray-900 mt-1">
+                          {formatMoney(barcodeSelectedProduct.wholesalePrice, activeCurrency, activeExchangeRate)}
+                        </p>
+                        <p className="text-[10px] text-gray-500 mt-0.5">{t('Bulk Jumla Price')}</p>
+                      </button>
+
+                      {/* Preferred Customer Tier */}
+                      <button
+                        type="button"
+                        onClick={() => setBarcodePriceTier('Preferred')}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          barcodePriceTier === 'Preferred'
+                            ? 'border-emerald-500 bg-emerald-50/60 ring-2 ring-emerald-500/20 shadow-xs'
+                            : 'border-gray-200 hover:border-gray-300 bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] font-black uppercase text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded">
+                            {t('Preferred')}
+                          </span>
+                          {barcodePriceTier === 'Preferred' && <CheckCircle className="w-4 h-4 text-emerald-600" />}
+                        </div>
+                        <p className="text-sm font-black text-gray-900 mt-1">
+                          {formatMoney(barcodeSelectedProduct.partnerPrice ?? barcodeSelectedProduct.retailPrice, activeCurrency, activeExchangeRate)}
+                        </p>
+                        <p className="text-[10px] text-gray-500 mt-0.5">{t('Special Partner / VIP Price')}</p>
+                      </button>
+
+                      {/* Multi-Tier Tag */}
+                      <button
+                        type="button"
+                        onClick={() => setBarcodePriceTier('All')}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          barcodePriceTier === 'All'
+                            ? 'border-purple-500 bg-purple-50/60 ring-2 ring-purple-500/20 shadow-xs'
+                            : 'border-gray-200 hover:border-gray-300 bg-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[10px] font-black uppercase text-purple-800 bg-purple-100 px-1.5 py-0.5 rounded">
+                            {t('All Tiers')}
+                          </span>
+                          {barcodePriceTier === 'All' && <CheckCircle className="w-4 h-4 text-purple-600" />}
+                        </div>
+                        <p className="text-xs font-black text-gray-900 mt-1">
+                          {t('Multi-Price Tag')}
+                        </p>
+                        <p className="text-[10px] text-gray-500 mt-0.5">{t('Shows Retail, Wholesale & Preferred')}</p>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Live Barcode Label Preview Card */}
+                {barcodeSelectedProduct && (() => {
+                  const item = barcodeSelectedProduct;
+                  const { bars, totalWidth } = encodeCode128B(item.code, 2);
+                  const barcodeHeight = 44;
+
+                  let activeLabelPrice = item.retailPrice;
+                  let activeLabelTierName = t('Retail Price');
+                  let activeTierBadgeColor = 'bg-blue-600 text-white';
+
+                  if (barcodePriceTier === 'Wholesale') {
+                    activeLabelPrice = item.wholesalePrice;
+                    activeLabelTierName = t('Wholesale Price (Jumla)');
+                    activeTierBadgeColor = 'bg-amber-600 text-white';
+                  } else if (barcodePriceTier === 'Preferred') {
+                    activeLabelPrice = item.partnerPrice ?? item.retailPrice;
+                    activeLabelTierName = t('Preferred Price (Mteja Maalumu)');
+                    activeTierBadgeColor = 'bg-emerald-600 text-white';
+                  }
+
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
+                      
+                      {/* Left: Label Visual Preview */}
+                      <div className="bg-gray-100 p-5 rounded-2xl flex flex-col items-center justify-center border border-gray-200">
+                        <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider mb-2">
+                          {t('Physical Sticker / Shelf Tag Preview')}
+                        </span>
+
+                        {/* Printable Label Box */}
+                        <div
+                          id="pos-barcode-print-container"
+                          className="w-full max-w-sm bg-white p-4 rounded-xl border-2 border-dashed border-gray-300 shadow-md flex flex-col items-center text-center space-y-2 transition-all"
+                        >
+                          {/* Store Name & Category */}
+                          <div className="w-full flex items-center justify-between border-b pb-1.5 text-[9px] font-extrabold uppercase text-gray-400">
+                            <span className="truncate max-w-[150px]">{settings.companyName || 'TRADECORE ERP'}</span>
+                            <span className="text-gray-500">{cleanCategoryName(item.category)}</span>
+                          </div>
+
+                          {/* Product Title */}
+                          <div className="w-full">
+                            <h4 className="text-xs font-black text-gray-900 truncate">{item.name}</h4>
+                            <p className="text-[10px] text-gray-500 font-mono tracking-wider">
+                              SKU: {item.code} {item.unit ? `• ${item.unit}` : ''}
+                            </p>
+                          </div>
+
+                          {/* Vector SVG Barcode */}
+                          <div className="w-full flex justify-center py-1 bg-white">
+                            <svg
+                              viewBox={`0 0 ${totalWidth} ${barcodeHeight + 16}`}
+                              className="w-full max-h-14 overflow-visible"
+                            >
+                              <rect width={totalWidth} height={barcodeHeight + 16} fill="#ffffff" />
+                              {bars.map((bar, idx) => (
+                                <rect
+                                  key={idx}
+                                  x={bar.x}
+                                  y={0}
+                                  width={bar.width}
+                                  height={barcodeHeight}
+                                  fill="#000000"
+                                />
+                              ))}
+                              <text
+                                x={totalWidth / 2}
+                                y={barcodeHeight + 13}
+                                textAnchor="middle"
+                                fontFamily="monospace"
+                                fontSize="11"
+                                fontWeight="bold"
+                                fill="#000000"
+                                letterSpacing="2"
+                              >
+                                {item.code}
+                              </text>
+                            </svg>
+                          </div>
+
+                          {/* Price Tag Representation */}
+                          {barcodePriceTier === 'All' ? (
+                            <div className="w-full grid grid-cols-3 gap-1 pt-1.5 border-t border-gray-100 text-[10px]">
+                              <div className="bg-blue-50 p-1 rounded border border-blue-100 text-center">
+                                <span className="block text-[8px] font-bold text-blue-700 uppercase">{t('Retail')}</span>
+                                <span className="font-black text-gray-900">{formatMoney(item.retailPrice, activeCurrency, activeExchangeRate)}</span>
+                              </div>
+                              <div className="bg-amber-50 p-1 rounded border border-amber-100 text-center">
+                                <span className="block text-[8px] font-bold text-amber-700 uppercase">{t('Wholesale')}</span>
+                                <span className="font-black text-gray-900">{formatMoney(item.wholesalePrice, activeCurrency, activeExchangeRate)}</span>
+                              </div>
+                              <div className="bg-emerald-50 p-1 rounded border border-emerald-100 text-center">
+                                <span className="block text-[8px] font-bold text-emerald-700 uppercase">{t('Preferred')}</span>
+                                <span className="font-black text-gray-900">{formatMoney(item.partnerPrice ?? item.retailPrice, activeCurrency, activeExchangeRate)}</span>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="w-full pt-1 border-t border-gray-100 flex items-center justify-between px-2">
+                              <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${activeTierBadgeColor}`}>
+                                {activeLabelTierName}
+                              </span>
+                              <span className="text-base font-black text-gray-900">
+                                {formatMoney(activeLabelPrice, activeCurrency, activeExchangeRate)}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right: How Barcode Scanning Works with Customer Types */}
+                      <div className="space-y-4">
+                        <div className="p-4 rounded-xl bg-gradient-to-br from-indigo-50/70 to-blue-50/70 border border-indigo-100 space-y-3">
+                          <div className="flex items-center gap-2 text-indigo-900 font-black text-xs uppercase tracking-wide">
+                            <Layers className="w-4 h-4 text-indigo-600" />
+                            <span>{t('How Barcode Scanning Works with Customer Types')}</span>
+                          </div>
+
+                          <div className="space-y-2 text-xs text-gray-700 leading-relaxed">
+                            <p>
+                              {t('In TradeCore POS, barcode guns and camera scanners scan the')} <strong className="font-mono text-gray-900">{item.code}</strong> {t('SKU. The POS dynamically applies the pricing tier linked to the selected customer:')}
+                            </p>
+
+                            <div className="bg-white p-3 rounded-lg border border-indigo-100/80 space-y-2">
+                              <div className="flex items-center justify-between text-xs pb-1 border-b border-gray-100">
+                                <span className="font-bold text-gray-600">{t('Active POS Customer')}:</span>
+                                <span className="font-black text-indigo-700">
+                                  {selectedCustomer ? `${selectedCustomer.name} (${selectedCustomer.type})` : `Walk-In (${priceType})`}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-bold text-gray-600">{t('Price Charged on Barcode Scan')}:</span>
+                                <span className="font-black text-emerald-600 text-sm">
+                                  {formatMoney(getProductPrice(item, 'main', (selectedCustomer?.type || priceType) as any), activeCurrency, activeExchangeRate)}
+                                </span>
+                              </div>
+                            </div>
+
+                            <ul className="text-[11px] space-y-1 text-gray-600 pl-4 list-disc">
+                              <li><strong>{t('Retailer (Rejareja)')}:</strong> {t('When Walk-In or Retail customer is chosen, scan charges standard retail price.')}</li>
+                              <li><strong>{t('Wholesaler (Jumla)')}:</strong> {t('When wholesale buyer is chosen, scan automatically drops unit cost to bulk wholesale.')}</li>
+                              <li><strong>{t('Preferred Customer')}:</strong> {t('When VIP or contract customer is chosen, scan instantly applies preferred price.')}</li>
+                            </ul>
+                          </div>
+                        </div>
+
+                        {/* Direct Test & Cart Action */}
+                        <div className="flex flex-col gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleAddToCart(item);
+                              toast.success(`⚡ [${item.code}] ${item.name} ${t('added to cart at')} ${formatMoney(getProductPrice(item, 'main'), activeCurrency, activeExchangeRate)}`);
+                            }}
+                            className="w-full py-2.5 px-3 bg-brand hover:bg-brand-hover text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
+                          >
+                            <ShoppingCart className="w-4 h-4" />
+                            <span>{t('Test Scan / Add to POS Cart Now')} ({formatMoney(getProductPrice(item, 'main'), activeCurrency, activeExchangeRate)})</span>
+                          </button>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handlePrintWithFallback((title, desc) => {
+                                  setConfirmModal({
+                                    isOpen: true,
+                                    title: t(title),
+                                    description: t(desc),
+                                    onConfirm: () => {}
+                                  });
+                                });
+                              }}
+                              className="flex-1 py-2 px-3 bg-gray-900 hover:bg-gray-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition cursor-pointer"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>{t('Print Labels')} ({barcodeLabelQty}x)</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadBarcodeSvg(item.code, item.name)}
+                              className="px-3 py-2 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                              title={t('Download standalone vector SVG for product packaging or thermal software')}
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              <span>{t('SVG')}</span>
+                            </button>
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+                  );
+                })()}
+
+              </div>
+
+              {/* Modal Footer */}
+              <div className="px-6 py-3 border-t bg-gray-50 flex items-center justify-between shrink-0">
+                <span className="text-[11px] font-semibold text-gray-500">
+                  {t('Compatible with all standard barcode guns, USB scanners, Honeywell, Datalogic & mobile cameras.')}
+                </span>
+                <button
+                  onClick={() => setShowBarcodeModal(false)}
+                  className="bg-gray-900 hover:bg-gray-800 text-white font-bold text-xs px-5 py-2 rounded-xl transition cursor-pointer"
+                >
+                  {t('Done')}
+                </button>
+              </div>
+
+            </div>
+          </div>
+        )}

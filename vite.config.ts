@@ -40,7 +40,7 @@ export default defineConfig(() => {
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
         globIgnores: ['**/sw.js', '**/sw.mjs', '**/workbox-*.js', '**/server.cjs*'],
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        maximumFileSizeToCacheInBytes: 10 * 1024 * 1024,
       },
       devOptions: { enabled: false }
     })],

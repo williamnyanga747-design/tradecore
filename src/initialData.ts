@@ -1,4 +1,4 @@
-import { Company, Branch, Store, User, StockItem, PurchaseOrder, SalesOrder, Expense, Tax, Supplier, Customer, AuditTrail, SecurityLog, Settings, SubscriptionMeta, MarketplaceProduct, MarketplaceCustomer, MarketplaceOrder, HomepageContent, SiteConfig, Currency, TradeSubscriptionPlan, CollectionSetting, Offer, OfferMessage, GroupDeal, GroupDealParticipant, WhatsappConversation, NotificationLog, Delivery, DeliveryUpdate, InstallmentPlan, InstallmentOrder, InstallmentPayment, LiveStream, LiveComment, LoyaltyCustomer, LoyaltyTransaction, LoyaltyRedeemCode } from './types';
+import { Company, Branch, Store, User, StockItem, PurchaseOrder, SalesOrder, Expense, Tax, Supplier, Customer, AuditTrail, SecurityLog, Settings, SubscriptionMeta, MarketplaceProduct, MarketplaceCustomer, MarketplaceOrder, HomepageContent, SiteConfig, Currency, TradeSubscriptionPlan, CollectionSetting, Offer, OfferMessage, GroupDeal, GroupDealParticipant, WhatsappConversation, NotificationLog, Delivery, DeliveryUpdate, InstallmentPlan, InstallmentOrder, InstallmentPayment, LiveStream, LiveComment, LoyaltyCustomer, LoyaltyTransaction, LoyaltyRedeemCode, BOM, ProductionRun, QCTemplate, ManufacturingSettings } from './types';
 import { TANZANIA_REGIONS } from './utils/regions';
 
 const today = new Date().toISOString().split('T')[0];
@@ -270,7 +270,7 @@ export const defaultSettings: Settings = {
 
 export const defaultRolePermissions: Record<string, string[]> = {
   'Super Admin': [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
+    'dashboard', 'stock-items', 'manufacturing', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
     'companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'data-recovery', 'exchange-rate',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
@@ -281,7 +281,7 @@ export const defaultRolePermissions: Record<string, string[]> = {
     'root-dashboard', 'tra-reports', 'root-disputes'
   ],
   'Admin': [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
+    'dashboard', 'stock-items', 'manufacturing', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
     'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'data-recovery', 'exchange-rate',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
@@ -296,7 +296,7 @@ export const defaultRolePermissions: Record<string, string[]> = {
     'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'qr-code-yangu', 'sauti-search', 'tra-report'
   ],
   'Wholesaler': [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
+    'dashboard', 'stock-items', 'manufacturing', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'ai-copilot',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-daily', 'report-sales', 'report-purchase',
     'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
@@ -452,3 +452,95 @@ export const defaultLiveComments: LiveComment[] = [];
 export const defaultLoyaltyCustomers: LoyaltyCustomer[] = [];
 export const defaultLoyaltyTransactions: LoyaltyTransaction[] = [];
 export const defaultLoyaltyRedeemCodes: LoyaltyRedeemCode[] = [];
+
+// ============================================================================
+// MANUFACTURING INDUSTRY DEFAULT DATA (Wheat Milling, TBS QC Templates & Batches)
+// ============================================================================
+export const defaultManufacturingSettings: ManufacturingSettings = {
+  flourInvisibleLossThreshold: 3.0, // 3% standard moisture evaporation tolerance
+  warningInvisibleLossThreshold: 5.0, // 5% triggers moisture meter alert
+  autoDeductRawMaterials: true,
+  autoCreateFinishedStock: true,
+  defaultAllocationMethod: 'by_market_value',
+  requireQCSignoffBeforeComplete: true,
+  tbsCertPrefix: 'TBS-QC-'
+};
+
+export const defaultQcTemplates: QCTemplate[] = [
+  {
+    id: 'QC-TMPL-FLOUR-01',
+    companyId: 1,
+    name: 'Wheat Flour Grade 1 (TBS Standard EAS 44 / TZS 438)',
+    standardRef: 'TZS 438:2021 / EAS 44:2019',
+    isActive: true,
+    parameters: [
+      { id: 'param-1', templateId: 'QC-TMPL-FLOUR-01', paramName: 'Moisture Content', unit: '%', minValue: 10.0, maxValue: 13.5, isCritical: true, sortOrder: 0 },
+      { id: 'param-2', templateId: 'QC-TMPL-FLOUR-01', paramName: 'Protein (Dry Basis)', unit: '%', minValue: 10.0, maxValue: 16.0, isCritical: true, sortOrder: 1 },
+      { id: 'param-3', templateId: 'QC-TMPL-FLOUR-01', paramName: 'Total Ash Content', unit: '%', minValue: 0.0, maxValue: 0.8, isCritical: false, sortOrder: 2 },
+      { id: 'param-4', templateId: 'QC-TMPL-FLOUR-01', paramName: 'Whiteness (L* Index)', unit: 'index', minValue: 90.0, maxValue: 100.0, isCritical: false, sortOrder: 3 },
+      { id: 'param-5', templateId: 'QC-TMPL-FLOUR-01', paramName: 'Sieve Retention (> 212µm)', unit: '%', minValue: 0.0, maxValue: 2.0, isCritical: false, sortOrder: 4 }
+    ]
+  }
+];
+
+export const defaultBoms: BOM[] = [
+  {
+    id: 'BOM-WF-1000',
+    companyId: 1,
+    name: 'Standard Wheat Flour Milling (1,000kg Batch)',
+    code: 'BOM-WF-1000',
+    category: 'Grain Milling',
+    baseQuantity: 1000,
+    costAllocationMethod: 'by_market_value',
+    items: [
+      { productId: 1, productName: 'Raw Wheat Grain (Ngano Mbichi)', quantity: 1000, unitCost: 1200, unit: 'kg', scrapAllowancePercent: 2.0 }
+    ],
+    outputs: [
+      { id: 'out-1', bomId: 'BOM-WF-1000', productId: 1, productName: 'Wheat Flour Grade 1 (Super)', isPrimary: true, expectedQtyKg: 650, expectedMarketPrice: 2200, allocationPercent: 70 },
+      { id: 'out-2', bomId: 'BOM-WF-1000', productId: 2, productName: 'Wheat Flour Standard (Home)', isPrimary: true, expectedQtyKg: 150, expectedMarketPrice: 1800, allocationPercent: 18 },
+      { id: 'out-3', bomId: 'BOM-WF-1000', productId: 3, productName: 'Wheat Bran (Pumba ya Ngano)', isPrimary: false, expectedQtyKg: 180, expectedMarketPrice: 600, allocationPercent: 12 }
+    ],
+    packagingCost: 45000,
+    laborCost: 30000,
+    overheadCost: 25000,
+    isActive: true,
+    createdAt: '2026-01-01'
+  }
+];
+
+export const defaultProductionRuns: ProductionRun[] = [
+  {
+    id: 'RUN-2026-001',
+    runNumber: 'PR-2026-0101',
+    batchNumber: 'LOT-WF-20261101-01',
+    bomId: 'BOM-WF-1000',
+    bomName: 'Standard Wheat Flour Milling (1,000kg Batch)',
+    companyId: 1,
+    storeId: 1,
+    status: 'Completed',
+    plannedStartDate: yesterday,
+    completedDate: today,
+    expiryDate: expIn25Days,
+    notes: 'Shift A regular production. Conditioned raw wheat grain.',
+    inputWeightKg: 1000,
+    cleaningLossKg: 12,
+    millingScrapKg: 10,
+    invisibleLossKg: 18, // 18kg = 1.8% moisture evaporation
+    moistureBeforePercent: 13.8,
+    moistureAfterPercent: 12.0,
+    rawMaterialCost: 1200000,
+    packagingCost: 45000,
+    laborCost: 30000,
+    overheadCost: 25000,
+    totalBatchCost: 1300000,
+    outputs: [
+      { productId: 1, productName: 'Wheat Flour Grade 1 (Super)', isPrimary: true, expectedQtyKg: 650, actualQtyKg: 650, allocatedCost: 910000, unitCost: 1400, marketPrice: 2200 },
+      { productId: 2, productName: 'Wheat Flour Standard (Home)', isPrimary: true, expectedQtyKg: 150, actualQtyKg: 145, allocatedCost: 225000, unitCost: 1551.72, marketPrice: 1800 },
+      { productId: 3, productName: 'Wheat Bran (Pumba ya Ngano)', isPrimary: false, expectedQtyKg: 180, actualQtyKg: 165, allocatedCost: 165000, unitCost: 1000, marketPrice: 600 }
+    ],
+    totalOutputKg: 960,
+    yieldPercent: 96.0,
+    qcStatus: 'Passed',
+    createdAt: yesterday
+  }
+];

@@ -6,7 +6,7 @@ import {
   Database, FileUp, BarChart3, Users, UserCircle, LogOut, ChevronDown, Store,
   ChevronLeft, ChevronRight, Settings as SettingsIcon, Sparkles, BadgeCheck, Crown,
   Wallet, Share2, Tags, HandCoins, CalendarClock, Bike, Video, Gift, MessageCircle,
-  QrCode, Mic, Landmark, Scale
+  QrCode, Mic, Landmark, Scale, Factory
 } from 'lucide-react';
 import PWAInstallButton from './PWAInstallButton';
 
@@ -88,7 +88,7 @@ function SidebarInner({
   // menu so core panels never unmount. This is a pure safety net — App.tsx's
   // allowedPages already guarantees a non-empty authoritative list.
   const DEFAULT_OPERATIONAL_PAGES = [
-    'dashboard', 'stock-items', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
+    'dashboard', 'stock-items', 'manufacturing', 'purchase-order', 'sales-order', 'expenses', 'receipts', 'accounting', 'tally', 'ai-copilot',
     'companies', 'branches', 'stores', 'customers', 'suppliers', 'categories', 'taxes', 'data-recovery', 'exchange-rate',
     'import-stock', 'import-customers', 'import-suppliers',
     'report-transaction', 'report-financial', 'report-daily', 'report-monthly', 'report-sales', 'report-purchase',
@@ -308,6 +308,7 @@ function SidebarInner({
           </button>
         )}
 
+
         {isAllowed('purchase-order') && (
           <button
             onClick={() => onNavigate('purchase-order')}
@@ -373,6 +374,20 @@ function SidebarInner({
           >
             <Scale className="w-[18px] h-[18px] flex-shrink-0 text-indigo-400" />
             {!isCollapsed && <span>{t('Accounting (Tally)')}</span>}
+          </button>
+        )}
+
+        {/* Manufacturing Industry & Production Operations (Positioned after Accounting/Tally) */}
+        {isAllowed('manufacturing') && (
+          <button
+            onClick={() => onNavigate('manufacturing')}
+            className={`w-full flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2'} rounded-md transition text-left ${
+              currentPage === 'manufacturing' ? 'bg-indigo-600 text-amber-300 font-bold shadow-xs border border-amber-400/30' : 'text-amber-300 hover:bg-white/10 font-semibold'
+            }`}
+            title={isCollapsed ? t('Manufacturing') : undefined}
+          >
+            <Factory className="w-[18px] h-[18px] flex-shrink-0 text-amber-400" />
+            {!isCollapsed && <span className="text-amber-300 font-bold">{t('Manufacturing')}</span>}
           </button>
         )}
 
