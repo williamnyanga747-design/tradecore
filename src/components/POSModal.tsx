@@ -2640,6 +2640,8 @@ export default function POSModal({
               </div>
             </div>
           </div>
+        )}
+
         {/* ========================================================================= */}
         {/* POS BARCODE STUDIO & SHELF LABEL GENERATOR (RETAILER / WHOLESALER / PREFERRED) */}
         {/* ========================================================================= */}
@@ -2900,7 +2902,7 @@ export default function POSModal({
                         >
                           {/* Store Name & Category */}
                           <div className="w-full flex items-center justify-between border-b pb-1.5 text-[9px] font-extrabold uppercase text-gray-400">
-                            <span className="truncate max-w-[150px]">{settings.companyName || 'TRADECORE ERP'}</span>
+                            <span className="truncate max-w-[150px]">{(settings as any)?.companyName || 'TRADECORE ERP'}</span>
                             <span className="text-gray-500">{cleanCategoryName(item.category)}</span>
                           </div>
 
@@ -3078,3 +3080,8 @@ export default function POSModal({
             </div>
           </div>
         )}
+
+      </div>
+    </div>
+  );
+}

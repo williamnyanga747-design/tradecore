@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User } from '../types';
 import { UserCircle, Mail, Key, LogOut, BookOpen, Globe, Info, HelpCircle, Fingerprint, ShieldCheck, CheckCircle2, AlertCircle, Sparkles, Lock, Unlock, RefreshCw, X } from 'lucide-react';
 import { toast } from '../utils/toast';
@@ -14,6 +14,7 @@ interface ProfileProps {
   logAction: (action: string, details: string) => void;
   onOpenGame?: () => void;
   onPasswordChange: (currentPassword: string, newPassword: string) => Promise<boolean>;
+  onUpdateCurrentUser?: (user: User) => void;
 }
 
 export default function Profile({
@@ -24,7 +25,8 @@ export default function Profile({
   users,
   logAction,
   onOpenGame,
-  onPasswordChange
+  onPasswordChange,
+  onUpdateCurrentUser
 }: ProfileProps) {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -40,18 +42,39 @@ export default function Profile({
   const [fpScanProgress, setFpScanProgress] = useState(0);
   const [fpSuccess, setFpSuccess] = useState(false);
   const [fpCurrentPwdCheck, setFpCurrentPwdCheck] = useState('');
-  const [isFpEnrolled, setIsFpEnrolled] = useState(() => Boolean(currentUser.fingerprintEnabled));
+  const [isFpEnrolled, setIsFpEnrolled] = useState(() => Boolean(currentUser?.fingerprintEnabled));
+
+  useEffect(() => {
+    setIsFpEnrolled(Boolean(currentUser?.fingerprintEnabled));
+  }, [currentUser?.fingerprintEnabled]);
 
   const [firstLoginDate] = useState<Date>(() => {
     const key = `tradecore_first_login_${currentUser?.id || 'default'}`;
-    const saved = localStorage.getItem(key);
-    if (saved) return new Date(saved);
-    const now = new Date();
-    localStorage.setItem(key, now.toISOString());
-    return now;
+    try {
+      const saved = localStorage.getItem(key);
+      if (saved) return new Date(saved);
+    } catch {}
+    return new Date();
   });
 
-  if (!currentUser) return null;
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const key = `tradecore_first_login_${currentUser.id}`;
+    try {
+      if (!localStorage.getItem(key)) {
+        localStorage.setItem(key, firstLoginDate.toISOString());
+      }
+    } catch {}
+  }, [currentUser?.id, firstLoginDate]);
+
+  if (!currentUser) {
+    return (
+      <div className="max-w-xl mx-auto mt-8 bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-500 shadow-sm">
+        <UserCircle className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+        <p className="font-semibold text-sm">{t('Please sign in to view your profile.')}</p>
+      </div>
+    );
+  }
 
   const daysSinceLogin = Math.max(0, Math.floor((new Date().getTime() - firstLoginDate.getTime()) / (1000 * 60 * 60 * 24)));
   const daysRemaining = Math.max(0, 14 - daysSinceLogin);
@@ -95,6 +118,7 @@ export default function Profile({
       const enrolled: string[] = JSON.parse(localStorage.getItem('tradecore_fp_enrolled_users') || '[]');
       const nextEnrolled = enrolled.filter((un: string) => un !== currentUser.username);
       localStorage.setItem('tradecore_fp_enrolled_users', JSON.stringify(nextEnrolled));
+      if (onUpdateCurrentUser) onUpdateCurrentUser(updatedUser);
     } catch {}
 
     logAction('FINGERPRINT_DISABLED', `User ${currentUser.username} disabled fingerprint password biometric security.`);
@@ -187,6 +211,7 @@ export default function Profile({
                 enrolled.push(currentUser.username);
               }
               localStorage.setItem('tradecore_fp_enrolled_users', JSON.stringify(enrolled));
+              if (onUpdateCurrentUser) onUpdateCurrentUser(updatedUser);
             } catch {}
 
             logAction('FINGERPRINT_ENROLLED', `User ${currentUser.username} enrolled fingerprint password.`);

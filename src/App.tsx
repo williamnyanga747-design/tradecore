@@ -17625,22 +17625,25 @@ try {
         );
       case 'profile':
         return (
-          <Profile
-            currentUser={currentUser}
-            translate={t}
-            onLogout={handleLogout}
-            saveAllData={saveAllData}
-            users={users}
-            logAction={logAction}
-            onPasswordChange={handleProfilePasswordChange}
-            onOpenGame={() => {
-              if (isAdminScopeUser(currentUser) || settings.allowGamesEnabled !== false) {
-                setShowGameModal(true);
-              } else {
-                toast.info('Mind Refresh Game Breaks are currently disabled by Admin.');
-              }
-            }}
-          />
+          <PanelErrorBoundary panelName="Profile">
+            <Profile
+              currentUser={currentUser}
+              onUpdateCurrentUser={(updated) => setCurrentUser(updated)}
+              translate={t}
+              onLogout={handleLogout}
+              saveAllData={saveAllData}
+              users={users}
+              logAction={logAction}
+              onPasswordChange={handleProfilePasswordChange}
+              onOpenGame={() => {
+                if (isAdminScopeUser(currentUser) || settings.allowGamesEnabled !== false) {
+                  setShowGameModal(true);
+                } else {
+                  toast.info('Mind Refresh Game Breaks are currently disabled by Admin.');
+                }
+              }}
+            />
+          </PanelErrorBoundary>
         );
       case 'subscriptions':
         // BUILD 2026-09-08-8: recreated root gets role 'superadmin' (lowercase) — the
