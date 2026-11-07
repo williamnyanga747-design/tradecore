@@ -15,6 +15,7 @@ import {
 import { formatMoney } from '../utils/format';
 import { generateQrDataUrl } from '../utils/qrCodeUtils';
 import { toast } from '../utils/toast';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 interface ManufacturingPanelProps {
   boms: BOM[];
@@ -38,6 +39,7 @@ interface ManufacturingPanelProps {
   onSaveQCChecks: (checks: BatchQCCheck[]) => void;
   onSaveProductionAuditLogs?: (logs: ProductionAuditLog[]) => void;
   onCompleteBatchStock: (run: ProductionRun) => void;
+  onDeductBatchStartStock?: (run: ProductionRun) => void;
   logAction?: (action: string, details: string) => void;
   t: (text: string) => string;
 }
@@ -66,6 +68,7 @@ export default function ManufacturingPanel({
   onSaveQCChecks,
   onSaveProductionAuditLogs,
   onCompleteBatchStock,
+  onDeductBatchStartStock,
   logAction,
   t
 }: ManufacturingPanelProps) {
@@ -178,6 +181,27 @@ export default function ManufacturingPanel({
   const [runPlannedDate, setRunPlannedDate] = useState(new Date().toISOString().split('T')[0]);
   const [runExpiryDate, setRunExpiryDate] = useState('');
   const [runNotes, setRunNotes] = useState('');
+  const [runStartImmediately, setRunStartImmediately] = useState<boolean>(true);
+
+  // Status Filter for Production Runs Table
+  const [runStatusFilter, setRunStatusFilter] = useState<'all' | 'work_available' | 'Planned' | 'In-Progress' | 'Quality Check' | 'Completed'>('all');
+
+  // Confirmation Modal State (replaces window.confirm in iframe)
+  const [confirmModalState, setConfirmModalState] = useState<{
+    isOpen: boolean;
+    title: string;
+    description: string;
+    confirmText?: string;
+    cancelText?: string;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    description: '',
+    confirmText: 'Delete',
+    cancelText: 'Cancel',
+    onConfirm: () => {}
+  });
 
   // 3. Live Batch Runner Modal / Drawer
   const [activeRunnerRun, setActiveRunnerRun] = useState<ProductionRun | null>(null);
@@ -265,6 +289,72 @@ export default function ManufacturingPanel({
       qcPassRate
     };
   }, [companyRuns, companyQcChecks]);
+
+  // Dynamic BOM warehouse parts stock status & in-flight batch count
+  const bomStockStatus = useMemo(() => {
+    const statusMap: Record<string | number, {
+      producibleBatches: number;
+      activeBatches: number;
+      completedBatches: number;
+      missingItems: string[];
+    }> = {};
+
+    companyBoms.forEach(bom => {
+      const activeBatches = companyRuns.filter(r => String(r.bomId) === String(bom.id) && (r.status === 'In-Progress' || r.status === 'Planned' || r.status === 'Quality Check')).length;
+      const completedBatches = companyRuns.filter(r => String(r.bomId) === String(bom.id) && r.status === 'Completed').length;
+
+      const missingItems: string[] = [];
+      let minBatches = Infinity;
+
+      if (!bom.items || bom.items.length === 0) {
+        minBatches = 0;
+      } else {
+        bom.items.forEach(item => {
+          if (!item.quantity || item.quantity <= 0) return;
+          const matchedItem = stockItems.find(p => String(p.id) === String(item.productId) || (item.productName && p.name.toLowerCase() === item.productName.toLowerCase()));
+          if (!matchedItem) {
+            minBatches = 0;
+            missingItems.push(item.productName || 'Raw Material');
+            return;
+          }
+          const storeIdNum = Number(currentStoreId);
+          const storeStock = (storeIdNum && matchedItem.stock?.[storeIdNum] !== undefined)
+            ? (matchedItem.stock[storeIdNum] || 0)
+            : Object.values(matchedItem.stock || {}).reduce((s, v) => s + (Number(v) || 0), 0);
+
+          const possible = Math.floor(storeStock / item.quantity);
+          if (possible < minBatches) {
+            minBatches = possible;
+          }
+          if (storeStock < item.quantity) {
+            missingItems.push(`${item.productName} (${storeStock}/${item.quantity})`);
+          }
+        });
+      }
+
+      statusMap[bom.id] = {
+        producibleBatches: minBatches === Infinity ? 0 : minBatches,
+        activeBatches,
+        completedBatches,
+        missingItems
+      };
+    });
+
+    return statusMap;
+  }, [companyBoms, companyRuns, stockItems, currentStoreId]);
+
+  // Live Work Available counts (Planned + In-Progress + Quality Check)
+  const workAvailableRuns = useMemo(() => {
+    return companyRuns.filter(r => r.status === 'Planned' || r.status === 'In-Progress' || r.status === 'Quality Check');
+  }, [companyRuns]);
+  const workAvailableCount = workAvailableRuns.length;
+
+  // Filtered Production Runs for the table view
+  const filteredCompanyRuns = useMemo(() => {
+    if (runStatusFilter === 'all') return companyRuns;
+    if (runStatusFilter === 'work_available') return workAvailableRuns;
+    return companyRuns.filter(r => r.status === runStatusFilter);
+  }, [companyRuns, runStatusFilter, workAvailableRuns]);
 
   // --------------------------------------------------------------------------
   // COST ALLOCATION LOGIC (Joint Product / Multi-Output)
@@ -460,15 +550,66 @@ export default function ManufacturingPanel({
   };
 
   const handleDeleteBOM = (bomId: string | number) => {
-    if (!window.confirm(t('Are you sure you want to delete this Bill of Materials?'))) return;
-    const next = boms.filter(b => b.id !== bomId);
-    onSaveBOMs(next);
-    toast.success(t('BOM recipe deleted'));
+    if (!canPerformCRUD) {
+      toast.error(t('Only Company Admin has permission to delete BOM recipes.'));
+      return;
+    }
+    const targetBom = boms.find(b => b.id === bomId);
+    if (!targetBom) return;
+
+    setConfirmModalState({
+      isOpen: true,
+      title: t('Delete Bill of Materials Recipe'),
+      description: t(`Are you sure you want to delete "${targetBom.name}" (${targetBom.code})? This will permanently remove the BOM recipe.`),
+      confirmText: t('Delete Recipe'),
+      cancelText: t('Cancel'),
+      onConfirm: () => {
+        const next = boms.filter(b => b.id !== bomId);
+        onSaveBOMs(next);
+        toast.success(t(`BOM recipe "${targetBom.name}" deleted successfully`));
+        if (logAction) {
+          logAction('BOM Recipe Deleted', `Deleted BOM recipe ${targetBom.code} - ${targetBom.name}`);
+        }
+      }
+    });
   };
 
   // --------------------------------------------------------------------------
   // PRODUCTION RUN CREATION & MANAGEMENT
   // --------------------------------------------------------------------------
+  const handleDeleteRun = (runId: string | number) => {
+    if (!canPerformCRUD) {
+      toast.error(t('Only Company Admin has permission to delete production orders.'));
+      return;
+    }
+    const targetRun = companyRuns.find(r => r.id === runId);
+    if (!targetRun) return;
+
+    setConfirmModalState({
+      isOpen: true,
+      title: t('Delete Production Batch Run'),
+      description: t(`Are you sure you want to delete Batch #${targetRun.batchNumber} (${targetRun.runNumber})? This will permanently remove the batch order.`),
+      confirmText: t('Delete Order'),
+      cancelText: t('Cancel'),
+      onConfirm: () => {
+        const next = productionRuns.filter(r => r.id !== runId);
+        onSaveProductionRuns(next);
+        appendAuditLog(
+          targetRun.id,
+          targetRun.batchNumber,
+          'STATUS_CHANGED',
+          t('Production Batch Order Deleted'),
+          `Production order #${targetRun.batchNumber} was deleted from system.`,
+          { deletedRunId: targetRun.id, batchNumber: targetRun.batchNumber }
+        );
+        toast.success(t(`Production Order #${targetRun.batchNumber} deleted successfully`));
+        if (logAction) {
+          logAction('Production Run Deleted', `Deleted production run #${targetRun.batchNumber}`);
+        }
+      }
+    });
+  };
+
   const openNewRunModal = (preselectedBomId?: string | number) => {
     const selectedBom = boms.find(b => b.id === preselectedBomId) || companyBoms[0];
     const initialBomId = selectedBom ? selectedBom.id : (boms[0]?.id || '');
@@ -484,6 +625,7 @@ export default function ManufacturingPanel({
     exp.setMonth(exp.getMonth() + 6);
     setRunExpiryDate(exp.toISOString().split('T')[0]);
     setRunNotes('');
+    setRunStartImmediately(true);
     setShowCreateRunModal(true);
   };
 
@@ -537,6 +679,17 @@ export default function ManufacturingPanel({
     const totalOut = finalOutputs.reduce((sum, o) => sum + o.actualQtyKg, 0);
     const runNum = `PR-${new Date().getFullYear()}-${String(companyRuns.length + 101).padStart(4, '0')}`;
 
+    const actualRaw = (bom.items || []).map(item => ({
+      productId: item.productId,
+      productName: item.productName || 'Raw Material',
+      consumedQty: Math.round(item.quantity * scale * 100) / 100,
+      standardQty: item.quantity,
+      unitCost: item.unitCost
+    }));
+
+    const isImmediate = runStartImmediately;
+    const initialStatus: ProductionRunStatus = isImmediate ? 'In-Progress' : 'Planned';
+
     const newRun: ProductionRun = {
       id: `RUN-${Date.now()}`,
       runNumber: runNum,
@@ -545,10 +698,13 @@ export default function ManufacturingPanel({
       bomName: bom.name,
       companyId: currentCompanyId,
       storeId: runStoreId,
-      status: 'Planned',
+      status: initialStatus,
       plannedStartDate: runPlannedDate,
+      actualStartDate: isImmediate ? new Date().toISOString().split('T')[0] : undefined,
       expiryDate: runExpiryDate,
       notes: runNotes,
+      actualRawMaterials: actualRaw,
+      rawMaterialsDeducted: isImmediate,
       inputWeightKg: runInputWeightKg,
       cleaningLossKg: 0,
       millingScrapKg: 0,
@@ -568,26 +724,40 @@ export default function ManufacturingPanel({
       updatedAt: new Date().toISOString()
     };
 
+    if (isImmediate && onDeductBatchStartStock) {
+      onDeductBatchStartStock(newRun);
+    }
+
     const nextRuns = [newRun, ...productionRuns];
     onSaveProductionRuns(nextRuns);
     setShowCreateRunModal(false);
+
     appendAuditLog(
       newRun.id,
       newRun.batchNumber,
       'BATCH_CREATED',
-      t('Production Batch Planned'),
-      `Planned batch #${newRun.batchNumber} with BOM ${bom.name} (${runInputWeightKg} kg target input).`,
+      isImmediate ? t('Production Batch Started') : t('Production Batch Planned'),
+      `${isImmediate ? 'Started' : 'Planned'} batch #${newRun.batchNumber} with BOM ${bom.name} (${runInputWeightKg} kg target input). ${isImmediate ? 'Raw materials deducted from warehouse inventory.' : ''}`,
       {
         bomId: bom.id,
         bomName: bom.name,
         inputWeightKg: runInputWeightKg,
         storeId: runStoreId,
         plannedStartDate: runPlannedDate,
-        expiryDate: runExpiryDate
+        expiryDate: runExpiryDate,
+        rawMaterialsDeducted: isImmediate
       }
     );
+
     if (logAction) {
-      logAction('Production Run Planned', `Planned batch ${newRun.batchNumber} with BOM ${bom.name} (${runInputWeightKg} kg input).`);
+      logAction(isImmediate ? 'Production Run Started' : 'Production Run Planned', `${isImmediate ? 'Started' : 'Planned'} batch ${newRun.batchNumber} with BOM ${bom.name} (${runInputWeightKg} kg input).`);
+    }
+
+    if (isImmediate) {
+      toast.success(t(`Batch #${newRun.batchNumber} launched into In-Progress! Raw material parts decreased in stock.`));
+      setActiveTab('runs');
+    } else {
+      toast.success(t(`Production Order #${newRun.batchNumber} scheduled.`));
     }
   };
 
@@ -595,6 +765,45 @@ export default function ManufacturingPanel({
   // LIVE BATCH RUNNER & LOSS ANALYSIS (Enhancement #2)
   // --------------------------------------------------------------------------
   const openBatchRunner = (run: ProductionRun) => {
+    // If run was planned and starting now, deduct raw materials and mark in-progress
+    if (run.status === 'Planned') {
+      const bom = boms.find(b => b.id === run.bomId);
+      const scale = run.inputWeightKg > 0 && bom && bom.baseQuantity > 0 ? run.inputWeightKg / bom.baseQuantity : 1;
+      const rawMaterials = run.actualRawMaterials && run.actualRawMaterials.length > 0 ? run.actualRawMaterials : (bom?.items || []).map(item => ({
+        productId: item.productId,
+        productName: item.productName || 'Raw Material',
+        consumedQty: Math.round(item.quantity * scale * 100) / 100,
+        standardQty: item.quantity,
+        unitCost: item.unitCost
+      }));
+
+      const startedRun: ProductionRun = {
+        ...run,
+        status: 'In-Progress',
+        actualStartDate: run.actualStartDate || new Date().toISOString().split('T')[0],
+        actualRawMaterials: rawMaterials,
+        rawMaterialsDeducted: true,
+        updatedAt: new Date().toISOString()
+      };
+
+      if (!run.rawMaterialsDeducted && onDeductBatchStartStock) {
+        onDeductBatchStartStock(startedRun);
+      }
+
+      const nextRuns = productionRuns.map(r => r.id === run.id ? startedRun : r);
+      onSaveProductionRuns(nextRuns);
+      run = startedRun;
+
+      appendAuditLog(
+        run.id,
+        run.batchNumber,
+        'STATUS_CHANGE',
+        t('Production Batch Started'),
+        `Batch status progressed to In-Progress. Raw materials consumed from warehouse #${run.storeId}.`
+      );
+      toast.success(t(`Batch #${run.batchNumber} is now In-Progress. Raw material stock deducted.`));
+    }
+
     setActiveRunnerRun(run);
     setRunnerCleaningLoss(run.cleaningLossKg || 12);
     setRunnerMillingScrap(run.millingScrapKg || 10);
@@ -899,44 +1108,53 @@ export default function ManufacturingPanel({
       return;
     }
 
-    if (run.qcStatus === 'Rejected' || run.qcStatus === 'Rework Required') {
-      const confirmForce = window.confirm(
-        t(`Warning: This batch failed QC (Status: ${run.qcStatus}). Are you sure you want to proceed with inventory completion?`)
-      );
-      if (!confirmForce) return;
-    }
+    const finalizeRun = () => {
+      const updatedRun: ProductionRun = {
+        ...run,
+        status: 'Completed',
+        completedDate: new Date().toISOString().split('T')[0],
+        updatedAt: new Date().toISOString()
+      };
 
-    const updatedRun: ProductionRun = {
-      ...run,
-      status: 'Completed',
-      completedDate: new Date().toISOString().split('T')[0],
-      updatedAt: new Date().toISOString()
+      const nextRuns = productionRuns.map(r => r.id === updatedRun.id ? updatedRun : r);
+      onSaveProductionRuns(nextRuns);
+
+      // Fire the stock movements handler
+      onCompleteBatchStock(updatedRun);
+
+      appendAuditLog(
+        run.id,
+        run.batchNumber,
+        'BATCH_COMPLETED',
+        t('Production Batch Completed & Stocked'),
+        `Batch #${run.batchNumber} successfully completed. Raw materials consumed and ${run.outputs?.length || 0} finished product / by-product lines stocked with calculated unit costs into store #${run.storeId}.`,
+        {
+          storeId: run.storeId,
+          totalOutputKg: run.totalOutputKg,
+          yieldPercent: run.yieldPercent,
+          outputsCount: run.outputs?.length || 0
+        }
+      );
+
+      toast.success(t(`Batch ${run.batchNumber} completed! Inventory updated for all ${run.outputs?.length || 0} output products with separate unit costs.`));
+      if (logAction) {
+        logAction('Production Run Completed', `Batch ${run.batchNumber} completed. Stocked ${run.totalOutputKg} kg of finished goods & by-products.`);
+      }
     };
 
-    const nextRuns = productionRuns.map(r => r.id === updatedRun.id ? updatedRun : r);
-    onSaveProductionRuns(nextRuns);
-
-    // Fire the stock movements handler
-    onCompleteBatchStock(updatedRun);
-
-    appendAuditLog(
-      run.id,
-      run.batchNumber,
-      'BATCH_COMPLETED',
-      t('Production Batch Completed & Stocked'),
-      `Batch #${run.batchNumber} successfully completed. Raw materials consumed and ${run.outputs?.length || 0} finished product / by-product lines stocked with calculated unit costs into store #${run.storeId}.`,
-      {
-        storeId: run.storeId,
-        totalOutputKg: run.totalOutputKg,
-        yieldPercent: run.yieldPercent,
-        outputsCount: run.outputs?.length || 0
-      }
-    );
-
-    toast.success(t(`Batch ${run.batchNumber} completed! Inventory updated for all ${run.outputs?.length || 0} output products with separate unit costs.`));
-    if (logAction) {
-      logAction('Production Run Completed', `Batch ${run.batchNumber} completed. Stocked ${run.totalOutputKg} kg of finished goods & by-products.`);
+    if (run.qcStatus === 'Rejected' || run.qcStatus === 'Rework Required') {
+      setConfirmModalState({
+        isOpen: true,
+        title: t('QC Variance Alert: Proceed with Stocking?'),
+        description: t(`Warning: This batch failed QC (Status: ${run.qcStatus}). Are you sure you want to proceed with inventory completion?`),
+        confirmText: t('Proceed & Stock Anyway'),
+        cancelText: t('Cancel'),
+        onConfirm: finalizeRun
+      });
+      return;
     }
+
+    finalizeRun();
   };
 
   // --------------------------------------------------------------------------
@@ -981,11 +1199,24 @@ export default function ManufacturingPanel({
       toast.error(t('Only Company Admin has permission to delete QC templates.'));
       return;
     }
-    const confirmDel = window.confirm(t('Are you sure you want to delete this QC Standard Template?'));
-    if (!confirmDel) return;
-    const next = qcTemplates.filter(t => t.id !== id);
-    onSaveQCTemplates(next);
-    toast.success(t('QC Template deleted successfully'));
+    const targetTmpl = qcTemplates.find(t => t.id === id);
+    if (!targetTmpl) return;
+
+    setConfirmModalState({
+      isOpen: true,
+      title: t('Delete QC Standard Template'),
+      description: t(`Are you sure you want to delete QC template "${targetTmpl.name}"? All standard test parameters will be removed.`),
+      confirmText: t('Delete Template'),
+      cancelText: t('Cancel'),
+      onConfirm: () => {
+        const next = qcTemplates.filter(t => t.id !== id);
+        onSaveQCTemplates(next);
+        toast.success(t(`QC Template "${targetTmpl.name}" deleted successfully`));
+        if (logAction) {
+          logAction('QC Template Deleted', `Deleted QC Template ${targetTmpl.name}`);
+        }
+      }
+    });
   };
 
   const handleApplyIndustryPreset = (presetKey: string) => {
@@ -1249,8 +1480,12 @@ export default function ManufacturingPanel({
           }`}
         >
           <CheckSquare className="w-4 h-4" /> {t('Production Runs & Batches')}
-          <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-emerald-600 text-white font-bold">
-            {companyRuns.filter(r => r.status === 'In-Progress').length}
+          <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+            workAvailableCount > 0
+              ? 'bg-amber-500 text-slate-950 animate-pulse shadow-xs'
+              : 'bg-emerald-600 text-white'
+          }`}>
+            {workAvailableCount > 0 ? `${workAvailableCount} ${t('Active Orders')}` : '0'}
           </span>
         </button>
 
@@ -1599,6 +1834,39 @@ export default function ManufacturingPanel({
                         ))}
                       </div>
                     </div>
+
+                    {/* Warehouse Raw Material Stock & Production Readiness */}
+                    {(() => {
+                      const st = bomStockStatus[bom.id] || { producibleBatches: 0, activeBatches: 0, completedBatches: 0, missingItems: [] };
+                      return (
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-100 space-y-2 text-xs">
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600 font-semibold">{t('Warehouse Parts Availability')}:</span>
+                            {st.producibleBatches > 0 ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1 shadow-2xs">
+                                <CheckCircle className="w-3 h-3 text-emerald-600" />
+                                {st.producibleBatches} {t('Batches Producible')}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1" title={st.missingItems.join(', ')}>
+                                <AlertTriangle className="w-3 h-3 text-amber-700" />
+                                {t('Low Raw Materials')}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600 font-semibold">{t('In-Flight Batches')}:</span>
+                            {st.activeBatches > 0 ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-blue-100 text-blue-800 border border-blue-300 animate-pulse">
+                                ⚡ {st.activeBatches} {t('Active In-Flight')}
+                              </span>
+                            ) : (
+                              <span className="text-gray-400 font-mono text-[11px]">0 {t('in progress')}</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className="pt-3 border-t flex items-center justify-between gap-2">
@@ -1653,6 +1921,44 @@ export default function ManufacturingPanel({
             </button>
           </div>
 
+          {/* Quick Status Filter Pills & Work Alert */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-gray-500 flex items-center gap-1">
+              <Filter className="w-3.5 h-3.5" /> {t('Filter')}:
+            </span>
+            {[
+              { id: 'all', label: t('All Orders'), count: companyRuns.length },
+              { id: 'work_available', label: t('Work Needed'), count: workAvailableCount, alert: true },
+              { id: 'Planned', label: t('Planned'), count: companyRuns.filter(r => r.status === 'Planned').length },
+              { id: 'In-Progress', label: t('In-Progress'), count: companyRuns.filter(r => r.status === 'In-Progress').length },
+              { id: 'Quality Check', label: t('Quality Check'), count: companyRuns.filter(r => r.status === 'Quality Check').length },
+              { id: 'Completed', label: t('Completed'), count: companyRuns.filter(r => r.status === 'Completed').length }
+            ].map(f => (
+              <button
+                key={f.id}
+                onClick={() => setRunStatusFilter(f.id as any)}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                  runStatusFilter === f.id
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : f.alert && f.count > 0
+                    ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                <span>{f.label}</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                  runStatusFilter === f.id
+                    ? 'bg-white/20 text-white'
+                    : f.alert && f.count > 0
+                    ? 'bg-amber-500 text-slate-950 font-black'
+                    : 'bg-gray-200 text-gray-700'
+                }`}>
+                  {f.count}
+                </span>
+              </button>
+            ))}
+          </div>
+
           {/* Detailed Runs Table */}
           <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
@@ -1670,7 +1976,13 @@ export default function ManufacturingPanel({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 font-medium">
-                  {companyRuns.map(run => {
+                  {filteredCompanyRuns.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="p-6 text-center text-gray-400 font-medium">
+                        {t('No production orders matching selected filter.')}
+                      </td>
+                    </tr>
+                  ) : filteredCompanyRuns.map(run => {
                     const storeName = stores.find(s => s.id === run.storeId)?.name || `Store #${run.storeId}`;
                     return (
                       <tr key={run.id} className="hover:bg-gray-50/60 transition">
@@ -1771,6 +2083,15 @@ export default function ManufacturingPanel({
                             >
                               <Printer className="w-4 h-4" />
                             </button>
+                            {canPerformCRUD && (
+                              <button
+                                onClick={() => handleDeleteRun(run.id)}
+                                className="p-1 rounded text-rose-500 hover:bg-rose-50 hover:text-rose-700 transition"
+                                title={t('Delete Production Order')}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            )}
                           </div>
                         </td>
                       </tr>
@@ -2670,6 +2991,80 @@ export default function ManufacturingPanel({
                   placeholder="e.g. Shift A, Mill 2, conditioned grain at 14% moisture"
                 />
               </div>
+
+              {/* Production Run Mode (Immediate Launch vs Planned Scheduling) */}
+              <div className="p-3 bg-indigo-50/60 rounded-xl border border-indigo-100 space-y-2">
+                <span className="font-bold text-gray-800 uppercase tracking-wider text-[10px] block">
+                  {t('Production Execution Mode')}
+                </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setRunStartImmediately(true)}
+                    className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
+                      runStartImmediately
+                        ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 font-extrabold text-xs">
+                      <Factory className="w-4 h-4" />
+                      {t('Start Now (In-Progress)')}
+                    </div>
+                    <span className={`text-[10px] block mt-1 leading-tight ${runStartImmediately ? 'text-emerald-100' : 'text-gray-500'}`}>
+                      {t('Immediately deducts parts from warehouse stock')}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setRunStartImmediately(false)}
+                    className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
+                      !runStartImmediately
+                        ? 'bg-slate-900 text-white border-slate-950 shadow-xs'
+                        : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 font-extrabold text-xs">
+                      <Clock className="w-4 h-4" />
+                      {t('Schedule (Planned)')}
+                    </div>
+                    <span className={`text-[10px] block mt-1 leading-tight ${!runStartImmediately ? 'text-slate-300' : 'text-gray-500'}`}>
+                      {t('Leaves parts in inventory until batch starts')}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Parts Consumption Preview */}
+              {(() => {
+                const b = boms.find(x => String(x.id) === String(runBomId)) || companyBoms[0];
+                if (!b || !b.items || b.items.length === 0) return null;
+                const scale = runInputWeightKg > 0 && b.baseQuantity > 0 ? runInputWeightKg / b.baseQuantity : 1;
+                return (
+                  <div className="p-2.5 bg-gray-50 rounded-xl border border-gray-200/80 space-y-1.5">
+                    <span className="font-bold text-[10px] text-gray-500 uppercase tracking-wider block">
+                      {t('Parts to be Consumed from Warehouse')} #{runStoreId}:
+                    </span>
+                    <div className="space-y-1 max-h-24 overflow-y-auto">
+                      {b.items.map(item => {
+                        const needed = Math.round(item.quantity * scale * 100) / 100;
+                        const p = stockItems.find(x => String(x.id) === String(item.productId) || (item.productName && x.name.toLowerCase() === item.productName.toLowerCase()));
+                        const available = p?.stock?.[runStoreId] || 0;
+                        const isShort = available < needed;
+                        return (
+                          <div key={item.id} className="flex items-center justify-between text-[11px] py-0.5">
+                            <span className="font-medium text-gray-700 truncate max-w-[200px]">{item.productName}</span>
+                            <span className={`font-mono font-bold ${isShort ? 'text-rose-600' : 'text-emerald-700'}`}>
+                              {needed} kg {isShort ? `(${t('Avail')}: ${available})` : `✓`}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="flex items-center justify-end gap-3 pt-3 border-t">
@@ -2683,9 +3078,10 @@ export default function ManufacturingPanel({
               <button
                 type="button"
                 onClick={handleCreateProductionRun}
-                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow transition"
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow transition cursor-pointer flex items-center gap-1.5"
               >
-                {t('Confirm Production Order')}
+                <Factory className="w-3.5 h-3.5" />
+                {runStartImmediately ? t('Start Batch & Deduct Stock') : t('Schedule Production Order')}
               </button>
             </div>
           </div>
@@ -3837,6 +4233,17 @@ export default function ManufacturingPanel({
           </div>
         );
       })()}
+
+      {/* Safe Action & Deletion Confirmation Modal */}
+      <ConfirmActionModal
+        isOpen={confirmModalState.isOpen}
+        onClose={() => setConfirmModalState(s => ({ ...s, isOpen: false }))}
+        onConfirm={confirmModalState.onConfirm}
+        title={confirmModalState.title}
+        description={confirmModalState.description}
+        confirmText={confirmModalState.confirmText || t('Delete')}
+        cancelText={confirmModalState.cancelText || t('Cancel')}
+      />
     </div>
   );
 }

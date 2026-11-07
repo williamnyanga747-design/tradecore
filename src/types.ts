@@ -1640,11 +1640,13 @@ export interface ProductionRun {
 
   // Actual raw materials consumed (if recorded specifically)
   actualRawMaterials?: Array<{
-    productId: number;
+    productId: number | string;
+    productName?: string;
     consumedQty: number;
     standardQty?: number;
     unitCost?: number;
   }>;
+  rawMaterialsDeducted?: boolean; // True if raw material inventory already subtracted at batch start
 
   // Weight & Invisible Loss Tracking (Enhancement #2)
   inputWeightKg: number; // Total raw weight weighed in (e.g. 1000 kg)

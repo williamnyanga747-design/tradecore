@@ -1,9 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
-import { UserCircle, Mail, Key, LogOut, BookOpen, Globe, Info, HelpCircle, Fingerprint, ShieldCheck, CheckCircle2, AlertCircle, Sparkles, Lock, Unlock, RefreshCw, X } from 'lucide-react';
+import { UserCircle, Mail, Key, LogOut, BookOpen, Globe, Info, HelpCircle, Fingerprint, ShieldCheck, CheckCircle2, AlertCircle, Sparkles, Lock, Unlock, RefreshCw, X, ShieldAlert } from 'lucide-react';
 import { toast } from '../utils/toast';
 import { verifyPassword } from '../utils/hash';
 import AirHockeyPro from './games/AirHockeyPro';
+import {
+  enrollBiometricCredential,
+  authenticateBiometricCredential,
+  isPlatformAuthenticatorAvailable,
+  removeDeviceCredential,
+  isUserEnrolledOnDevice
+} from '../utils/webauthn';
 
 interface ProfileProps {
   currentUser: User | null;
@@ -35,18 +42,28 @@ export default function Profile({
   const [showGameChooser, setShowGameChooser] = useState(false);
   const [showHockey, setShowHockey] = useState(false);
 
-  // Fingerprint Password Biometric States
+  // Fingerprint Password Biometric States (WebAuthn Hardware FIDO2)
   const [showFpModal, setShowFpModal] = useState(false);
   const [fpMode, setFpMode] = useState<'enroll' | 'test'>('enroll');
   const [fpScanning, setFpScanning] = useState(false);
-  const [fpScanProgress, setFpScanProgress] = useState(0);
   const [fpSuccess, setFpSuccess] = useState(false);
+  const [fpError, setFpError] = useState('');
   const [fpCurrentPwdCheck, setFpCurrentPwdCheck] = useState('');
-  const [isFpEnrolled, setIsFpEnrolled] = useState(() => Boolean(currentUser?.fingerprintEnabled));
+  const [isPlatformAuthAvailable, setIsPlatformAuthAvailable] = useState<boolean | null>(null);
+  const [isFpEnrolled, setIsFpEnrolled] = useState(() => {
+    return Boolean(currentUser?.fingerprintEnabled) || (currentUser ? isUserEnrolledOnDevice(currentUser.username) : false);
+  });
 
   useEffect(() => {
-    setIsFpEnrolled(Boolean(currentUser?.fingerprintEnabled));
-  }, [currentUser?.fingerprintEnabled]);
+    isPlatformAuthenticatorAvailable().then(avail => {
+      setIsPlatformAuthAvailable(avail);
+    });
+  }, []);
+
+  useEffect(() => {
+    const userEnrolled = Boolean(currentUser?.fingerprintEnabled) || (currentUser ? isUserEnrolledOnDevice(currentUser.username) : false);
+    setIsFpEnrolled(userEnrolled);
+  }, [currentUser?.fingerprintEnabled, currentUser?.username]);
 
   const [firstLoginDate] = useState<Date>(() => {
     const key = `tradecore_first_login_${currentUser?.id || 'default'}`;
@@ -83,8 +100,8 @@ export default function Profile({
   const handleOpenEnrollFpModal = () => {
     setFpMode('enroll');
     setFpScanning(false);
-    setFpScanProgress(0);
     setFpSuccess(false);
+    setFpError('');
     setFpCurrentPwdCheck('');
     setShowFpModal(true);
   };
@@ -92,12 +109,15 @@ export default function Profile({
   const handleOpenTestFpModal = () => {
     setFpMode('test');
     setFpScanning(false);
-    setFpScanProgress(0);
     setFpSuccess(false);
+    setFpError('');
     setShowFpModal(true);
   };
 
   const handleDisableFingerprint = () => {
+    removeDeviceCredential(currentUser.username);
+    removeDeviceCredential(currentUser.id);
+
     const updatedUsers = users.map(u => u.id === currentUser.id ? {
       ...u,
       fingerprintEnabled: false,
@@ -115,9 +135,6 @@ export default function Profile({
         fingerprintCredentialId: undefined
       };
       localStorage.setItem('tradecore_user', JSON.stringify(updatedUser));
-      const enrolled: string[] = JSON.parse(localStorage.getItem('tradecore_fp_enrolled_users') || '[]');
-      const nextEnrolled = enrolled.filter((un: string) => un !== currentUser.username);
-      localStorage.setItem('tradecore_fp_enrolled_users', JSON.stringify(nextEnrolled));
       if (onUpdateCurrentUser) onUpdateCurrentUser(updatedUser);
     } catch {}
 
@@ -126,109 +143,92 @@ export default function Profile({
   };
 
   const handleStartSensorScan = async () => {
+    setFpError('');
+
     if (fpMode === 'enroll' && !currentUser.isRoot && currentUser.password) {
       if (!fpCurrentPwdCheck.trim()) {
-        toast.error(t('Please enter your current account password to authorize biometric enrollment'));
+        const msg = t('Please enter your current account password to authorize biometric enrollment');
+        setFpError(msg);
+        toast.error(msg);
         return;
       }
       if (!verifyPassword(fpCurrentPwdCheck, currentUser.password)) {
-        toast.error(t('Current password incorrect!'));
+        const msg = t('Current password incorrect!');
+        setFpError(msg);
+        toast.error(msg);
         return;
       }
     }
 
     setFpScanning(true);
-    setFpScanProgress(25);
 
-    try {
-      if (window.PublicKeyCredential && window.isSecureContext && navigator.credentials) {
-        const challenge = new Uint8Array(32);
-        window.crypto.getRandomValues(challenge);
-        const userId = new Uint8Array(16);
-        window.crypto.getRandomValues(userId);
-
-        if (fpMode === 'enroll') {
-          await navigator.credentials.create({
-            publicKey: {
-              challenge,
-              rp: { name: 'TradeCore ERP' },
-              user: {
-                id: userId,
-                name: currentUser.username,
-                displayName: currentUser.name || currentUser.username
-              },
-              pubKeyCredParams: [{ alg: -7, type: 'public-key' }, { alg: -257, type: 'public-key' }],
-              authenticatorSelection: {
-                authenticatorAttachment: 'platform',
-                userVerification: 'preferred'
-              },
-              timeout: 10000
-            }
-          });
-        } else {
-          await navigator.credentials.get({
-            publicKey: {
-              challenge,
-              timeout: 10000,
-              userVerification: 'preferred'
-            }
-          });
-        }
-      }
-    } catch {
-      // Graceful fallback to sensor capacitive scan simulation
-    }
-
-    const interval = setInterval(() => {
-      setFpScanProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setFpScanning(false);
-          setFpSuccess(true);
-
-          if (fpMode === 'enroll') {
-            const timestamp = new Date().toISOString();
-            const credentialId = `FP-BIO-${currentUser.id}-${Date.now()}`;
-            const updatedUsers = users.map(u => u.id === currentUser.id ? {
-              ...u,
-              fingerprintEnabled: true,
-              fingerprintRegisteredAt: timestamp,
-              fingerprintCredentialId: credentialId
-            } : u);
-            saveAllData({ users: updatedUsers });
-            setIsFpEnrolled(true);
-
-            try {
-              const updatedUser = {
-                ...currentUser,
-                fingerprintEnabled: true,
-                fingerprintRegisteredAt: timestamp,
-                fingerprintCredentialId: credentialId
-              };
-              localStorage.setItem('tradecore_user', JSON.stringify(updatedUser));
-              const enrolled: string[] = JSON.parse(localStorage.getItem('tradecore_fp_enrolled_users') || '[]');
-              if (!enrolled.includes(currentUser.username)) {
-                enrolled.push(currentUser.username);
-              }
-              localStorage.setItem('tradecore_fp_enrolled_users', JSON.stringify(enrolled));
-              if (onUpdateCurrentUser) onUpdateCurrentUser(updatedUser);
-            } catch {}
-
-            logAction('FINGERPRINT_ENROLLED', `User ${currentUser.username} enrolled fingerprint password.`);
-            toast.success(t('Fingerprint Password successfully registered and activated!'));
-          } else {
-            logAction('FINGERPRINT_VERIFIED', `User ${currentUser.username} passed biometric fingerprint verification.`);
-            toast.success(t('Biometric Fingerprint Verified Successfully!'));
-          }
-
-          setTimeout(() => {
-            setShowFpModal(false);
-          }, 1200);
-          return 100;
-        }
-        return prev + 25;
+    if (fpMode === 'enroll') {
+      const result = await enrollBiometricCredential({
+        id: currentUser.id,
+        username: currentUser.username,
+        name: currentUser.name
       });
-    }, 220);
+
+      if (!result.ok || !result.credential) {
+        setFpScanning(false);
+        setFpSuccess(false);
+        const errMsg = result.error || t('Biometric registration was cancelled or sensor failed.');
+        setFpError(errMsg);
+        toast.error(errMsg);
+        return;
+      }
+
+      const timestamp = result.credential.enrolledAt;
+      const credentialId = result.credential.credentialId;
+      const updatedUsers = users.map(u => u.id === currentUser.id ? {
+        ...u,
+        fingerprintEnabled: true,
+        fingerprintRegisteredAt: timestamp,
+        fingerprintCredentialId: credentialId
+      } : u);
+      saveAllData({ users: updatedUsers });
+      setIsFpEnrolled(true);
+
+      try {
+        const updatedUser = {
+          ...currentUser,
+          fingerprintEnabled: true,
+          fingerprintRegisteredAt: timestamp,
+          fingerprintCredentialId: credentialId
+        };
+        localStorage.setItem('tradecore_user', JSON.stringify(updatedUser));
+        if (onUpdateCurrentUser) onUpdateCurrentUser(updatedUser);
+      } catch {}
+
+      setFpScanning(false);
+      setFpSuccess(true);
+      logAction('FINGERPRINT_ENROLLED', `User ${currentUser.username} enrolled hardware fingerprint password.`);
+      toast.success(t('Fingerprint Password successfully registered and activated!'));
+
+      setTimeout(() => {
+        setShowFpModal(false);
+      }, 1200);
+    } else {
+      // Test unlock mode
+      const result = await authenticateBiometricCredential(currentUser);
+      if (!result.ok) {
+        setFpScanning(false);
+        setFpSuccess(false);
+        const errMsg = result.error || t('Biometric fingerprint verification failed.');
+        setFpError(errMsg);
+        toast.error(errMsg);
+        return;
+      }
+
+      setFpScanning(false);
+      setFpSuccess(true);
+      logAction('FINGERPRINT_VERIFIED', `User ${currentUser.username} passed biometric fingerprint verification.`);
+      toast.success(t('Biometric Fingerprint Verified Successfully!'));
+
+      setTimeout(() => {
+        setShowFpModal(false);
+      }, 1200);
+    }
   };
 
   const handleUpdatePassword = async (e: React.FormEvent) => {
@@ -381,18 +381,31 @@ export default function Profile({
                 <Fingerprint className="w-7 h-7" />
               </div>
               <div className="space-y-1 flex-1">
-                <span className="text-xs font-extrabold text-gray-900 block">
-                  {isFpEnrolled ? t('Biometric Authentication Enrolled') : t('Quick & Secure Biometric Login')}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-extrabold text-gray-900 block">
+                    {isFpEnrolled ? t('Biometric Authentication Enrolled') : t('Quick & Secure Biometric Login')}
+                  </span>
+                  {isFpEnrolled && (
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+                      {t('Active Passkey')}
+                    </span>
+                  )}
+                </div>
                 <p className="text-[11px] text-gray-500 leading-relaxed">
                   {isFpEnrolled
-                    ? t('Your fingerprint sensor is linked to your user account for instant sign-in and privileged authorization verification.')
-                    : t('Register your device fingerprint sensor or biometric passkey to authorize transactions and log in rapidly without re-typing passwords.')}
+                    ? t('Your hardware fingerprint sensor is securely linked to this device for instant zero-password entry and privileged authorization verification.')
+                    : t('Register your device fingerprint sensor or biometric passkey (Touch ID, Windows Hello, Android) to authenticate rapidly.')}
                 </p>
                 {isFpEnrolled && currentUser.fingerprintRegisteredAt && (
                   <span className="text-[10px] font-mono text-gray-400 block pt-0.5">
                     {t('Registered on')}: {new Date(currentUser.fingerprintRegisteredAt).toLocaleDateString()} {new Date(currentUser.fingerprintRegisteredAt).toLocaleTimeString()}
                   </span>
+                )}
+                {isPlatformAuthAvailable === false && (
+                  <div className="flex items-center gap-1.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 text-[11px] font-medium mt-1">
+                    <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600" />
+                    <span>{t('Hardware biometric sensor not detected on this browser/device.')}</span>
+                  </div>
                 )}
               </div>
             </div>
@@ -428,7 +441,12 @@ export default function Profile({
                 <button
                   type="button"
                   onClick={handleOpenEnrollFpModal}
-                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition cursor-pointer"
+                  disabled={isPlatformAuthAvailable === false}
+                  className={`px-4 py-2 rounded-lg text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition ${
+                    isPlatformAuthAvailable === false
+                      ? 'bg-gray-400 cursor-not-allowed opacity-60'
+                      : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'
+                  }`}
                 >
                   <Fingerprint className="w-4 h-4" />
                   {t('Setup Fingerprint Password')}
@@ -626,7 +644,7 @@ export default function Profile({
                   fpSuccess
                     ? 'bg-emerald-500 text-white ring-8 ring-emerald-500/20 scale-105 shadow-[0_0_30px_rgba(16,185,129,0.5)]'
                     : fpScanning
-                    ? 'bg-slate-800 text-emerald-400 ring-4 ring-emerald-500/40 animate-pulse'
+                    ? 'bg-slate-800 text-emerald-400 ring-4 ring-emerald-500/40 animate-pulse shadow-[0_0_20px_rgba(16,185,129,0.3)]'
                     : 'bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-emerald-400 hover:scale-105 active:scale-95 ring-2 ring-slate-700 hover:ring-emerald-500/40 shadow-inner'
                 }`}
               >
@@ -642,27 +660,40 @@ export default function Profile({
                 )}
               </button>
 
-              <div className="mt-4 space-y-1 text-xs">
+              <div className="mt-4 space-y-2 text-xs w-full max-w-xs">
                 {fpSuccess ? (
-                  <span className="font-extrabold text-emerald-400 block">
+                  <span className="font-extrabold text-emerald-400 block text-center">
                     ✓ {fpMode === 'enroll' ? t('Biometric Enrolled Successfully!') : t('Fingerprint Verified!')}
                   </span>
                 ) : fpScanning ? (
-                  <div className="space-y-1">
-                    <span className="font-bold text-emerald-300 block">
-                      {t('Scanning Sensor...')} {fpScanProgress}%
+                  <div className="space-y-1 text-center">
+                    <span className="font-bold text-emerald-300 block animate-pulse">
+                      {t('Waiting for device sensor...')}
                     </span>
-                    <div className="w-36 h-1.5 bg-slate-800 rounded-full overflow-hidden mx-auto border border-slate-700">
-                      <div
-                        className="h-full bg-emerald-500 transition-all duration-200"
-                        style={{ width: `${fpScanProgress}%` }}
-                      />
-                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      {t('Touch your fingerprint sensor (Touch ID, Windows Hello, Android) when prompted.')}
+                    </p>
                   </div>
                 ) : (
-                  <span className="text-slate-400 font-semibold block">
-                    {t('Tap sensor above to begin biometric scan')}
-                  </span>
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={handleStartSensorScan}
+                      className="text-emerald-400 hover:text-emerald-300 font-bold underline cursor-pointer text-xs"
+                    >
+                      {t('Click here to start hardware scan')}
+                    </button>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      {t('Places your finger on your device biometric sensor')}
+                    </p>
+                  </div>
+                )}
+
+                {fpError && (
+                  <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[11px] text-left flex items-start gap-2">
+                    <ShieldAlert className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                    <span className="leading-tight">{fpError}</span>
+                  </div>
                 )}
               </div>
             </div>

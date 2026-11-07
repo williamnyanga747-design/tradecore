@@ -25,6 +25,7 @@ interface SidebarProps {
   onRegisterPushSubscription?: (rec: { endpoint: string; p256dh: string; auth: string }) => void;
   unreadOrderNotifs?: number;
   unreadSmartNotifs?: number;
+  manufacturingAlertCount?: number;
 }
 
 /**
@@ -61,7 +62,8 @@ function SidebarInner({
   language,
   onRegisterPushSubscription,
   unreadOrderNotifs = 0,
-  unreadSmartNotifs = 0
+  unreadSmartNotifs = 0,
+  manufacturingAlertCount = 0
 }: SidebarProps) {
   // Read stable user from localStorage — never re-read on applyData
   const stableUser = useMemo(() => readStableUser(), []);
@@ -381,13 +383,22 @@ function SidebarInner({
         {isAllowed('manufacturing') && (
           <button
             onClick={() => onNavigate('manufacturing')}
-            className={`w-full flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2'} rounded-md transition text-left ${
+            className={`w-full relative flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2 justify-between'} rounded-md transition text-left ${
               currentPage === 'manufacturing' ? 'bg-indigo-600 text-amber-300 font-bold shadow-xs border border-amber-400/30' : 'text-amber-300 hover:bg-white/10 font-semibold'
             }`}
             title={isCollapsed ? t('Manufacturing') : undefined}
           >
-            <Factory className="w-[18px] h-[18px] flex-shrink-0 text-amber-400" />
-            {!isCollapsed && <span className="text-amber-300 font-bold">{t('Manufacturing')}</span>}
+            <span className="flex items-center gap-3">
+              <Factory className="w-[18px] h-[18px] flex-shrink-0 text-amber-400" />
+              {!isCollapsed && <span className="text-amber-300 font-bold">{t('Manufacturing')}</span>}
+            </span>
+            {manufacturingAlertCount > 0 && (
+              <span className={`bg-amber-500 text-slate-950 font-black rounded-full px-1.5 py-0.2 text-[10px] animate-pulse ${
+                isCollapsed ? 'absolute -top-1 -right-1 text-[9px] px-1' : ''
+              }`}>
+                {manufacturingAlertCount > 99 ? '99+' : manufacturingAlertCount}
+              </span>
+            )}
           </button>
         )}
 

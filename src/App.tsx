@@ -172,6 +172,13 @@ import { simulateTxId, translateText, detectLang } from './utils/megaHelpers';
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Cell, PieChart, Pie
 } from 'recharts';
+import {
+  authenticateBiometricCredential,
+  isPlatformAuthenticatorAvailable,
+  hasDeviceEnrolledCredentials,
+  getDeviceEnrolledCredentials,
+  isWebAuthnSupported
+} from './utils/webauthn';
 
 // Icons
 import {
@@ -2628,13 +2635,24 @@ export default function App() {
   // shows "Signing in..." while a login is in flight — preventing any further clicks.
   const [loginSubmitting, setLoginSubmitting] = useState(false);
 
-  // Biometric / Fingerprint Sign-In States
+  // Biometric / Fingerprint Sign-In States (WebAuthn Hardware FIDO2)
   const [showFpSignInModal, setShowFpSignInModal] = useState(false);
   const [fpSignInUser, setFpSignInUser] = useState<User | null>(null);
   const [fpSignInScanning, setFpSignInScanning] = useState(false);
-  const [fpSignInProgress, setFpSignInProgress] = useState(0);
   const [fpSignInSuccess, setFpSignInSuccess] = useState(false);
   const [fpSignInError, setFpSignInError] = useState('');
+  const [isPlatformBiometricAvailable, setIsPlatformBiometricAvailable] = useState<boolean>(false);
+  const [hasEnrolledBiometrics, setHasEnrolledBiometrics] = useState<boolean>(false);
+
+  // Condition-gate biometric availability on this physical device
+  useEffect(() => {
+    isPlatformAuthenticatorAvailable().then(avail => {
+      setIsPlatformBiometricAvailable(avail);
+    });
+    const deviceCreds = getDeviceEnrolledCredentials();
+    const anyUserEnrolled = users.some(u => Boolean(u && u.fingerprintEnabled));
+    setHasEnrolledBiometrics(deviceCreds.length > 0 || (anyUserEnrolled && deviceCreds.length > 0));
+  }, [authView, users]);
 
   // --- PUBLIC MARKETPLACE ROUTING (outside the internal system) ---
   const isPublicMarketplacePath = (p: string) =>
@@ -8591,85 +8609,64 @@ try {
     }
   };
 
-  // --- BIOMETRIC FINGERPRINT SIGN IN ---
+  // --- BIOMETRIC FINGERPRINT SIGN IN (WebAuthn Hardware FIDO2) ---
   const handleOpenBiometricModal = () => {
     setFpSignInError('');
     setFpSignInScanning(false);
-    setFpSignInProgress(0);
     setFpSignInSuccess(false);
 
-    let enrolledUsernames: string[] = [];
-    try {
-      enrolledUsernames = JSON.parse(localStorage.getItem('tradecore_fp_enrolled_users') || '[]');
-    } catch {}
-
-    const enrolledFromUsers = users.filter(u => u && (u.fingerprintEnabled || enrolledUsernames.includes(u.username)));
-
-    // If username is typed in the login form, check if they match
+    // If a username was typed in the login form, check if it matches an existing user
     const typed = loginUsername.trim().toLowerCase();
     const matchedTyped = typed
       ? users.find(u => (u.username || '').toLowerCase() === typed || (u.email || '').toLowerCase() === typed || (u.phone || '') === typed)
       : null;
 
-    if (matchedTyped) {
-      setFpSignInUser(matchedTyped);
-    } else if (enrolledFromUsers.length > 0) {
-      setFpSignInUser(enrolledFromUsers[0]);
-    } else if (users.length > 0) {
-      const rootOrAdmin = users.find(u => u.isRoot || u.username === 'root_mandate' || u.role === 'Super Admin') || users[0];
-      setFpSignInUser(rootOrAdmin);
-    } else {
-      setFpSignInUser(null);
-    }
-
+    setFpSignInUser(matchedTyped || null);
     setShowFpSignInModal(true);
   };
 
-  const handleExecuteBiometricScan = async (selectedTargetUser?: User) => {
-    const userToAuth = selectedTargetUser || fpSignInUser;
-    if (!userToAuth) {
-      setFpSignInError(t('No user account selected for biometric authentication.'));
-      return;
-    }
-
+  const handleExecuteBiometricScan = async () => {
     setFpSignInScanning(true);
-    setFpSignInProgress(20);
     setFpSignInError('');
+    setFpSignInSuccess(false);
 
     try {
-      // 1. Try real WebAuthn platform authenticator if supported by browser
-      if (window.PublicKeyCredential && window.isSecureContext && navigator.credentials) {
-        try {
-          const challenge = new Uint8Array(32);
-          window.crypto.getRandomValues(challenge);
-          setFpSignInProgress(45);
-          await navigator.credentials.get({
-            publicKey: {
-              challenge,
-              userVerification: 'preferred',
-              timeout: 45000
-            }
-          });
-          setFpSignInProgress(80);
-        } catch (credErr) {
-          // If browser/device has no platform authenticator or user cancels prompt,
-          // proceed with hardware sensor scan simulation
-          console.warn('WebAuthn get prompt skipped/fallback:', credErr);
-        }
+      // Execute genuine WebAuthn hardware biometric challenge
+      const targetHint = fpSignInUser
+        ? { id: fpSignInUser.id, username: fpSignInUser.username }
+        : (loginUsername.trim() ? { username: loginUsername.trim() } : undefined);
+
+      const result = await authenticateBiometricCredential(targetHint);
+
+      if (!result.ok || (!result.matchedUsername && !result.matchedUserId)) {
+        setFpSignInScanning(false);
+        setFpSignInSuccess(false);
+        const errMsg = result.error || t('Biometric sensor scan failed or was cancelled. Please try again or use your password.');
+        setFpSignInError(errMsg);
+        toast.error(errMsg);
+        return;
       }
 
-      // Smooth realistic biometric sensor progression
-      await new Promise(r => setTimeout(r, 300));
-      setFpSignInProgress(65);
-      await new Promise(r => setTimeout(r, 350));
-      setFpSignInProgress(90);
-      await new Promise(r => setTimeout(r, 300));
-      setFpSignInProgress(100);
+      // Match the authenticated credential to a registered user account
+      const matchedUser = users.find(u =>
+        (result.matchedUserId && String(u.id) === String(result.matchedUserId)) ||
+        (result.matchedUsername && u.username.toLowerCase() === result.matchedUsername.toLowerCase())
+      );
+
+      if (!matchedUser) {
+        setFpSignInScanning(false);
+        setFpSignInSuccess(false);
+        const errMsg = t('Authenticated biometric credential does not correspond to an active user.');
+        setFpSignInError(errMsg);
+        toast.error(errMsg);
+        return;
+      }
 
       // Verify account permissions / block status
-      const isCoreSuperAdmin = userToAuth.username === 'root_mandate' || userToAuth.username === 'superadmin' || userToAuth.isRoot;
-      if (!isCoreSuperAdmin && (userToAuth.status === 'Blocked' || userToAuth.remoteTerminated)) {
+      const isCoreSuperAdmin = matchedUser.username === 'root_mandate' || matchedUser.username === 'superadmin' || matchedUser.isRoot;
+      if (!isCoreSuperAdmin && (matchedUser.status === 'Blocked' || matchedUser.remoteTerminated)) {
         setFpSignInScanning(false);
+        setFpSignInSuccess(false);
         const errMsg = t('Your access credentials have been blocked or remotely revoked.');
         setFpSignInError(errMsg);
         toast.error(errMsg);
@@ -8678,6 +8675,7 @@ try {
 
       setFpSignInSuccess(true);
       setFpSignInScanning(false);
+      setFpSignInUser(matchedUser);
 
       // Brief delay to display verified green ring before entering session
       setTimeout(async () => {
@@ -8686,10 +8684,10 @@ try {
         const ipAddress = await getClientIp();
         const userAgent = navigator.userAgent || 'Web Browser';
 
-        const isSuperResolved = isCoreSuperAdmin || ['Super Admin', 'superadmin', 'super_admin'].includes(String(userToAuth.role || '').trim());
+        const isSuperResolved = isCoreSuperAdmin || ['Super Admin', 'superadmin', 'super_admin'].includes(String(matchedUser.role || '').trim());
         const adminResolvedUser = isSuperResolved
-          ? { ...userToAuth, allowedPages: Array.from(ADMIN_FULL_ACCESS_PAGES) }
-          : userToAuth;
+          ? { ...matchedUser, allowedPages: Array.from(ADMIN_FULL_ACCESS_PAGES) }
+          : matchedUser;
 
         const successLog: SecurityLog = {
           id: 'SECLOG-' + Date.now(),
@@ -8722,15 +8720,17 @@ try {
         setLoginUsername('');
         setLoginPassword('');
         setCurrentPage('dashboard');
-        logAction('Biometric Login', `Biometric fingerprint passkey verified for ${adminResolvedUser.username} from ${ipAddress}.`);
+        logAction('Biometric Login', `Biometric hardware passkey verified for ${adminResolvedUser.username} from ${ipAddress}.`);
         toast.success(`${t('Biometric authentication verified')} • ${t('Welcome back')}, ${adminResolvedUser.name || adminResolvedUser.username}!`);
         await completePostLoginBoot();
       }, 700);
 
     } catch (err: any) {
       setFpSignInScanning(false);
-      setFpSignInProgress(0);
-      setFpSignInError(err?.message || t('Biometric sensor scan failed. Please try again or use your password.'));
+      setFpSignInSuccess(false);
+      const errMsg = err?.message || t('Biometric sensor scan failed. Please try again or use your password.');
+      setFpSignInError(errMsg);
+      toast.error(errMsg);
     }
   };
 
@@ -17179,6 +17179,60 @@ try {
     );
   };
 
+  // --- Manufacturing Module: Deduct Raw Materials at Batch Start ---
+  const handleDeductBatchStartStock = useCallback((run: ProductionRun) => {
+    const storeIdNum = Number(run.storeId);
+    if (!storeIdNum) return;
+
+    setStockItems(prevStock => {
+      const updated = [...prevStock];
+      if (Array.isArray(run.actualRawMaterials) && run.actualRawMaterials.length > 0) {
+        run.actualRawMaterials.forEach(rm => {
+          const itemIdx = updated.findIndex(p => String(p.id) === String(rm.productId) || (rm.productName && p.name.toLowerCase() === rm.productName.toLowerCase()));
+          if (itemIdx >= 0) {
+            const currentItem = updated[itemIdx];
+            const currentStoreQty = currentItem.stock?.[storeIdNum] || 0;
+            const newStoreQty = Math.max(0, currentStoreQty - (rm.consumedQty || 0));
+            const updatedBatches = { ...(currentItem.batches || {}) };
+
+            if (Array.isArray(updatedBatches[storeIdNum])) {
+              let qtyToDeduct = rm.consumedQty || 0;
+              const nextBatches = updatedBatches[storeIdNum].map(b => {
+                if (qtyToDeduct <= 0) return b;
+                if (b.qty <= qtyToDeduct) {
+                  qtyToDeduct -= b.qty;
+                  return { ...b, qty: 0 };
+                } else {
+                  const rem = b.qty - qtyToDeduct;
+                  qtyToDeduct = 0;
+                  return { ...b, qty: rem };
+                }
+              }).filter(b => b.qty > 0);
+              updatedBatches[storeIdNum] = nextBatches;
+            }
+
+            updated[itemIdx] = {
+              ...currentItem,
+              stock: {
+                ...(currentItem.stock || {}),
+                [storeIdNum]: newStoreQty
+              },
+              batches: updatedBatches
+            };
+          }
+        });
+      }
+
+      saveAllData({ stockItems: updated });
+      return updated;
+    });
+
+    logAction(
+      'MANUFACTURING_BATCH_RAW_MATERIALS_DEDUCTED',
+      `Raw material stock parts deducted for batch #${run.batchNumber} (${run.runNumber}) in store #${storeIdNum}`
+    );
+  }, [saveAllData, logAction]);
+
   // --- Manufacturing Module: Batch Completion Stock Movement ---
   const handleCompleteBatchStock = useCallback((run: ProductionRun) => {
     const storeIdNum = Number(run.storeId);
@@ -17187,10 +17241,10 @@ try {
     setStockItems(prevStock => {
       const updated = [...prevStock];
 
-      // 1. Deduct raw materials consumed from store inventory
-      if (Array.isArray(run.actualRawMaterials) && run.actualRawMaterials.length > 0) {
+      // 1. Deduct raw materials consumed from store inventory (only if not already deducted at batch launch)
+      if (!run.rawMaterialsDeducted && Array.isArray(run.actualRawMaterials) && run.actualRawMaterials.length > 0) {
         run.actualRawMaterials.forEach(rm => {
-          const itemIdx = updated.findIndex(p => p.id === rm.productId);
+          const itemIdx = updated.findIndex(p => String(p.id) === String(rm.productId) || (rm.productName && p.name.toLowerCase() === rm.productName.toLowerCase()));
           if (itemIdx >= 0) {
             const currentItem = updated[itemIdx];
             const currentStoreQty = currentItem.stock?.[storeIdNum] || 0;
@@ -17358,6 +17412,7 @@ try {
               }}
               rolePermissions={rolePermissions}
               onCompleteBatchStock={handleCompleteBatchStock}
+              onDeductBatchStartStock={handleDeductBatchStartStock}
               logAction={logAction}
               t={t}
             />
@@ -18463,24 +18518,28 @@ try {
                   {loginSubmitting ? t('Signing in...') : t('Authorize Entry')}
                 </button>
 
-                <div className="relative flex py-1 items-center">
-                  <div className={`flex-grow border-t ${publicTheme === 'milk' ? 'border-gray-200' : 'border-white/10'}`}></div>
-                  <span className={`flex-shrink mx-2 text-[10px] font-bold uppercase tracking-wider ${publicTheme === 'milk' ? 'text-gray-400' : 'text-gray-400'}`}>{t('Or')}</span>
-                  <div className={`flex-grow border-t ${publicTheme === 'milk' ? 'border-gray-200' : 'border-white/10'}`}></div>
-                </div>
+                {isPlatformBiometricAvailable && hasEnrolledBiometrics && (
+                  <>
+                    <div className="relative flex py-1 items-center">
+                      <div className={`flex-grow border-t ${publicTheme === 'milk' ? 'border-gray-200' : 'border-white/10'}`}></div>
+                      <span className={`flex-shrink mx-2 text-[10px] font-bold uppercase tracking-wider ${publicTheme === 'milk' ? 'text-gray-400' : 'text-gray-400'}`}>{t('Or')}</span>
+                      <div className={`flex-grow border-t ${publicTheme === 'milk' ? 'border-gray-200' : 'border-white/10'}`}></div>
+                    </div>
 
-                <button
-                  type="button"
-                  onClick={handleOpenBiometricModal}
-                  className={`w-full py-2.5 px-3 rounded-lg border text-xs font-bold flex items-center justify-center gap-2 transition shadow-xs ${
-                    publicTheme === 'milk'
-                      ? 'border-emerald-500/40 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 hover:border-emerald-600'
-                      : 'border-emerald-500/40 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/50 hover:border-emerald-400'
-                  }`}
-                >
-                  <Fingerprint className="w-4 h-4 text-emerald-500 animate-pulse" />
-                  <span>{t('Sign In with Fingerprint / Passkey')}</span>
-                </button>
+                    <button
+                      type="button"
+                      onClick={handleOpenBiometricModal}
+                      className={`w-full py-2.5 px-3 rounded-lg border text-xs font-bold flex items-center justify-center gap-2 transition shadow-xs cursor-pointer ${
+                        publicTheme === 'milk'
+                          ? 'border-emerald-500/40 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 hover:border-emerald-600'
+                          : 'border-emerald-500/40 bg-emerald-950/40 text-emerald-300 hover:bg-emerald-900/50 hover:border-emerald-400'
+                      }`}
+                    >
+                      <Fingerprint className="w-4 h-4 text-emerald-500 animate-pulse" />
+                      <span>{t('Sign In with Fingerprint / Passkey')}</span>
+                    </button>
+                  </>
+                )}
               </form>
 
               <div className={`pt-2 space-y-2 ${publicTheme === 'milk' ? 'border-t border-amber-200/70' : 'border-t border-white/10'}`}>
@@ -18529,13 +18588,13 @@ try {
           </div>
         </div>
 
-        {/* Biometric Fingerprint Sign-In Modal */}
+        {/* Biometric Fingerprint Sign-In Modal (Zero Account Exposure & True Hardware Challenge) */}
         {showFpSignInModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
-            <div className={`w-full max-w-md rounded-2xl p-6 shadow-2xl border transition-all ${
+            <div className={`w-full max-w-sm rounded-3xl p-6 shadow-2xl border transition-all ${
               publicTheme === 'milk'
                 ? 'bg-white border-gray-200 text-gray-900'
-                : 'bg-[#0f172a] border-amber-400/30 text-white'
+                : 'bg-slate-900 border-emerald-500/30 text-white'
             }`}>
               <div className="flex items-center justify-between pb-3 border-b border-gray-200/20">
                 <div className="flex items-center gap-2.5">
@@ -18543,129 +18602,75 @@ try {
                     <Fingerprint className="w-5 h-5 animate-pulse" />
                   </div>
                   <div>
-                    <h3 className="text-sm font-black tracking-wide">{t('Biometric Sign In')}</h3>
-                    <p className="text-[11px] opacity-70">{t('Authenticate with fingerprint passkey')}</p>
+                    <h3 className="text-sm font-black tracking-wide">{t('Biometric Hardware Authentication')}</h3>
+                    <p className="text-[10px] opacity-70">{t('Touch ID / Windows Hello / Android Fingerprint')}</p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => setShowFpSignInModal(false)}
-                  className="p-1 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition"
+                  className="p-1 rounded-lg hover:bg-white/10 text-gray-400 hover:text-white transition cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Account Selection */}
-              <div className="mt-4 space-y-2">
-                <label className="text-[10px] font-bold tracking-wider uppercase opacity-70">
-                  {t('Select Enrolled Account')}
-                </label>
-                <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
-                  {users.map(u => {
-                    const isSelected = fpSignInUser?.id === u.id || fpSignInUser?.username === u.username;
-                    const enrolledUsernames: string[] = JSON.parse(localStorage.getItem('tradecore_fp_enrolled_users') || '[]');
-                    const isEnrolled = u.fingerprintEnabled || enrolledUsernames.includes(u.username);
-
-                    return (
-                      <div
-                        key={u.id || u.username}
-                        onClick={() => {
-                          if (!fpSignInScanning) {
-                            setFpSignInUser(u);
-                            setFpSignInError('');
-                          }
-                        }}
-                        className={`p-2.5 rounded-xl border flex items-center justify-between cursor-pointer transition ${
-                          isSelected
-                            ? 'border-emerald-500 bg-emerald-500/10 shadow-xs'
-                            : 'border-gray-200/20 hover:border-emerald-500/40 bg-white/5'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 truncate">
-                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
-                            isSelected ? 'bg-emerald-500 text-white' : 'bg-gray-500/20 text-gray-400'
-                          }`}>
-                            {(u.name || u.username).charAt(0).toUpperCase()}
-                          </div>
-                          <div className="truncate">
-                            <p className="text-xs font-bold truncate">{u.name || u.username}</p>
-                            <p className="text-[10px] opacity-60 truncate">@{u.username} • {u.role}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {isEnrolled && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                              {t('Enrolled')}
-                            </span>
-                          )}
-                          {isSelected && <Check className="w-4 h-4 text-emerald-500" />}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+              {/* Status Note - Zero Account Exposure */}
+              <div className="mt-4 text-center">
+                <p className="text-xs text-gray-300 font-medium leading-relaxed">
+                  {fpSignInUser
+                    ? `${t('Enrolled user credential detected for')} @${fpSignInUser.username}. ${t('Touch sensor to authenticate.')}`
+                    : t('Place your registered finger on your device sensor to verify your identity and enter session.')}
+                </p>
               </div>
 
               {/* Sensor Scanner Visual Area */}
-              <div className="my-5 flex flex-col items-center justify-center">
-                <div
+              <div className="my-6 flex flex-col items-center justify-center">
+                <button
+                  type="button"
                   onClick={() => !fpSignInScanning && handleExecuteBiometricScan()}
+                  disabled={fpSignInScanning}
                   className={`relative w-28 h-28 rounded-full flex items-center justify-center cursor-pointer transition-all duration-300 ${
                     fpSignInSuccess
-                      ? 'bg-emerald-500/20 border-2 border-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.5)]'
+                      ? 'bg-emerald-500 text-white ring-8 ring-emerald-500/20 scale-105 shadow-[0_0_30px_rgba(16,185,129,0.5)]'
                       : fpSignInScanning
-                        ? 'bg-cyan-500/10 border-2 border-cyan-400 shadow-[0_0_25px_rgba(6,182,212,0.4)] animate-pulse'
-                        : 'bg-white/5 border-2 border-dashed border-emerald-500/40 hover:border-emerald-400 hover:scale-105'
+                        ? 'bg-emerald-500/20 border-2 border-emerald-400 ring-4 ring-emerald-500/40 shadow-[0_0_25px_rgba(16,185,129,0.4)] animate-pulse'
+                        : 'bg-white/5 border-2 border-dashed border-emerald-500/40 hover:border-emerald-400 hover:scale-105 active:scale-95'
                   }`}
                 >
                   {/* Concentric scan waves */}
                   {fpSignInScanning && (
-                    <div className="absolute inset-0 rounded-full border border-cyan-400 animate-ping opacity-40"></div>
+                    <div className="absolute inset-0 rounded-full border border-emerald-400 animate-ping opacity-60"></div>
                   )}
 
-                  <Fingerprint className={`w-14 h-14 transition-colors ${
-                    fpSignInSuccess
-                      ? 'text-emerald-400'
-                      : fpSignInScanning
-                        ? 'text-cyan-400 animate-bounce'
-                        : 'text-emerald-500'
-                  }`} />
-
-                  {fpSignInSuccess && (
-                    <div className="absolute bottom-1 right-1 w-6 h-6 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow">
-                      <Check className="w-3.5 h-3.5 stroke-[3]" />
-                    </div>
+                  {fpSignInSuccess ? (
+                    <CheckCircle2 className="w-14 h-14 text-white" />
+                  ) : (
+                    <Fingerprint className={`w-14 h-14 transition-colors ${
+                      fpSignInScanning ? 'text-emerald-300 animate-bounce' : 'text-emerald-500'
+                    }`} />
                   )}
-                </div>
+                </button>
 
-                <div className="mt-3 text-center">
+                <div className="mt-4 text-center space-y-1">
                   <p className="text-xs font-bold">
                     {fpSignInSuccess
                       ? t('Fingerprint Verified! Establishing session...')
                       : fpSignInScanning
-                        ? `${t('Scanning biometric sensor...')} (${fpSignInProgress}%)`
-                        : t('Touch sensor or click to authenticate')}
+                        ? t('Waiting for device biometric sensor...')
+                        : t('Touch sensor or click above to scan')}
                   </p>
-                  <p className="text-[10px] opacity-60 mt-0.5">
-                    {fpSignInUser ? `${t('Account')}: @${fpSignInUser.username}` : t('No account selected')}
+                  <p className="text-[10px] text-gray-400">
+                    {fpSignInScanning
+                      ? t('Place your finger firmly on your device sensor when prompted.')
+                      : t('Requires Touch ID, Windows Hello, or Android Fingerprint')}
                   </p>
                 </div>
 
-                {/* Progress bar */}
-                {fpSignInScanning && (
-                  <div className="w-48 h-1.5 bg-gray-700/40 rounded-full overflow-hidden mt-2.5">
-                    <div
-                      className="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 transition-all duration-300"
-                      style={{ width: `${fpSignInProgress}%` }}
-                    />
-                  </div>
-                )}
-
                 {fpSignInError && (
-                  <div className="mt-3 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs text-center flex items-center gap-1.5">
-                    <ShieldAlert className="w-4 h-4 shrink-0" />
-                    <span>{fpSignInError}</span>
+                  <div className="mt-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs text-left flex items-start gap-2">
+                    <ShieldAlert className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
+                    <span className="leading-tight">{fpSignInError}</span>
                   </div>
                 )}
               </div>
@@ -18674,22 +18679,22 @@ try {
               <div className="space-y-2 pt-2 border-t border-gray-200/20">
                 <button
                   type="button"
-                  disabled={fpSignInScanning || !fpSignInUser}
+                  disabled={fpSignInScanning}
                   onClick={() => handleExecuteBiometricScan()}
                   className={`w-full py-2.5 text-xs font-bold rounded-xl flex items-center justify-center gap-2 shadow-sm transition ${
-                    fpSignInScanning || !fpSignInUser
+                    fpSignInScanning
                       ? 'opacity-50 cursor-not-allowed bg-emerald-600/50 text-white'
-                      : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
+                      : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer shadow-emerald-900/30'
                   }`}
                 >
                   <Fingerprint className="w-4 h-4" />
-                  <span>{fpSignInScanning ? t('Scanning Sensor...') : t('Scan Fingerprint to Sign In')}</span>
+                  <span>{fpSignInScanning ? t('Scanning Hardware Sensor...') : t('Touch Sensor to Authenticate')}</span>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => setShowFpSignInModal(false)}
-                  className="w-full py-2 text-center text-xs font-bold text-gray-400 hover:text-white transition"
+                  className="w-full py-2 text-center text-xs font-bold text-gray-400 hover:text-white transition cursor-pointer"
                 >
                   {t('Use Password Instead')}
                 </button>
@@ -19113,6 +19118,11 @@ try {
       {/* Sidebar - Desktop Layout */}
       {(() => null)()}
       {/* Compute unread order & smart selling action badges */}
+      {(() => null)()}
+      {/* Compute manufacturing in-flight work orders */}
+      {(() => {
+        return null;
+      })()}
       <div className={`hidden lg:block transition-all duration-300 flex-shrink-0 ${sidebarCollapsed ? 'w-[70px]' : 'w-64'}`}>
         <Sidebar
           currentPage={currentPage}
@@ -19129,6 +19139,7 @@ try {
           onRegisterPushSubscription={registerPushSubscription}
           unreadOrderNotifs={(appNotifications || []).filter(n => !n.isRead && n.type === 'order_update' && (!n.companyId || (currentCompanyId && sameId(n.companyId, currentCompanyId)) || isSuperScopeUser(currentUser))).length}
           unreadSmartNotifs={(appNotifications || []).filter(n => !n.isRead && (n.type === 'deal_update' || n.type === 'installment_update' || n.type === 'offer_update') && (!n.companyId || (currentCompanyId && sameId(n.companyId, currentCompanyId)) || isSuperScopeUser(currentUser))).length}
+          manufacturingAlertCount={(productionRuns || []).filter(r => (!currentCompanyId || sameId(r.companyId, currentCompanyId)) && (r.status === 'Planned' || r.status === 'In-Progress' || r.status === 'Quality Check')).length}
         />
       </div>
 
@@ -19150,6 +19161,7 @@ try {
               onRegisterPushSubscription={registerPushSubscription}
               unreadOrderNotifs={(appNotifications || []).filter(n => !n.isRead && n.type === 'order_update' && (!n.companyId || (currentCompanyId && sameId(n.companyId, currentCompanyId)) || isSuperScopeUser(currentUser))).length}
               unreadSmartNotifs={(appNotifications || []).filter(n => !n.isRead && (n.type === 'deal_update' || n.type === 'installment_update' || n.type === 'offer_update') && (!n.companyId || (currentCompanyId && sameId(n.companyId, currentCompanyId)) || isSuperScopeUser(currentUser))).length}
+              manufacturingAlertCount={(productionRuns || []).filter(r => (!currentCompanyId || sameId(r.companyId, currentCompanyId)) && (r.status === 'Planned' || r.status === 'In-Progress' || r.status === 'Quality Check')).length}
             />
           </div>
         </div>
