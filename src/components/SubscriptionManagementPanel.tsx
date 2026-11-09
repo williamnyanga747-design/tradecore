@@ -504,7 +504,7 @@ export default function SubscriptionManagementPanel({
                 <div className="md:col-span-2">
                   <input
                     type="number"
-                    value={p.priceTZS}
+                    value={Number.isFinite(p.priceTZS) ? p.priceTZS : 0}
                     onChange={(e) => updatePlan(p.id, { priceTZS: Number(e.target.value) })}
                     className={inputCls}
                     title="Price TZS"
@@ -513,7 +513,7 @@ export default function SubscriptionManagementPanel({
                 <div className="md:col-span-1">
                   <input
                     type="number"
-                    value={p.months}
+                    value={Number.isFinite(p.months) ? p.months : 1}
                     onChange={(e) => updatePlan(p.id, { months: Number(e.target.value) })}
                     className={inputCls}
                     title="Months"
@@ -783,8 +783,8 @@ export default function SubscriptionManagementPanel({
                 <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Custom Months</label>
                 <input
                   type="number"
-                  value={approveCustomMonths}
-                  onChange={(e) => setApproveCustomMonths(Number(e.target.value))}
+                  value={Number.isFinite(approveCustomMonths) ? approveCustomMonths : ''}
+                  onChange={(e) => setApproveCustomMonths(Number(e.target.value) || 0)}
                   placeholder="e.g. 18"
                   className="w-full px-3 py-2 border border-white/10 rounded-lg text-xs bg-white/5 text-white font-bold outline-none focus:ring-2 focus:ring-emerald-500/30"
                 />
@@ -884,8 +884,8 @@ export default function SubscriptionManagementPanel({
                 <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Custom Months</label>
                 <input
                   type="number"
-                  value={renewCustomMonths}
-                  onChange={(e) => setRenewCustomMonths(Number(e.target.value))}
+                  value={Number.isFinite(renewCustomMonths) ? renewCustomMonths : ''}
+                  onChange={(e) => setRenewCustomMonths(Number(e.target.value) || 0)}
                   placeholder="e.g. 12"
                   className="w-full px-3 py-2 border border-white/10 rounded-lg text-xs bg-white/5 text-white font-bold outline-none focus:ring-2 focus:ring-emerald-500/30"
                 />

@@ -859,9 +859,11 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
 
   const renderHomepage = () => {
     const persist = () => {
-      updateHomepage({ heroTitle, heroSubtitle });
+      const currentActiveSponsors = (rawSponsors && rawSponsors.length > 0) ? rawSponsors : (content.sponsors || settings.sponsors || []);
+      updateHomepage({ heroTitle, heroSubtitle, sponsors: currentActiveSponsors });
       updateSettings({
-        homepageContent: { ...content, heroTitle, heroSubtitle },
+        sponsors: currentActiveSponsors,
+        homepageContent: { ...content, sponsors: currentActiveSponsors, heroTitle, heroSubtitle },
         homepageMeta: { ...(settings.homepageMeta || {}), title: settings.homepageMeta?.title || (settings.siteConfig?.siteName || 'GlobalTradeCore') + ' — ' + heroTitle }
       });
       logAction('Homepage Updated', `ROOT_MANDATE updated the public homepage hero content.`);
@@ -2189,19 +2191,19 @@ export default function RootMandatePanel(props: RootMandatePanelProps) {
               <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="text-[10px] font-bold text-gray-500 block mb-0.5">{t('Price (TZS)')}</label>
-                  <input type="number" value={p.basePriceTZS} onChange={e => savePlans(subscriptionPlans.map(x => x.id === p.id ? { ...x, basePriceTZS: parseFloat(e.target.value) || 0 } : x))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs outline-none" />
+                  <input type="number" value={Number.isFinite(p.basePriceTZS) ? p.basePriceTZS : 0} onChange={e => savePlans(subscriptionPlans.map(x => x.id === p.id ? { ...x, basePriceTZS: parseFloat(e.target.value) || 0 } : x))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs outline-none" />
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-gray-500 block mb-0.5">{t('Commission %')}</label>
-                  <input type="number" min={0} max={100} value={p.commissionPercent} disabled={p.type === 'direct'} onChange={e => savePlans(subscriptionPlans.map(x => x.id === p.id ? { ...x, commissionPercent: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) } : x))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs outline-none disabled:bg-gray-50 disabled:text-gray-400" />
+                  <input type="number" min={0} max={100} value={Number.isFinite(p.commissionPercent) ? p.commissionPercent : 0} disabled={p.type === 'direct'} onChange={e => savePlans(subscriptionPlans.map(x => x.id === p.id ? { ...x, commissionPercent: Math.max(0, Math.min(100, parseFloat(e.target.value) || 0)) } : x))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs outline-none disabled:bg-gray-50 disabled:text-gray-400" />
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-gray-500 block mb-0.5">{t('Max products')}</label>
-                  <input type="number" value={p.maxProducts} onChange={e => savePlans(subscriptionPlans.map(x => x.id === p.id ? { ...x, maxProducts: parseInt(e.target.value, 10) || 0 } : x))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs outline-none" />
+                  <input type="number" value={Number.isFinite(p.maxProducts) ? p.maxProducts : 0} onChange={e => savePlans(subscriptionPlans.map(x => x.id === p.id ? { ...x, maxProducts: parseInt(e.target.value, 10) || 0 } : x))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs outline-none" />
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-gray-500 block mb-0.5">{t('Days')}</label>
-                  <input type="number" value={p.durationDays} onChange={e => savePlans(subscriptionPlans.map(x => x.id === p.id ? { ...x, durationDays: parseInt(e.target.value, 10) || 0 } : x))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs outline-none" />
+                  <input type="number" value={Number.isFinite(p.durationDays) ? p.durationDays : 0} onChange={e => savePlans(subscriptionPlans.map(x => x.id === p.id ? { ...x, durationDays: parseInt(e.target.value, 10) || 0 } : x))} className="w-full px-2 py-1.5 border border-gray-300 rounded text-xs outline-none" />
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-gray-500 block mb-0.5">{t('Type')}</label>

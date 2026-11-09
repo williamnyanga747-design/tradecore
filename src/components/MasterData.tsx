@@ -2350,28 +2350,38 @@ export default function MasterData({
                         </td>
                         <td className="px-6 py-4 text-center">
                           <button
+                            type="button"
                             onClick={() => {
-                              const updated = salesOrders.map(item => item.id === so.id ? { ...item, status: 'Completed' } : item);
+                              const updated = salesOrders.map(item =>
+                                String(item.id) === String(so.id)
+                                  ? { ...item, status: 'Completed' as const, isDeleted: false, voidedAt: undefined }
+                                  : item
+                              );
                               saveAllData({ salesOrders: updated });
                               toast.success(t('Sales invoice successfully restored/unvoided!'));
                               logAction?.('Restored Sales Order', `Restored voided sales invoice ${so.soNumber}`);
                             }}
-                            className="text-xs font-bold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition mx-auto"
+                            className="text-xs font-bold bg-emerald-50 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300 border border-emerald-200 px-3 py-1.5 rounded-lg flex items-center gap-1 transition mx-auto cursor-pointer shadow-2xs active:scale-95"
+                            title={t('Restore / Unvoid sales order to completed sales')}
                           >
-                            <RefreshCw className="w-3 h-3" /> {t('Unvoid')}
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>{t('Unvoid')}</span>
                           </button>
                         </td>
                         <td className="px-6 py-4 text-center">
                           <button
+                            type="button"
                             onClick={() => {
-                              const updated = salesOrders.filter(item => item.id !== so.id);
+                              const updated = salesOrders.filter(item => String(item.id) !== String(so.id));
                               saveAllData({ salesOrders: updated });
                               toast.success(t('Sales invoice permanently deleted!'));
                               logAction?.('Permanently Deleted Sales Order', `Permanently deleted sales invoice ${so.soNumber}`);
                             }}
-                            className="text-xs font-bold bg-red-50 text-red-700 hover:bg-red-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition mx-auto"
+                            className="text-xs font-bold bg-rose-50 text-rose-700 hover:bg-rose-100 hover:border-rose-300 border border-rose-200 px-3 py-1.5 rounded-lg flex items-center gap-1 transition mx-auto cursor-pointer shadow-2xs active:scale-95"
+                            title={t('Permanently delete this voided sales record from database')}
                           >
-                            <Trash2 className="w-3 h-3" /> {t('Permanent')}
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>{t('Permanent')}</span>
                           </button>
                         </td>
                       </tr>

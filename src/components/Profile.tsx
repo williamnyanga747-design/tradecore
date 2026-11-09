@@ -9,7 +9,8 @@ import {
   authenticateBiometricCredential,
   isPlatformAuthenticatorAvailable,
   removeDeviceCredential,
-  isUserEnrolledOnDevice
+  isUserEnrolledOnDevice,
+  isWebAuthnFrameRestricted
 } from '../utils/webauthn';
 
 interface ProfileProps {
@@ -50,11 +51,13 @@ export default function Profile({
   const [fpError, setFpError] = useState('');
   const [fpCurrentPwdCheck, setFpCurrentPwdCheck] = useState('');
   const [isPlatformAuthAvailable, setIsPlatformAuthAvailable] = useState<boolean | null>(null);
+  const [isFrameRestricted, setIsFrameRestricted] = useState(false);
   const [isFpEnrolled, setIsFpEnrolled] = useState(() => {
     return Boolean(currentUser?.fingerprintEnabled) || (currentUser ? isUserEnrolledOnDevice(currentUser.username) : false);
   });
 
   useEffect(() => {
+    setIsFrameRestricted(isWebAuthnFrameRestricted());
     isPlatformAuthenticatorAvailable().then(avail => {
       setIsPlatformAuthAvailable(avail);
     });
@@ -98,6 +101,10 @@ export default function Profile({
   const showOrientation = daysRemaining > 0;
 
   const handleOpenEnrollFpModal = () => {
+    if (isFrameRestricted) {
+      toast.info(t('Biometric enrollment is restricted inside this embedded preview frame by browser Permissions Policy. Please open TradeCore in a standalone browser tab.'));
+      return;
+    }
     setFpMode('enroll');
     setFpScanning(false);
     setFpSuccess(false);
@@ -144,6 +151,13 @@ export default function Profile({
 
   const handleStartSensorScan = async () => {
     setFpError('');
+
+    if (isFrameRestricted) {
+      const msg = t('Biometric sensor access is restricted inside this embedded preview frame by browser Permissions Policy. Please open TradeCore in a standalone browser tab.');
+      setFpError(msg);
+      toast.info(msg);
+      return;
+    }
 
     if (fpMode === 'enroll' && !currentUser.isRoot && currentUser.password) {
       if (!fpCurrentPwdCheck.trim()) {
@@ -401,10 +415,16 @@ export default function Profile({
                     {t('Registered on')}: {new Date(currentUser.fingerprintRegisteredAt).toLocaleDateString()} {new Date(currentUser.fingerprintRegisteredAt).toLocaleTimeString()}
                   </span>
                 )}
-                {isPlatformAuthAvailable === false && (
+                {isPlatformAuthAvailable === false && !isFrameRestricted && (
                   <div className="flex items-center gap-1.5 p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 text-[11px] font-medium mt-1">
                     <ShieldAlert className="w-4 h-4 shrink-0 text-amber-600" />
                     <span>{t('Hardware biometric sensor not detected on this browser/device.')}</span>
+                  </div>
+                )}
+                {isFrameRestricted && (
+                  <div className="flex items-start gap-2 p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-800 text-[11px] font-medium mt-1">
+                    <ShieldAlert className="w-4 h-4 shrink-0 text-blue-600 mt-0.5" />
+                    <span>{t('Embedded Preview Notice: Hardware biometric sensors (WebAuthn) are restricted inside embedded iframes by browser Permissions Policy. Open TradeCore in a standalone browser tab to enroll your fingerprint.')}</span>
                   </div>
                 )}
               </div>
@@ -441,9 +461,10 @@ export default function Profile({
                 <button
                   type="button"
                   onClick={handleOpenEnrollFpModal}
-                  disabled={isPlatformAuthAvailable === false}
+                  disabled={isPlatformAuthAvailable === false || isFrameRestricted}
+                  title={isFrameRestricted ? t('WebAuthn is restricted inside embedded iframes. Open in a standalone tab to enroll.') : undefined}
                   className={`px-4 py-2 rounded-lg text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition ${
-                    isPlatformAuthAvailable === false
+                    isPlatformAuthAvailable === false || isFrameRestricted
                       ? 'bg-gray-400 cursor-not-allowed opacity-60'
                       : 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'
                   }`}

@@ -65,11 +65,84 @@ export function isWebAuthnSupported(): boolean {
 }
 
 /**
+ * Checks whether publickey-credentials-create is allowed under the current document's Permissions Policy.
+ * Prevents DOMExceptions in cross-origin or restricted child iframes.
+ */
+export function isWebAuthnCreationAllowed(): boolean {
+  if (!isWebAuthnSupported()) return false;
+  if (typeof document === 'undefined') return false;
+
+  try {
+    const inIframe = typeof window !== 'undefined' && window.self !== window.top;
+    const doc = document as any;
+    if (doc.permissionsPolicy && typeof doc.permissionsPolicy.allowsFeature === 'function') {
+      return Boolean(doc.permissionsPolicy.allowsFeature('publickey-credentials-create'));
+    }
+    if (doc.featurePolicy && typeof doc.featurePolicy.allowsFeature === 'function') {
+      return Boolean(doc.featurePolicy.allowsFeature('publickey-credentials-create'));
+    }
+    if (inIframe) {
+      // In child frames without Permissions Policy delegation, creation is blocked by default
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Checks whether publickey-credentials-get is allowed under the current document's Permissions Policy.
+ */
+export function isWebAuthnGetAllowed(): boolean {
+  if (!isWebAuthnSupported()) return false;
+  if (typeof document === 'undefined') return false;
+
+  try {
+    const inIframe = typeof window !== 'undefined' && window.self !== window.top;
+    const doc = document as any;
+    if (doc.permissionsPolicy && typeof doc.permissionsPolicy.allowsFeature === 'function') {
+      return Boolean(doc.permissionsPolicy.allowsFeature('publickey-credentials-get'));
+    }
+    if (doc.featurePolicy && typeof doc.featurePolicy.allowsFeature === 'function') {
+      return Boolean(doc.featurePolicy.allowsFeature('publickey-credentials-get'));
+    }
+    if (inIframe) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Returns true if the app is currently running in an embedded iframe where
+ * the browser's Permissions Policy blocks Web Authentication API capabilities.
+ */
+export function isWebAuthnFrameRestricted(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const inIframe = window.self !== window.top;
+    if (!inIframe) return false;
+    return !isWebAuthnCreationAllowed() || !isWebAuthnGetAllowed();
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Checks whether a user-verifying platform authenticator (e.g. Touch ID,
  * Windows Hello, Android fingerprint sensor) is available on this physical device.
  */
 export async function isPlatformAuthenticatorAvailable(): Promise<boolean> {
   if (!isWebAuthnSupported()) return false;
+  // If the document frame is restricted by Permissions Policy, platform authenticators cannot be invoked
+  if (!isWebAuthnCreationAllowed() && !isWebAuthnGetAllowed()) {
+    return false;
+  }
   try {
     if (typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
       const available = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
@@ -166,6 +239,18 @@ function formatWebAuthnError(err: any, mode: 'enroll' | 'auth'): string {
   const name = err.name || '';
   const msg = err.message || '';
 
+  if (
+    msg.includes('publickey-credentials-create') ||
+    msg.includes('publickey-credentials-get') ||
+    msg.includes('Permissions Policy') ||
+    msg.includes('cross-origin child frames') ||
+    msg.includes('feature is not enabled in this document')
+  ) {
+    return mode === 'enroll'
+      ? 'Biometric enrollment is restricted in this embedded preview frame by browser Permissions Policy. To register your device fingerprint, please open TradeCore in a standalone browser tab.'
+      : 'Biometric verification is restricted in this embedded preview frame by browser Permissions Policy. Please sign in with your password or open TradeCore in a standalone browser tab.';
+  }
+
   if (name === 'NotAllowedError') {
     return mode === 'enroll'
       ? 'Biometric enrollment was cancelled, timed out, or permission was denied by the operating system.'
@@ -202,6 +287,13 @@ export async function enrollBiometricCredential(user: {
     return {
       ok: false,
       error: 'WebAuthn is not supported in this browser environment.'
+    };
+  }
+
+  if (!isWebAuthnCreationAllowed()) {
+    return {
+      ok: false,
+      error: 'Biometric enrollment is restricted in this embedded preview frame by browser Permissions Policy. To enroll your fingerprint, please open TradeCore in a standalone browser tab.'
     };
   }
 
@@ -283,7 +375,7 @@ export async function enrollBiometricCredential(user: {
       credential: enrolledRecord
     };
   } catch (err: any) {
-    console.error('[WebAuthn] Biometric enrollment error:', err);
+    console.warn('[WebAuthn] Biometric enrollment not completed:', err?.message || err);
     return {
       ok: false,
       error: formatWebAuthnError(err, 'enroll')
@@ -309,6 +401,13 @@ export async function authenticateBiometricCredential(targetUser?: {
     return {
       ok: false,
       error: 'WebAuthn is not supported in this browser environment.'
+    };
+  }
+
+  if (!isWebAuthnGetAllowed()) {
+    return {
+      ok: false,
+      error: 'Biometric verification is restricted in this embedded preview frame by browser Permissions Policy. Please sign in with your password or open TradeCore in a standalone browser tab.'
     };
   }
 
@@ -423,7 +522,7 @@ export async function authenticateBiometricCredential(targetUser?: {
       error: 'Unrecognized biometric credential. This fingerprint is not enrolled for any registered user on this device.'
     };
   } catch (err: any) {
-    console.error('[WebAuthn] Biometric authentication error:', err);
+    console.warn('[WebAuthn] Biometric authentication not completed:', err?.message || err);
     return {
       ok: false,
       error: formatWebAuthnError(err, 'auth')

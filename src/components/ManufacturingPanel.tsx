@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 import {
   BOM, BomItem, BomOutput, ProductionRun, ProductionRunOutputActual,
-  QCTemplate, QCTemplateParameter, BatchQCCheck, QCLabResult,
+  ProductionRunStatus, QCTemplate, QCTemplateParameter, BatchQCCheck, QCLabResult,
   StockItem, Store, Company, User, CostAllocationMethod, ManufacturingSettings,
   ProductionAuditLog
 } from '../types';
@@ -45,6 +45,12 @@ interface ManufacturingPanelProps {
 }
 
 type TabKey = 'overview' | 'boms' | 'runs' | 'qc' | 'muv' | 'traveler';
+
+const safeNumValue = (v: any): number | string => {
+  if (v === undefined || v === null || v === '') return '';
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : '';
+};
 
 export default function ManufacturingPanel({
   boms = [],
@@ -1653,10 +1659,10 @@ export default function ManufacturingPanel({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 font-medium">
-                    {companyRuns.slice(0, 10).map(run => {
+                    {companyRuns.slice(0, 10).map((run, rIdx) => {
                       const isHighLoss = (run.invisibleLossKg / (run.inputWeightKg || 1)) * 100 > warningInvisibleThreshold;
                       return (
-                        <tr key={run.id} className="hover:bg-gray-50/60 transition">
+                        <tr key={run.id != null ? String(run.id) : `overview-run-${rIdx}`} className="hover:bg-gray-50/60 transition">
                           <td className="p-3 font-mono font-bold text-gray-900">
                             {run.batchNumber}
                             <span className="block text-[10px] text-gray-400 font-normal">{run.runNumber}</span>
@@ -1771,14 +1777,14 @@ export default function ManufacturingPanel({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {companyBoms.map(bom => {
+            {companyBoms.map((bom, bIdx) => {
               const primaryOutputs = (bom.outputs || []).filter(o => o.isPrimary);
               const byProductOutputs = (bom.outputs || []).filter(o => !o.isPrimary);
               const rawCost = (bom.items || []).reduce((sum, i) => sum + (i.quantity * i.unitCost), 0);
               const totalCost = rawCost + (bom.packagingCost || 0) + (bom.laborCost || 0) + (bom.overheadCost || 0);
 
               return (
-                <div key={bom.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4 flex flex-col justify-between hover:shadow-md transition">
+                <div key={bom.id != null ? String(bom.id) : `bom-${bIdx}`} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4 flex flex-col justify-between hover:shadow-md transition">
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-2">
                       <div>
@@ -1820,14 +1826,14 @@ export default function ManufacturingPanel({
                         {t('Outputs (Co-Products & By-Products)')}
                       </span>
                       <div className="space-y-1">
-                        {primaryOutputs.map(out => (
-                          <div key={out.id} className="flex justify-between text-xs font-semibold text-gray-800 bg-emerald-50/50 px-2.5 py-1 rounded">
+                        {primaryOutputs.map((out, oIdx) => (
+                          <div key={out.id != null ? String(out.id) : `out-p-${out.productId || oIdx}`} className="flex justify-between text-xs font-semibold text-gray-800 bg-emerald-50/50 px-2.5 py-1 rounded">
                             <span className="truncate max-w-[160px]">★ {out.productName}</span>
                             <span className="text-emerald-700">{out.expectedQtyKg} kg</span>
                           </div>
                         ))}
-                        {byProductOutputs.map(out => (
-                          <div key={out.id} className="flex justify-between text-xs font-medium text-gray-600 bg-gray-50 px-2.5 py-1 rounded">
+                        {byProductOutputs.map((out, oIdx) => (
+                          <div key={out.id != null ? String(out.id) : `out-bp-${out.productId || oIdx}`} className="flex justify-between text-xs font-medium text-gray-600 bg-gray-50 px-2.5 py-1 rounded">
                             <span className="truncate max-w-[160px] text-gray-500">↳ {out.productName} (by-product)</span>
                             <span className="text-gray-700">{out.expectedQtyKg} kg</span>
                           </div>
@@ -1982,10 +1988,10 @@ export default function ManufacturingPanel({
                         {t('No production orders matching selected filter.')}
                       </td>
                     </tr>
-                  ) : filteredCompanyRuns.map(run => {
+                  ) : filteredCompanyRuns.map((run, rIdx) => {
                     const storeName = stores.find(s => s.id === run.storeId)?.name || `Store #${run.storeId}`;
                     return (
-                      <tr key={run.id} className="hover:bg-gray-50/60 transition">
+                      <tr key={run.id != null ? String(run.id) : `run-order-${rIdx}`} className="hover:bg-gray-50/60 transition">
                         <td className="p-3">
                           <span className="font-mono font-extrabold text-gray-900 block">{run.batchNumber}</span>
                           <span className="text-[10px] text-gray-400 font-mono">{run.runNumber}</span>
@@ -2131,8 +2137,8 @@ export default function ManufacturingPanel({
 
           {/* Templates Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {companyTemplates.map(tmpl => (
-              <div key={tmpl.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4 hover:shadow-md transition">
+            {companyTemplates.map((tmpl, tIdx) => (
+              <div key={tmpl.id != null ? String(tmpl.id) : `tmpl-${tIdx}`} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4 hover:shadow-md transition">
                 <div className="flex items-start justify-between">
                   <div className="space-y-0.5">
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -2176,7 +2182,7 @@ export default function ManufacturingPanel({
                   </span>
                   <div className="space-y-1">
                     {tmpl.parameters.map((p, pIdx) => (
-                      <div key={p.id || pIdx} className="flex items-center justify-between text-xs p-1.5 rounded bg-gray-50">
+                      <div key={p.id != null ? String(p.id) : `tmpl-param-${pIdx}`} className="flex items-center justify-between text-xs p-1.5 rounded bg-gray-50">
                         <span className="font-medium text-gray-800 flex items-center gap-1">
                           {p.isCritical && <span className="w-1.5 h-1.5 rounded-full bg-rose-500" title="Critical Parameter" />}
                           {p.paramName}
@@ -2218,8 +2224,8 @@ export default function ManufacturingPanel({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 font-medium">
-                    {companyQcChecks.map(check => (
-                      <tr key={check.id} className="hover:bg-gray-50/60">
+                    {companyQcChecks.map((check, cIdx) => (
+                      <tr key={check.id != null ? String(check.id) : `qc-rec-${cIdx}`} className="hover:bg-gray-50/60">
                         <td className="p-3 font-mono font-extrabold text-indigo-700">
                           {check.complianceCertNumber || check.id}
                         </td>
@@ -2353,13 +2359,13 @@ export default function ManufacturingPanel({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 font-medium">
-                  {companyRuns.map(run => {
+                  {companyRuns.map((run, rIdx) => {
                     const invisPct = run.inputWeightKg > 0 ? (run.invisibleLossKg / run.inputWeightKg) * 100 : 0;
                     const isWithinThreshold = invisPct <= invisibleThreshold;
                     const isHighAlert = invisPct > warningInvisibleThreshold;
 
                     return (
-                      <tr key={run.id} className="hover:bg-gray-50/60 font-mono">
+                      <tr key={run.id != null ? String(run.id) : `muv-row-${rIdx}`} className="hover:bg-gray-50/60 font-mono">
                         <td className="p-3 font-bold text-gray-900">{run.batchNumber}</td>
                         <td className="p-3 text-right text-gray-600">{run.inputWeightKg.toLocaleString()} kg</td>
                         <td className="p-3 text-right text-gray-800 font-bold">{run.inputWeightKg.toLocaleString()} kg</td>
@@ -2453,7 +2459,7 @@ export default function ManufacturingPanel({
                 <label className="font-bold text-gray-700 uppercase tracking-wider text-[10px]">{t('Base Batch Input (kg)')}</label>
                 <input
                   type="number"
-                  value={bomBaseQty}
+                  value={safeNumValue(bomBaseQty)}
                   onChange={e => setBomBaseQty(parseFloat(e.target.value) || 0)}
                   className="w-full px-3 py-2 border rounded-xl font-bold bg-gray-50 outline-none"
                   min="1"
@@ -2518,8 +2524,8 @@ export default function ManufacturingPanel({
                         className="w-full px-3 py-1.5 border rounded-lg bg-white font-bold text-gray-900 outline-none focus:border-indigo-500 text-xs shadow-2xs"
                       />
                       <datalist id={`raw-materials-datalist-${idx}`}>
-                        {stockItems.map(p => (
-                          <option key={p.id} value={p.name}>{p.name} ({p.code})</option>
+                        {stockItems.map((p, pIdx) => (
+                          <option key={p.id != null ? String(p.id) : `stk-raw-${pIdx}`} value={p.name}>{p.name} ({p.code})</option>
                         ))}
                       </datalist>
                     </div>
@@ -2528,7 +2534,7 @@ export default function ManufacturingPanel({
                       <div className="w-24">
                         <input
                           type="number"
-                          value={item.quantity}
+                          value={safeNumValue(item.quantity)}
                           onChange={e => {
                             const copy = [...bomRawItems];
                             copy[idx].quantity = parseFloat(e.target.value) || 0;
@@ -2556,7 +2562,7 @@ export default function ManufacturingPanel({
                       <div className="w-28">
                         <input
                           type="number"
-                          value={item.unitCost}
+                          value={safeNumValue(item.unitCost)}
                           onChange={e => {
                             const copy = [...bomRawItems];
                             copy[idx].unitCost = parseFloat(e.target.value) || 0;
@@ -2592,7 +2598,7 @@ export default function ManufacturingPanel({
                   <label className="font-bold text-gray-600 block text-[10px] uppercase mb-1">{t('Packaging Material (Bags, Seals)')}</label>
                   <input
                     type="number"
-                    value={bomPackagingCost}
+                    value={safeNumValue(bomPackagingCost)}
                     onChange={e => setBomPackagingCost(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-2 border rounded-xl font-mono text-right outline-none bg-gray-50"
                   />
@@ -2601,7 +2607,7 @@ export default function ManufacturingPanel({
                   <label className="font-bold text-gray-600 block text-[10px] uppercase mb-1">{t('Direct Labor / Miller Wages')}</label>
                   <input
                     type="number"
-                    value={bomLaborCost}
+                    value={safeNumValue(bomLaborCost)}
                     onChange={e => setBomLaborCost(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-2 border rounded-xl font-mono text-right outline-none bg-gray-50"
                   />
@@ -2610,7 +2616,7 @@ export default function ManufacturingPanel({
                   <label className="font-bold text-gray-600 block text-[10px] uppercase mb-1">{t('Factory Overhead / Electricity')}</label>
                   <input
                     type="number"
-                    value={bomOverheadCost}
+                    value={safeNumValue(bomOverheadCost)}
                     onChange={e => setBomOverheadCost(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-2 border rounded-xl font-mono text-right outline-none bg-gray-50"
                   />
@@ -2740,7 +2746,7 @@ export default function ManufacturingPanel({
                       return bomOutputs.map((out, idx) => {
                         const calculated = previewCalculated[idx];
                         return (
-                          <tr key={out.id || idx} className="hover:bg-gray-50/50">
+                          <tr key={out.id != null ? String(out.id) : `bom-out-${idx}`} className="hover:bg-gray-50/50">
                             <td className="p-2.5">
                               <input
                                 type="text"
@@ -2762,15 +2768,15 @@ export default function ManufacturingPanel({
                                 className="w-full px-2.5 py-1.5 border rounded-lg bg-white font-bold text-gray-900 outline-none focus:border-emerald-500 text-xs shadow-2xs"
                               />
                               <datalist id={`output-products-datalist-${idx}`}>
-                                {stockItems.map(p => (
-                                  <option key={p.id} value={p.name}>{p.name} ({p.code})</option>
+                                {stockItems.map((p, pIdx) => (
+                                  <option key={p.id != null ? String(p.id) : `stk-out-${pIdx}`} value={p.name}>{p.name} ({p.code})</option>
                                 ))}
                               </datalist>
                             </td>
                             <td className="p-2.5 text-center">
                               <input
                                 type="number"
-                                value={out.expectedQtyKg}
+                                value={safeNumValue(out.expectedQtyKg)}
                                 onChange={e => {
                                   const copy = [...bomOutputs];
                                   copy[idx].expectedQtyKg = parseFloat(e.target.value) || 0;
@@ -2782,7 +2788,7 @@ export default function ManufacturingPanel({
                             <td className="p-2.5 text-right">
                               <input
                                 type="number"
-                                value={out.expectedMarketPrice}
+                                value={safeNumValue(out.expectedMarketPrice)}
                                 onChange={e => {
                                   const copy = [...bomOutputs];
                                   copy[idx].expectedMarketPrice = parseFloat(e.target.value) || 0;
@@ -2807,7 +2813,7 @@ export default function ManufacturingPanel({
                               <td className="p-2.5 text-center">
                                 <input
                                   type="number"
-                                  value={out.allocationPercent || 0}
+                                  value={safeNumValue(out.allocationPercent)}
                                   onChange={e => {
                                     const copy = [...bomOutputs];
                                     copy[idx].allocationPercent = parseFloat(e.target.value) || 0;
@@ -2908,8 +2914,8 @@ export default function ManufacturingPanel({
                   }}
                   className="w-full px-3 py-2 border rounded-xl font-bold bg-gray-50 outline-none"
                 >
-                  {companyBoms.map(b => (
-                    <option key={b.id} value={b.id}>{b.name} ({b.code}) - {b.baseQuantity} kg</option>
+                  {companyBoms.map((b, bIdx) => (
+                    <option key={b.id != null ? String(b.id) : `b-opt-${bIdx}`} value={b.id}>{b.name} ({b.code}) - {b.baseQuantity} kg</option>
                   ))}
                 </select>
               </div>
@@ -2932,7 +2938,7 @@ export default function ManufacturingPanel({
                   </label>
                   <input
                     type="number"
-                    value={runInputWeightKg}
+                    value={safeNumValue(runInputWeightKg)}
                     onChange={e => setRunInputWeightKg(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-2 border rounded-xl font-bold bg-gray-50 outline-none"
                   />
@@ -2973,8 +2979,8 @@ export default function ManufacturingPanel({
                   onChange={e => setRunStoreId(Number(e.target.value))}
                   className="w-full px-3 py-2 border rounded-xl font-bold bg-gray-50 outline-none"
                 >
-                  {stores.map(s => (
-                    <option key={s.id} value={s.id}>{s.name} - {s.location || 'Main Depot'}</option>
+                  {stores.map((s, sIdx) => (
+                    <option key={s.id != null ? String(s.id) : `s-opt-${sIdx}`} value={s.id}>{s.name} - {s.location || 'Main Depot'}</option>
                   ))}
                 </select>
               </div>
@@ -3047,13 +3053,14 @@ export default function ManufacturingPanel({
                       {t('Parts to be Consumed from Warehouse')} #{runStoreId}:
                     </span>
                     <div className="space-y-1 max-h-24 overflow-y-auto">
-                      {b.items.map(item => {
+                      {b.items.map((item, itemIdx) => {
                         const needed = Math.round(item.quantity * scale * 100) / 100;
                         const p = stockItems.find(x => String(x.id) === String(item.productId) || (item.productName && x.name.toLowerCase() === item.productName.toLowerCase()));
                         const available = p?.stock?.[runStoreId] || 0;
                         const isShort = available < needed;
+                        const itemKey = (item as any).id != null ? String((item as any).id) : item.productId != null ? `part-${item.productId}` : `part-${itemIdx}`;
                         return (
-                          <div key={item.id} className="flex items-center justify-between text-[11px] py-0.5">
+                          <div key={itemKey} className="flex items-center justify-between text-[11px] py-0.5">
                             <span className="font-medium text-gray-700 truncate max-w-[200px]">{item.productName}</span>
                             <span className={`font-mono font-bold ${isShort ? 'text-rose-600' : 'text-emerald-700'}`}>
                               {needed} kg {isShort ? `(${t('Avail')}: ${available})` : `✓`}
@@ -3132,7 +3139,7 @@ export default function ManufacturingPanel({
                   </label>
                   <input
                     type="number"
-                    value={runnerCleaningLoss}
+                    value={safeNumValue(runnerCleaningLoss)}
                     onChange={e => setRunnerCleaningLoss(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-2 rounded-xl bg-slate-800 text-white border border-slate-700 font-bold outline-none"
                     placeholder="e.g. 12"
@@ -3145,7 +3152,7 @@ export default function ManufacturingPanel({
                   </label>
                   <input
                     type="number"
-                    value={runnerMillingScrap}
+                    value={safeNumValue(runnerMillingScrap)}
                     onChange={e => setRunnerMillingScrap(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-2 rounded-xl bg-slate-800 text-white border border-slate-700 font-bold outline-none"
                     placeholder="e.g. 10"
@@ -3159,7 +3166,7 @@ export default function ManufacturingPanel({
                   <input
                     type="number"
                     step="0.1"
-                    value={runnerMoistureBefore}
+                    value={safeNumValue(runnerMoistureBefore)}
                     onChange={e => setRunnerMoistureBefore(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-1.5 rounded-lg bg-slate-800 text-white border border-slate-700 font-mono outline-none"
                   />
@@ -3169,7 +3176,7 @@ export default function ManufacturingPanel({
                   <input
                     type="number"
                     step="0.1"
-                    value={runnerMoistureAfter}
+                    value={safeNumValue(runnerMoistureAfter)}
                     onChange={e => setRunnerMoistureAfter(parseFloat(e.target.value) || 0)}
                     className="w-full px-3 py-1.5 rounded-lg bg-slate-800 text-white border border-slate-700 font-mono outline-none"
                   />
@@ -3228,10 +3235,11 @@ export default function ManufacturingPanel({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 font-medium">
-                    {activeRunnerRun.outputs.map(out => {
+                    {activeRunnerRun.outputs.map((out, outIdx) => {
                       const actual = runnerOutputActuals[out.productId] !== undefined ? runnerOutputActuals[out.productId] : out.expectedQtyKg;
+                      const rowKey = out.productId != null ? `runner-out-${out.productId}` : `runner-out-${outIdx}`;
                       return (
-                        <tr key={out.productId} className="hover:bg-gray-50/50">
+                        <tr key={rowKey} className="hover:bg-gray-50/50">
                           <td className="p-2.5 font-bold text-gray-900">
                             {out.productName}
                             {out.isPrimary ? (
@@ -3246,7 +3254,7 @@ export default function ManufacturingPanel({
                           <td className="p-2.5 text-center">
                             <input
                               type="number"
-                              value={actual}
+                              value={safeNumValue(actual)}
                               onChange={e => {
                                 const val = parseFloat(e.target.value) || 0;
                                 setRunnerOutputActuals({
@@ -3337,8 +3345,8 @@ export default function ManufacturingPanel({
                 onChange={e => setQcTemplateId(e.target.value)}
                 className="w-full px-3 py-2 border rounded-xl font-bold bg-gray-50 outline-none"
               >
-                {companyTemplates.map(tmpl => (
-                  <option key={tmpl.id} value={tmpl.id}>{tmpl.name} ({tmpl.standardRef || 'EAS 44'})</option>
+                {companyTemplates.map((tmpl, tIdx) => (
+                  <option key={tmpl.id != null ? String(tmpl.id) : `tmpl-opt-${tIdx}`} value={tmpl.id}>{tmpl.name} ({tmpl.standardRef || 'EAS 44'})</option>
                 ))}
               </select>
             </div>
@@ -3359,8 +3367,8 @@ export default function ManufacturingPanel({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100 font-medium">
-                    {activeQCEvaluation.labResults.map(res => (
-                      <tr key={res.parameterId} className="hover:bg-gray-50/50">
+                    {activeQCEvaluation.labResults.map((res, rIdx) => (
+                      <tr key={res.parameterId != null ? String(res.parameterId) : `res-${rIdx}`} className="hover:bg-gray-50/50">
                         <td className="p-2.5 font-bold text-gray-900">
                           {res.paramName}
                           {res.isCritical && (
@@ -3376,7 +3384,7 @@ export default function ManufacturingPanel({
                           <input
                             type="number"
                             step="0.01"
-                            value={qcLabInputs[res.parameterId] !== undefined ? qcLabInputs[res.parameterId] : ''}
+                            value={safeNumValue(qcLabInputs[res.parameterId])}
                             onChange={e => {
                               const val = parseFloat(e.target.value) || 0;
                               setQcLabInputs({
@@ -3679,7 +3687,7 @@ export default function ManufacturingPanel({
                   </thead>
                   <tbody className="divide-y divide-gray-100 font-medium">
                     {tmplParameters.map((param, pIdx) => (
-                      <tr key={param.id || pIdx} className="hover:bg-gray-50/50">
+                      <tr key={param.id != null ? String(param.id) : `param-${pIdx}`} className="hover:bg-gray-50/50">
                         <td className="p-2">
                           <input
                             type="text"
@@ -3708,9 +3716,10 @@ export default function ManufacturingPanel({
                           <input
                             type="number"
                             step="any"
-                            value={param.minValue !== undefined ? param.minValue : ''}
+                            value={safeNumValue(param.minValue)}
                             onChange={e => {
-                              const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                              const raw = e.target.value;
+                              const val = raw === '' ? undefined : (parseFloat(raw) || 0);
                               setTmplParameters(prev => prev.map((p, i) => i === pIdx ? { ...p, minValue: val } : p));
                             }}
                             placeholder="Min"
@@ -3721,9 +3730,10 @@ export default function ManufacturingPanel({
                           <input
                             type="number"
                             step="any"
-                            value={param.maxValue !== undefined ? param.maxValue : ''}
+                            value={safeNumValue(param.maxValue)}
                             onChange={e => {
-                              const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                              const raw = e.target.value;
+                              const val = raw === '' ? undefined : (parseFloat(raw) || 0);
                               setTmplParameters(prev => prev.map((p, i) => i === pIdx ? { ...p, maxValue: val } : p));
                             }}
                             placeholder="Max"
@@ -3734,9 +3744,10 @@ export default function ManufacturingPanel({
                           <input
                             type="number"
                             step="any"
-                            value={param.targetValue !== undefined ? param.targetValue : ''}
+                            value={safeNumValue(param.targetValue)}
                             onChange={e => {
-                              const val = e.target.value === '' ? undefined : parseFloat(e.target.value);
+                              const raw = e.target.value;
+                              const val = raw === '' ? undefined : (parseFloat(raw) || 0);
                               setTmplParameters(prev => prev.map((p, i) => i === pIdx ? { ...p, targetValue: val } : p));
                             }}
                             placeholder="Opt"
@@ -3891,8 +3902,8 @@ export default function ManufacturingPanel({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 font-medium">
-                  {travelerRun.outputs.map(out => (
-                    <tr key={out.productId}>
+                  {travelerRun.outputs.map((out, outIdx) => (
+                    <tr key={out.productId != null ? `traveler-out-${out.productId}` : `traveler-out-${outIdx}`}>
                       <td className="p-2.5 font-bold text-gray-900">{out.productName}</td>
                       <td className="p-2.5 text-center">
                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -4088,14 +4099,14 @@ export default function ManufacturingPanel({
                 </div>
               ) : (
                 <div className="relative pl-6 space-y-6 before:absolute before:left-2.5 before:top-3 before:bottom-3 before:w-0.5 before:bg-indigo-100">
-                  {filteredLogs.map(log => {
+                  {filteredLogs.map((log, lIdx) => {
                     const isStatus = log.action === 'STATUS_CHANGE' || log.action === 'RUN_CREATED' || log.action === 'RUN_COMPLETED';
                     const isMaterial = log.action === 'MATERIAL_USAGE';
                     const isQcOverride = log.action === 'QC_OVERRIDE';
                     const isQcInspect = log.action === 'QC_INSPECTION';
 
                     return (
-                      <div key={log.id} className="relative group">
+                      <div key={log.id != null ? String(log.id) : `audit-log-${lIdx}`} className="relative group">
                         {/* Timeline Node Icon */}
                         <div className={`absolute -left-6 top-1 w-5 h-5 rounded-full border-2 bg-white flex items-center justify-center ${
                           isQcOverride

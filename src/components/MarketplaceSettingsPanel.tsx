@@ -1821,17 +1821,17 @@ function ShippingZonesManager({ zones, onSave, onDelete, regions, t }: { zones: 
             </div>
             <div>
               <label className="text-[10px] font-bold text-gray-500 uppercase">{t('Base Fee')} (TZS)</label>
-              <input type="number" value={form.baseFee || 0} onChange={e => setForm({ ...form, baseFee: +e.target.value })} className="w-full mt-1 px-3 py-1.5 border rounded-lg text-xs font-medium" />
+              <input type="number" value={Number.isFinite(form.baseFee) ? form.baseFee : 0} onChange={e => setForm({ ...form, baseFee: Number(e.target.value) || 0 })} className="w-full mt-1 px-3 py-1.5 border rounded-lg text-xs font-medium" />
             </div>
             <div>
               <label className="text-[10px] font-bold text-gray-500 uppercase">{t('Per Kg Rate')} (TZS)</label>
-              <input type="number" value={form.perKgRate || 0} onChange={e => setForm({ ...form, perKgRate: +e.target.value })} className="w-full mt-1 px-3 py-1.5 border rounded-lg text-xs font-medium" />
+              <input type="number" value={Number.isFinite(form.perKgRate) ? form.perKgRate : 0} onChange={e => setForm({ ...form, perKgRate: Number(e.target.value) || 0 })} className="w-full mt-1 px-3 py-1.5 border rounded-lg text-xs font-medium" />
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-bold text-gray-500 uppercase">{t('Est. Days')}</label>
-              <input type="number" min={1} max={30} value={form.estimatedDays || 3} onChange={e => setForm({ ...form, estimatedDays: +e.target.value })} className="w-full mt-1 px-3 py-1.5 border rounded-lg text-xs font-medium" />
+              <input type="number" min={1} max={30} value={Number.isFinite(form.estimatedDays) ? form.estimatedDays : 3} onChange={e => setForm({ ...form, estimatedDays: Number(e.target.value) || 3 })} className="w-full mt-1 px-3 py-1.5 border rounded-lg text-xs font-medium" />
             </div>
             <div className="flex items-center gap-2 pt-4">
               <input type="checkbox" checked={form.isActive !== false} onChange={e => setForm({ ...form, isActive: e.target.checked })} className="rounded" />

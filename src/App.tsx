@@ -177,7 +177,8 @@ import {
   isPlatformAuthenticatorAvailable,
   hasDeviceEnrolledCredentials,
   getDeviceEnrolledCredentials,
-  isWebAuthnSupported
+  isWebAuthnSupported,
+  isWebAuthnFrameRestricted
 } from './utils/webauthn';
 
 // Icons
@@ -186,7 +187,7 @@ import {
   BarChart3, Users, UserCircle, LogOut, Settings as SettingsIcon, Search, Plus, ArrowLeftRight,
   Pencil, Trash2, Printer, FileSpreadsheet, Copy, CheckCircle, CheckCircle2, ShoppingBag, RefreshCw, AlertTriangle, AlertCircle, X, XCircle, Check,
   ShieldAlert, DollarSign as DollarIcon, CreditCard, Monitor, Barcode, Store as StoreIcon,
-  Calendar, TrendingUp, TrendingDown, Factory, Info, ShieldCheck, Lock, Globe, Truck, ChevronDown, ChevronUp, Building2, Camera, Layers, Zap, RotateCcw,
+  Calendar, TrendingUp, TrendingDown, Factory, Info, ShieldCheck, Lock, Globe, Truck, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Building2, Camera, Layers, Zap, RotateCcw,
   Clock3, Hourglass, UserPlus, RefreshCcw as RefreshIcon, Sparkles, Loader2, Image as ImageIcon,
   Brain, Bot, Send, Volume2, VolumeX, Maximize2, Minimize2, Mic, HelpCircle, Lightbulb, MessageSquare,
   Calculator, Fingerprint
@@ -1216,8 +1217,8 @@ Je, unaona bidhaa zako zinazouza zaidi zina faida ghafi ya kutosha (Gross Margin
                     className="bg-transparent text-xs font-black text-brand focus:outline-hidden cursor-pointer"
                     title="Switch company scope"
                   >
-                    {userLocatedCompanies.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
+                    {userLocatedCompanies.map((c, cIdx) => (
+                      <option key={c.id != null ? String(c.id) : `co-${cIdx}`} value={c.id}>{c.name}</option>
                     ))}
                   </select>
                 ) : (
@@ -3751,6 +3752,7 @@ export default function App() {
       stories: parsed.stories ?? (dbStateRef.current.stories || []),
       storyViews: parsed.storyViews ?? (dbStateRef.current.storyViews || []),
       shippingZones: parsed.shippingZones ?? (dbStateRef.current.shippingZones || []),
+      sponsors: parsed.sponsors ?? (dbStateRef.current.sponsors || []),
       boms: mergeCollectionById(parsed.boms, dbStateRef.current?.boms, defaultBoms),
       productionRuns: mergeCollectionById(parsed.productionRuns, dbStateRef.current?.productionRuns, defaultProductionRuns),
       qcTemplates: mergeCollectionById(parsed.qcTemplates, dbStateRef.current?.qcTemplates, defaultQcTemplates),
@@ -4026,6 +4028,12 @@ export default function App() {
         stories: [],
         storyViews: [],
         shippingZones: [],
+        sponsors: [],
+        boms: defaultBoms,
+        productionRuns: defaultProductionRuns,
+        qcTemplates: defaultQcTemplates,
+        qcChecks: [],
+        productionAuditLogs: [],
       };
       dbStateRef.current = defaults;
       setCompanies(defaultCompanies);
@@ -5506,14 +5514,7 @@ export default function App() {
           })()
         : current.stockItems,
       purchaseOrders: updatedFields.purchaseOrders !== undefined ? updatedFields.purchaseOrders : current.purchaseOrders,
-      salesOrders: updatedFields.salesOrders !== undefined
-        ? (() => {
-            const incoming = updatedFields.salesOrders || [];
-            const incomingMap = new Map(incoming.map(o => [String(o.id), o]));
-            const preserved = (current.salesOrders || []).filter(o => !incomingMap.has(String(o.id)));
-            return [...incoming, ...preserved];
-          })()
-        : current.salesOrders,
+      salesOrders: updatedFields.salesOrders !== undefined ? updatedFields.salesOrders : current.salesOrders,
       expenses: updatedFields.expenses !== undefined ? updatedFields.expenses : current.expenses,
       auditTrails: updatedFields.auditTrails !== undefined ? updatedFields.auditTrails : current.auditTrails,
       securityLogs: updatedFields.securityLogs !== undefined ? updatedFields.securityLogs : current.securityLogs,
@@ -5573,6 +5574,12 @@ export default function App() {
       stories: updatedFields.stories !== undefined ? updatedFields.stories : current.stories,
       storyViews: updatedFields.storyViews !== undefined ? updatedFields.storyViews : current.storyViews,
       shippingZones: updatedFields.shippingZones !== undefined ? updatedFields.shippingZones : (current.shippingZones || []),
+      sponsors: updatedFields.sponsors !== undefined ? updatedFields.sponsors : (current.sponsors || []),
+      boms: updatedFields.boms !== undefined ? updatedFields.boms : (current.boms || []),
+      productionRuns: updatedFields.productionRuns !== undefined ? updatedFields.productionRuns : (current.productionRuns || []),
+      qcTemplates: updatedFields.qcTemplates !== undefined ? updatedFields.qcTemplates : (current.qcTemplates || []),
+      qcChecks: updatedFields.qcChecks !== undefined ? updatedFields.qcChecks : (current.qcChecks || []),
+      productionAuditLogs: updatedFields.productionAuditLogs !== undefined ? updatedFields.productionAuditLogs : (current.productionAuditLogs || []),
     };
     dbStateRef.current = nextState;
 
@@ -7704,6 +7711,16 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
   const rechartsColors = useMemo(() => ['#c41e3a', '#1e3a8a', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#14b8a6'], []);
   const formatChartMoney = useCallback((value: number) => formatMoney(value, activeCurrency, activeExchangeRate), [activeCurrency, activeExchangeRate]);
 
+  const topProductsScrollRef = useRef<HTMLDivElement>(null);
+  const scrollTopProducts = useCallback((direction: 'left' | 'right') => {
+    if (topProductsScrollRef.current) {
+      topProductsScrollRef.current.scrollBy({
+        left: direction === 'left' ? -320 : 320,
+        behavior: 'smooth'
+      });
+    }
+  }, []);
+
   const dailySalesData = useMemo(() => {
     const storeId = currentStoreId;
     const last15Days = Array.from({ length: 15 }, (_, i) => {
@@ -7722,6 +7739,13 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
     });
   }, [activeSalesOrders, currentStoreId]);
 
+  const summary15Day = useMemo(() => {
+    const totalSales = dailySalesData.reduce((acc, d) => acc + (d.Sales || 0), 0);
+    const totalProfit = dailySalesData.reduce((acc, d) => acc + (d.Profit || 0), 0);
+    const margin = totalSales > 0 ? Math.round((totalProfit / totalSales) * 100) : 0;
+    return { sales: totalSales, profit: totalProfit, margin };
+  }, [dailySalesData]);
+
   const topProductsStockValue = useMemo(() => {
     const storeId = currentStoreId;
     const activeStoreIds = storeId ? [storeId] : visibleStores.map(s => s.id);
@@ -7734,14 +7758,31 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
       const mainQty = p.useSubUnitPricing ? rawQty / (p.subUnitConversion || 1) : rawQty;
       return mainQty * p.purchasePrice;
     };
-    return [...activeStockItems]
-      .map(p => ({
-        name: p.name.length > 15 ? p.name.slice(0, 15) + '...' : p.name,
-        value: getItemValuation(p)
-      }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 5);
+    const mapped = [...activeStockItems].map(p => {
+      const rawQty = storeStock(p);
+      const mainQty = p.useSubUnitPricing ? rawQty / (p.subUnitConversion || 1) : rawQty;
+      const val = mainQty * p.purchasePrice;
+      return {
+        id: p.id,
+        code: p.code || '',
+        fullName: p.name,
+        name: p.name.length > 16 ? p.name.slice(0, 16) + '...' : p.name,
+        value: Math.round(val * 100) / 100,
+        qty: Math.round(mainQty * 100) / 100,
+        unit: p.unit || 'pcs',
+        purchasePrice: p.purchasePrice,
+        category: p.category || 'General'
+      };
+    });
+    // Sort descending by capital asset value, fallback to stock qty
+    mapped.sort((a, b) => b.value !== a.value ? b.value - a.value : b.qty - a.qty);
+    // Return top products up to 40 items for comprehensive horizontal browsing
+    return mapped.slice(0, 40);
   }, [activeStockItems, currentStoreId, visibleStores]);
+
+  const totalTopProductsValuation = useMemo(() => {
+    return topProductsStockValue.reduce((acc, p) => acc + (p.value || 0), 0);
+  }, [topProductsStockValue]);
 
   const expenseCategoryData = useMemo(() => {
     const storeId = currentStoreId;
@@ -8629,6 +8670,14 @@ try {
     setFpSignInScanning(true);
     setFpSignInError('');
     setFpSignInSuccess(false);
+
+    if (isWebAuthnFrameRestricted()) {
+      setFpSignInScanning(false);
+      const msg = t('Hardware biometric authentication is restricted inside embedded preview frames by browser Permissions Policy. Please sign in using your account password or open TradeCore in a standalone tab.');
+      setFpSignInError(msg);
+      toast.info(msg);
+      return;
+    }
 
     try {
       // Execute genuine WebAuthn hardware biometric challenge
@@ -15180,18 +15229,32 @@ try {
         <ChartErrorBoundary resetKey={dailySalesData}>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
           {/* Daily Sales & Profit Area Chart */}
-          <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between">
+          <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between relative overflow-hidden">
             <div>
-              <div className="flex items-center justify-between mb-4">
-                <h4 className="font-bold text-gray-950 text-sm flex items-center gap-2">
-                  <BarChart3 className="w-4 h-4 text-brand" /> {t('Sales & Profit Trendlines (Last 15 Days)')}
-                </h4>
-                <div className="flex items-center gap-4">
-                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#c41e3a]" />{t('Turnover')}
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-2">
+                  <h4 className="font-bold text-gray-950 text-sm flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4 text-brand" /> {t('Sales & Profit Trendlines (Last 15 Days)')}
+                  </h4>
+                  <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-[10px] font-black uppercase tracking-wider">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <span>{t('Live Waves')}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-gray-600 bg-red-50/80 border border-red-100 px-2.5 py-1 rounded-lg">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#c41e3a] animate-pulse" />
+                    <span>{t('Turnover')}:</span>
+                    <span className="font-extrabold text-gray-900">{formatChartMoney(summary15Day.sales)}</span>
                   </span>
-                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-gray-500">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#10b981]" />{t('Profit')}
+                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-gray-600 bg-emerald-50/80 border border-emerald-100 px-2.5 py-1 rounded-lg">
+                    <span className="w-2.5 h-2.5 rounded-full bg-[#10b981] animate-pulse" />
+                    <span>{t('Profit')}:</span>
+                    <span className="font-extrabold text-emerald-700">{formatChartMoney(summary15Day.profit)}</span>
+                    <span className="text-[9px] text-emerald-600 font-black">({summary15Day.margin}%)</span>
                   </span>
                 </div>
               </div>
@@ -15200,20 +15263,48 @@ try {
                   <AreaChart data={dailySalesData} margin={rechartsMargin}>
                     <defs>
                       <linearGradient id="colorSales" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#c41e3a" stopOpacity={0.2}/>
-                        <stop offset="95%" stopColor="#c41e3a" stopOpacity={0}/>
+                        <stop offset="0%" stopColor="#c41e3a" stopOpacity={0.42}>
+                          <animate attributeName="stopOpacity" values="0.42;0.18;0.42" dur="4s" repeatCount="indefinite" />
+                        </stop>
+                        <stop offset="65%" stopColor="#c41e3a" stopOpacity={0.08}/>
+                        <stop offset="100%" stopColor="#c41e3a" stopOpacity={0.01}/>
                       </linearGradient>
                       <linearGradient id="colorProfit" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                        <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                        <stop offset="0%" stopColor="#10b981" stopOpacity={0.55}>
+                          <animate attributeName="stopOpacity" values="0.55;0.25;0.55" dur="3.5s" repeatCount="indefinite" />
+                        </stop>
+                        <stop offset="65%" stopColor="#10b981" stopOpacity={0.12}/>
+                        <stop offset="100%" stopColor="#10b981" stopOpacity={0.01}/>
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                     <XAxis dataKey="date" tickLine={false} axisLine={false} tick={rechartsTick} />
                     <YAxis tickLine={false} axisLine={false} tick={rechartsTick} />
-                    <Tooltip contentStyle={rechartsTooltipStyle} />
-                    <Area type="monotone" dataKey="Sales" name={t('Turnover')} stroke="#c41e3a" strokeWidth={2} fillOpacity={1} fill="url(#colorSales)" isAnimationActive={false} />
-                    <Area type="monotone" dataKey="Profit" name={t('Profit')} stroke="#10b981" strokeWidth={2} fillOpacity={1} fill="url(#colorProfit)" isAnimationActive={false} />
+                    <Tooltip contentStyle={rechartsTooltipStyle} formatter={formatChartMoney} />
+                    <Area
+                      type="monotone"
+                      dataKey="Sales"
+                      name={t('Turnover')}
+                      stroke="#c41e3a"
+                      strokeWidth={2.5}
+                      fillOpacity={1}
+                      fill="url(#colorSales)"
+                      isAnimationActive={true}
+                      animationDuration={1500}
+                      animationEasing="ease-in-out"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="Profit"
+                      name={t('Profit')}
+                      stroke="#10b981"
+                      strokeWidth={2.5}
+                      fillOpacity={1}
+                      fill="url(#colorProfit)"
+                      isAnimationActive={true}
+                      animationDuration={1700}
+                      animationEasing="ease-in-out"
+                    />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -15289,27 +15380,137 @@ try {
         {/* Top Products Inventory Valuation */}
         <ChartErrorBoundary resetKey={topProductsStockValue}>
         <div className="grid grid-cols-1 gap-6 no-print">
-          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
-              <h4 className="font-bold text-gray-950 text-sm flex items-center gap-2">
-                <Package className="w-4 h-4 text-amber-500" /> {t('Top Products by Capital Asset Value')}
-              </h4>
-              <span className="text-[10px] text-gray-400 font-bold uppercase">{t('Store Valuation')}</span>
+          <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <h4 className="font-bold text-gray-950 text-sm flex items-center gap-2">
+                  <Package className="w-4 h-4 text-amber-500" /> {t('Top Products by Capital Asset Value')}
+                </h4>
+                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200/80 text-[10px] font-black uppercase tracking-wider">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                  </span>
+                  <span>{t('Active Valuation')}: {formatChartMoney(totalTopProductsValuation)}</span>
+                </div>
+              </div>
+
+              {/* Controls: Horizontal Scroll Buttons & Product Count */}
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-gray-500 hidden sm:inline">
+                  {topProductsStockValue.length} {t('Products')}
+                </span>
+                <div className="flex items-center gap-1 border border-gray-200 rounded-lg p-0.5 bg-gray-50">
+                  <button
+                    type="button"
+                    onClick={() => scrollTopProducts('left')}
+                    className="p-1 rounded hover:bg-white text-gray-600 hover:text-gray-900 transition cursor-pointer shadow-2xs active:scale-90"
+                    title={t('Scroll Left')}
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => scrollTopProducts('right')}
+                    className="p-1 rounded hover:bg-white text-gray-600 hover:text-gray-900 transition cursor-pointer shadow-2xs active:scale-90"
+                    title={t('Scroll Right')}
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
             </div>
-            <div className="h-64 w-full text-xs font-semibold">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={topProductsStockValue} barSize={40}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-<XAxis dataKey="name" tickLine={false} axisLine={false} tick={rechartsTick} />
-                   <YAxis tickLine={false} axisLine={false} tick={rechartsTick} />
-                  <Tooltip formatter={formatChartMoney} contentStyle={rechartsTooltipStyle} />
-                  <Bar dataKey="value" name={t('Asset Valuation')} radius={[6, 6, 0, 0]} isAnimationActive={false}>
-                    {topProductsStockValue.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={rechartsColors[(index + 2) % rechartsColors.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+
+            {/* Scroll Notice when items > 4 */}
+            {topProductsStockValue.length > 4 && (
+              <div className="flex items-center justify-between text-[11px] text-gray-400 font-medium px-1">
+                <span>← {t('Scroll horizontally to inspect all products')} →</span>
+                <span className="text-[10px] text-amber-600 font-bold">{t('Click any card to inspect inventory')}</span>
+              </div>
+            )}
+
+            {/* Horizontally Scrollable Chart Container */}
+            <div
+              ref={topProductsScrollRef}
+              className="overflow-x-auto scroll-smooth pb-3 pt-1 scrollbar-thin select-none"
+            >
+              <div style={{ minWidth: `${Math.max(680, topProductsStockValue.length * 85)}px`, height: '240px' }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={topProductsStockValue} barSize={38} margin={{ top: 15, right: 15, left: 10, bottom: 20 }}>
+                    <defs>
+                      {topProductsStockValue.map((_, idx) => {
+                        const c1 = rechartsColors[idx % rechartsColors.length];
+                        const c2 = rechartsColors[(idx + 2) % rechartsColors.length];
+                        return (
+                          <linearGradient key={`bar-grad-${idx}`} id={`aliveBarGrad-${idx}`} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor={c1}>
+                              <animate attributeName="stopColor" values={`${c1};${c2};${c1}`} dur={`${3.5 + (idx % 3)}s`} repeatCount="indefinite" />
+                            </stop>
+                            <stop offset="100%" stopColor={c1} stopOpacity={0.70} />
+                          </linearGradient>
+                        );
+                      })}
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" tickLine={false} axisLine={false} tick={rechartsTick} interval={0} height={30} />
+                    <YAxis tickLine={false} axisLine={false} tick={rechartsTick} />
+                    <Tooltip
+                      content={({ active, payload }) => {
+                        if (!active || !payload || !payload.length) return null;
+                        const data = payload[0].payload as any;
+                        return (
+                          <div className="bg-slate-900 border border-slate-800 text-white p-3 rounded-xl shadow-xl text-xs space-y-1">
+                            <div className="font-bold text-amber-400">{data.fullName}</div>
+                            {data.code && <div className="text-[10px] text-gray-400 font-mono">SKU: {data.code}</div>}
+                            <div className="text-emerald-400 font-extrabold text-sm">{formatChartMoney(data.value)}</div>
+                            <div className="text-gray-300 text-[11px]">{t('Stock')}: {data.qty} {data.unit}</div>
+                            <div className="text-gray-400 text-[10px]">{t('Cost')}: {formatChartMoney(data.purchasePrice)} / {data.unit}</div>
+                          </div>
+                        );
+                      }}
+                    />
+                    <Bar dataKey="value" name={t('Asset Valuation')} radius={[8, 8, 0, 0]} isAnimationActive={true} animationDuration={1200} animationEasing="ease-out">
+                      {topProductsStockValue.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={`url(#aliveBarGrad-${index})`} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* Interactive Horizontal Cards Ribbon */}
+              <div className="flex items-center gap-3 pt-3 overflow-x-auto pb-1">
+                {topProductsStockValue.map((p, idx) => (
+                  <div
+                    key={p.id != null ? `p-card-${p.id}-${idx}` : `p-card-${idx}`}
+                    onClick={() => setCurrentPage('stock-items')}
+                    className="shrink-0 w-44 p-3 rounded-xl border border-gray-100 hover:border-amber-300 hover:shadow-md bg-gradient-to-b from-gray-50/70 to-white transition-all cursor-pointer group"
+                    title={p.fullName}
+                  >
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <span className={`text-[10px] font-black px-1.5 py-0.2 rounded ${
+                        idx === 0 ? 'bg-amber-100 text-amber-800 border border-amber-300' :
+                        idx === 1 ? 'bg-slate-200 text-slate-700 border border-slate-300' :
+                        idx === 2 ? 'bg-orange-100 text-orange-800 border border-orange-300' :
+                        'bg-gray-100 text-gray-600'
+                      }`}>
+                        #{idx + 1}
+                      </span>
+                      <span className="text-[10px] font-mono text-gray-400 truncate max-w-[80px]">{p.code || p.unit}</span>
+                    </div>
+                    <div className="font-bold text-gray-900 text-xs truncate group-hover:text-amber-700">
+                      {p.fullName}
+                    </div>
+                    <div className="font-extrabold text-emerald-600 text-xs mt-1">
+                      {formatChartMoney(p.value)}
+                    </div>
+                    <div className="flex items-center justify-between text-[10px] text-gray-500 mt-1 pt-1 border-t border-gray-100">
+                      <span>{p.qty} {p.unit}</span>
+                      <span className="text-gray-400">{t('in store')}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -18623,6 +18824,15 @@ try {
                     : t('Place your registered finger on your device sensor to verify your identity and enter session.')}
                 </p>
               </div>
+
+              {isWebAuthnFrameRestricted() && (
+                <div className="mt-3 p-3 rounded-xl bg-blue-500/15 border border-blue-500/30 text-blue-200 text-xs text-left flex items-start gap-2">
+                  <ShieldAlert className="w-4 h-4 shrink-0 text-blue-400 mt-0.5" />
+                  <span className="leading-tight">
+                    {t('Embedded Preview Notice: Hardware biometric sensors are restricted inside embedded preview frames by browser Permissions Policy. Open TradeCore in a standalone browser tab, or sign in below with your password.')}
+                  </span>
+                </div>
+              )}
 
               {/* Sensor Scanner Visual Area */}
               <div className="my-6 flex flex-col items-center justify-center">
