@@ -97,9 +97,11 @@ function SidebarInner({
     'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock', 'report-po-details', 'report-shifts',
     'report-unit-velocity', 'report-tax-vat', 'report-predictive-ai',
     'user-info', 'user-access',
-    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'qr-code-yangu', 'sauti-search', 'tra-report', 'profile'
-  ];
-  const pages = allowedPages && allowedPages.length > 0 ? allowedPages : DEFAULT_OPERATIONAL_PAGES;
+    'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'agent-workspace', 'agent_workspace', 'qr-code-yangu', 'sauti-search', 'tra-report', 'profile'
+  const isAgentRole = currentUser?.role === 'Agent' || (currentUser as any)?.affiliateId != null;
+  const pages = isAgentRole
+    ? (allowedPages && allowedPages.length > 0 ? allowedPages.filter(p => p !== 'dashboard') : ['affiliate-program', 'profile'])
+    : (allowedPages && allowedPages.length > 0 ? allowedPages : DEFAULT_OPERATIONAL_PAGES);
   const isAllowed = (page: string) => pages.includes(page);
   const t = (text: string) => translate(text, language || settings.language || 'en');
 
@@ -272,7 +274,7 @@ function SidebarInner({
           </button>
         )}
 
-        {isAllowed('dashboard') && (
+        {isAllowed('dashboard') && !isAgentRole && (
           <button
             onClick={() => onNavigate('dashboard')}
             className={`w-full flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2'} rounded-md transition text-left ${
@@ -471,16 +473,31 @@ function SidebarInner({
             )}
           </button>
         )}
-        {isAllowed('affiliate-program') && (
+        {(isAllowed('affiliate-program') || isAllowed('agent-workspace') || isAllowed('agent_workspace') || isAgentRole) && (
           <button
             onClick={() => onNavigate('affiliate-program')}
             className={`w-full relative flex items-center ${isCollapsed ? 'justify-center py-2.5' : 'gap-3 px-3 py-2'} rounded-md transition text-left ${
-              currentPage === 'affiliate-program' ? 'bg-brand text-white font-bold' : 'text-gray-300 hover:bg-white/10'
+              currentPage === 'affiliate-program' || currentPage === 'agent-workspace' || currentPage === 'agent_workspace'
+                ? 'bg-brand text-white font-bold shadow-xs'
+                : 'text-gray-300 hover:bg-white/10'
             }`}
-            title={isCollapsed ? t('Wakala Wangu') : undefined}
+            title={isCollapsed ? (isAgentRole ? t('Utendaji & Malipo') : t('Wakala Wangu')) : undefined}
           >
-            <Share2 className="w-[18px] h-[18px] flex-shrink-0" />
-            {!isCollapsed && <span>{t('Wakala Wangu')}</span>}
+            {isAgentRole ? (
+              <Wallet className="w-[18px] h-[18px] flex-shrink-0 text-amber-300" />
+            ) : (
+              <Users className="w-[18px] h-[18px] flex-shrink-0" />
+            )}
+            {!isCollapsed && (
+              <div className="flex items-center justify-between w-full">
+                <span>{isAgentRole ? t('Utendaji & Malipo ya Wakala') : t('Wakala Wangu')}</span>
+                {!isAgentRole && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-amber-300 font-bold uppercase tracking-wider">
+                    {t('Agents')}
+                  </span>
+                )}
+              </div>
+            )}
           </button>
         )}
         {isAllowed('qr-code-yangu') && (

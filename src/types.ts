@@ -349,13 +349,15 @@ export interface User {
   id: number;
   username: string;
   password?: string; // Kept secure or editable
-  role: 'Super Admin' | 'Admin' | 'Branch Administrator' | 'Store Admin' | 'Retailer' | 'Wholesaler';
+  role: 'Super Admin' | 'Admin' | 'Branch Administrator' | 'Store Admin' | 'Retailer' | 'Wholesaler' | 'Agent';
   name: string;
   email: string;
   phone?: string;
   companyId: number | null;
   branchId: number | null;
   storeId: number | null;
+  affiliateId?: number;
+  referralCode?: string;
   assignedBranchIds?: number[];
   branchIds?: number[];
   assignedStoreIds?: number[];
@@ -1563,8 +1565,26 @@ export interface JournalVoucher {
 
 export type CostAllocationMethod = 'by_weight' | 'by_market_value' | 'manual';
 
+export interface ManufacturingProduct {
+  id: string | number;
+  companyId?: string | number | null;
+  name: string;
+  code: string;
+  type: 'raw_material' | 'finished_good' | 'by_product';
+  category?: string;
+  unit: string; // e.g. kg, L, bags, units
+  currentStock: number; // in-plant workshop / silo stock
+  unitCost: number; // cost per unit
+  standardPrice?: number; // market / selling price
+  minStockLevel?: number;
+  notes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  isDeleted?: boolean;
+}
+
 export interface BomItem {
-  productId: number;
+  productId: string | number;
   productName?: string;
   productCode?: string;
   quantity: number; // e.g. 1000 kg Raw Wheat Grain
@@ -1576,7 +1596,7 @@ export interface BomItem {
 export interface BomOutput {
   id: string | number;
   bomId: string | number;
-  productId: number;
+  productId: string | number;
   productName?: string;
   productCode?: string;
   isPrimary: boolean; // true = primary finished good (e.g. Super Flour), false = by-product (e.g. Bran / Pumba)
@@ -1608,7 +1628,7 @@ export interface BOM {
 export type ProductionRunStatus = 'Planned' | 'In-Progress' | 'Quality Check' | 'Completed' | 'Cancelled';
 
 export interface ProductionRunOutputActual {
-  productId: number;
+  productId: string | number;
   productName: string;
   productCode?: string;
   isPrimary: boolean;

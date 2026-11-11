@@ -1,4 +1,4 @@
-import { Company, Branch, Store, User, StockItem, PurchaseOrder, SalesOrder, Expense, Tax, Supplier, Customer, AuditTrail, SecurityLog, Settings, SubscriptionMeta, MarketplaceProduct, MarketplaceCustomer, MarketplaceOrder, HomepageContent, SiteConfig, Currency, TradeSubscriptionPlan, CollectionSetting, Offer, OfferMessage, GroupDeal, GroupDealParticipant, WhatsappConversation, NotificationLog, Delivery, DeliveryUpdate, InstallmentPlan, InstallmentOrder, InstallmentPayment, LiveStream, LiveComment, LoyaltyCustomer, LoyaltyTransaction, LoyaltyRedeemCode, BOM, ProductionRun, QCTemplate, ManufacturingSettings } from './types';
+import { Company, Branch, Store, User, StockItem, PurchaseOrder, SalesOrder, Expense, Tax, Supplier, Customer, AuditTrail, SecurityLog, Settings, SubscriptionMeta, MarketplaceProduct, MarketplaceCustomer, MarketplaceOrder, HomepageContent, SiteConfig, Currency, TradeSubscriptionPlan, CollectionSetting, Offer, OfferMessage, GroupDeal, GroupDealParticipant, WhatsappConversation, NotificationLog, Delivery, DeliveryUpdate, InstallmentPlan, InstallmentOrder, InstallmentPayment, LiveStream, LiveComment, LoyaltyCustomer, LoyaltyTransaction, LoyaltyRedeemCode, BOM, ProductionRun, QCTemplate, ManufacturingSettings, ManufacturingProduct } from './types';
 import { TANZANIA_REGIONS } from './utils/regions';
 
 const today = new Date().toISOString().split('T')[0];
@@ -466,6 +466,64 @@ export const defaultManufacturingSettings: ManufacturingSettings = {
   tbsCertPrefix: 'TBS-QC-'
 };
 
+export const defaultManufacturingProducts: ManufacturingProduct[] = [
+  {
+    id: 'MFG-RAW-WHEAT',
+    companyId: 1,
+    name: 'Raw Wheat Grain (Ngano Mbichi)',
+    code: 'MFG-WHT-01',
+    type: 'raw_material',
+    category: 'Cereals & Grain',
+    unit: 'kg',
+    currentStock: 5000,
+    unitCost: 1200,
+    minStockLevel: 1000,
+    createdAt: '2026-01-01'
+  },
+  {
+    id: 'MFG-OUT-FLOUR-SUPER',
+    companyId: 1,
+    name: 'Wheat Flour Grade 1 (Super)',
+    code: 'MFG-FLR-G1',
+    type: 'finished_good',
+    category: 'Flour',
+    unit: 'kg',
+    currentStock: 1200,
+    unitCost: 1400,
+    standardPrice: 2200,
+    minStockLevel: 200,
+    createdAt: '2026-01-01'
+  },
+  {
+    id: 'MFG-OUT-FLOUR-STD',
+    companyId: 1,
+    name: 'Wheat Flour Standard (Home)',
+    code: 'MFG-FLR-STD',
+    type: 'finished_good',
+    category: 'Flour',
+    unit: 'kg',
+    currentStock: 450,
+    unitCost: 1550,
+    standardPrice: 1800,
+    minStockLevel: 100,
+    createdAt: '2026-01-01'
+  },
+  {
+    id: 'MFG-OUT-BRAN',
+    companyId: 1,
+    name: 'Wheat Bran (Pumba ya Ngano)',
+    code: 'MFG-BRAN-01',
+    type: 'by_product',
+    category: 'Animal Feed By-Product',
+    unit: 'kg',
+    currentStock: 800,
+    unitCost: 1000,
+    standardPrice: 600,
+    minStockLevel: 150,
+    createdAt: '2026-01-01'
+  }
+];
+
 export const defaultQcTemplates: QCTemplate[] = [
   {
     id: 'QC-TMPL-FLOUR-01',
@@ -493,12 +551,12 @@ export const defaultBoms: BOM[] = [
     baseQuantity: 1000,
     costAllocationMethod: 'by_market_value',
     items: [
-      { productId: 1, productName: 'Raw Wheat Grain (Ngano Mbichi)', quantity: 1000, unitCost: 1200, unit: 'kg', scrapAllowancePercent: 2.0 }
+      { productId: 'MFG-RAW-WHEAT', productName: 'Raw Wheat Grain (Ngano Mbichi)', quantity: 1000, unitCost: 1200, unit: 'kg', scrapAllowancePercent: 2.0 }
     ],
     outputs: [
-      { id: 'out-1', bomId: 'BOM-WF-1000', productId: 1, productName: 'Wheat Flour Grade 1 (Super)', isPrimary: true, expectedQtyKg: 650, expectedMarketPrice: 2200, allocationPercent: 70 },
-      { id: 'out-2', bomId: 'BOM-WF-1000', productId: 2, productName: 'Wheat Flour Standard (Home)', isPrimary: true, expectedQtyKg: 150, expectedMarketPrice: 1800, allocationPercent: 18 },
-      { id: 'out-3', bomId: 'BOM-WF-1000', productId: 3, productName: 'Wheat Bran (Pumba ya Ngano)', isPrimary: false, expectedQtyKg: 180, expectedMarketPrice: 600, allocationPercent: 12 }
+      { id: 'out-1', bomId: 'BOM-WF-1000', productId: 'MFG-OUT-FLOUR-SUPER', productName: 'Wheat Flour Grade 1 (Super)', isPrimary: true, expectedQtyKg: 650, expectedMarketPrice: 2200, allocationPercent: 70 },
+      { id: 'out-2', bomId: 'BOM-WF-1000', productId: 'MFG-OUT-FLOUR-STD', productName: 'Wheat Flour Standard (Home)', isPrimary: true, expectedQtyKg: 150, expectedMarketPrice: 1800, allocationPercent: 18 },
+      { id: 'out-3', bomId: 'BOM-WF-1000', productId: 'MFG-OUT-BRAN', productName: 'Wheat Bran (Pumba ya Ngano)', isPrimary: false, expectedQtyKg: 180, expectedMarketPrice: 600, allocationPercent: 12 }
     ],
     packagingCost: 45000,
     laborCost: 30000,
@@ -534,9 +592,9 @@ export const defaultProductionRuns: ProductionRun[] = [
     overheadCost: 25000,
     totalBatchCost: 1300000,
     outputs: [
-      { productId: 1, productName: 'Wheat Flour Grade 1 (Super)', isPrimary: true, expectedQtyKg: 650, actualQtyKg: 650, allocatedCost: 910000, unitCost: 1400, marketPrice: 2200 },
-      { productId: 2, productName: 'Wheat Flour Standard (Home)', isPrimary: true, expectedQtyKg: 150, actualQtyKg: 145, allocatedCost: 225000, unitCost: 1551.72, marketPrice: 1800 },
-      { productId: 3, productName: 'Wheat Bran (Pumba ya Ngano)', isPrimary: false, expectedQtyKg: 180, actualQtyKg: 165, allocatedCost: 165000, unitCost: 1000, marketPrice: 600 }
+      { productId: 'MFG-OUT-FLOUR-SUPER', productName: 'Wheat Flour Grade 1 (Super)', isPrimary: true, expectedQtyKg: 650, actualQtyKg: 650, allocatedCost: 910000, unitCost: 1400, marketPrice: 2200 },
+      { productId: 'MFG-OUT-FLOUR-STD', productName: 'Wheat Flour Standard (Home)', isPrimary: true, expectedQtyKg: 150, actualQtyKg: 145, allocatedCost: 225000, unitCost: 1551.72, marketPrice: 1800 },
+      { productId: 'MFG-OUT-BRAN', productName: 'Wheat Bran (Pumba ya Ngano)', isPrimary: false, expectedQtyKg: 180, actualQtyKg: 165, allocatedCost: 165000, unitCost: 1000, marketPrice: 600 }
     ],
     totalOutputKg: 960,
     yieldPercent: 96.0,

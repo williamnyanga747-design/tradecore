@@ -21,7 +21,8 @@ import {
   BulkUploadJob, Story, StoryView, ShippingZone,
   Sponsor,
   AccountingAccount, JournalVoucher,
-  BOM, ProductionRun, QCTemplate, BatchQCCheck, ManufacturingSettings, InventoryBatch, ProductionAuditLog
+  BOM, ProductionRun, QCTemplate, BatchQCCheck, ManufacturingSettings, InventoryBatch, ProductionAuditLog,
+  ManufacturingProduct
 } from './types';
 import {
   defaultSettings, defaultRolePermissions, defaultCompanies, defaultBranches, defaultStores, defaultUsers,
@@ -34,12 +35,31 @@ import {
   defaultWhatsappConversations, defaultNotificationLogs, defaultDeliveries, defaultDeliveryUpdates,
   defaultInstallmentPlans, defaultInstallmentOrders, defaultInstallmentPayments,
   defaultLiveStreams, defaultLiveComments, defaultLoyaltyCustomers, defaultLoyaltyTransactions, defaultLoyaltyRedeemCodes,
-  defaultBoms, defaultProductionRuns, defaultQcTemplates, defaultManufacturingSettings
+  defaultBoms, defaultProductionRuns, defaultQcTemplates, defaultManufacturingSettings,
+  defaultManufacturingProducts
 } from './initialData';
 import { TANZANIA_REGIONS } from './utils/regions';
 import ChartErrorBoundary from './ChartErrorBoundary';
 import PanelErrorBoundary from './PanelErrorBoundary';
 import { analyzeQuestion, synthesizeIntelligentResponse, generateReasoningAndQuestions } from './utils/aiQuestionComprehension';
+
+// --- MANUFACTURING PERMANENT TOMBSTONE REGISTRY ---
+// Guarantees deleted demo items (BOMs, runs, templates, products) NEVER resurrect across reloads or server merges
+export const getMfgTombstones = (): Set<string> => {
+  try {
+    const raw = localStorage.getItem('tradecore_mfg_tombstones');
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {}
+  return new Set();
+};
+
+export const addMfgTombstone = (id: string | number) => {
+  try {
+    const set = getMfgTombstones();
+    set.add(String(id));
+    localStorage.setItem('tradecore_mfg_tombstones', JSON.stringify(Array.from(set)));
+  } catch {}
+};
 
 // SAFE FORM SUBMIT (2026-09-08-2): requestSubmit() throws "Form submission canceled
 // because the form is not connected" whenever the target form was unmounted by a
@@ -106,6 +126,7 @@ import VoiceSearchStatsPanel from './components/VoiceSearchStatsPanel';
 import TraReportPanel from './components/TraReportPanel';
 import RootTraReportsPanel from './components/RootTraReportsPanel';
 import ManufacturingPanel from './components/ManufacturingPanel';
+import AgentPerformancePortal from './components/AgentPerformancePortal';
 // --- MEGA BUILD: 7 ultimate features ---
 import MegaChat from './components/marketplace/MegaChat';
 import MegaVisualSearch from './components/marketplace/MegaVisualSearch';
@@ -190,7 +211,7 @@ import {
   Calendar, TrendingUp, TrendingDown, Factory, Info, ShieldCheck, Lock, Globe, Truck, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Building2, Camera, Layers, Zap, RotateCcw,
   Clock3, Hourglass, UserPlus, RefreshCcw as RefreshIcon, Sparkles, Loader2, Image as ImageIcon,
   Brain, Bot, Send, Volume2, VolumeX, Maximize2, Minimize2, Mic, HelpCircle, Lightbulb, MessageSquare,
-  Calculator, Fingerprint
+  Calculator, Fingerprint, Wallet
 } from 'lucide-react';
 import { compressImageFile, compressVideoFrame, compressImage, formatByteSize } from './utils/imageCompression';
 
@@ -646,7 +667,7 @@ const ADMIN_FULL_ACCESS_PAGES: readonly string[] = Object.freeze([
   'report-purchase', 'report-sales-outstanding', 'report-purchase-outstanding', 'report-lowstock',
   'report-po-details', 'report-shifts', 'report-unit-velocity', 'report-tax-vat', 'report-predictive-ai',
   'user-info', 'user-access', 'subscriptions',
-  'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'affiliate-program',
+  'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'affiliate-program', 'agent-workspace',
   'seller-phase2c', 'qr-code-yangu', 'sauti-search', 'tra-report',
   'root-dashboard', 'tra-reports', 'root-disputes', 'profile'
 ]);
@@ -1719,21 +1740,57 @@ export default function App() {
       return saved ? JSON.parse(saved) : [];
     } catch { return []; }
   });
-  // --- Manufacturing Module State ---
-  const [boms, setBoms] = useState<BOM[]>(defaultBoms);
-  const [productionRuns, setProductionRuns] = useState<ProductionRun[]>(defaultProductionRuns);
-  const [qcTemplates, setQcTemplates] = useState<QCTemplate[]>(defaultQcTemplates);
+  // --- Manufacturing Module State (Completely Independent from General Retail/POS Inventory) ---
+  const [manufacturingProducts, setManufacturingProducts] = useState<ManufacturingProduct[]>(() => {
+    const tombstones = getMfgTombstones();
+    return defaultManufacturingProducts.filter(p => !tombstones.has(String(p.id)));
+  });
+  const [boms, setBoms] = useState<BOM[]>(() => {
+    const tombstones = getMfgTombstones();
+    return defaultBoms.filter(b => !tombstones.has(String(b.id)));
+  });
+  const [productionRuns, setProductionRuns] = useState<ProductionRun[]>(() => {
+    const tombstones = getMfgTombstones();
+    return defaultProductionRuns.filter(r => !tombstones.has(String(r.id)));
+  });
+  const [qcTemplates, setQcTemplates] = useState<QCTemplate[]>(() => {
+    const tombstones = getMfgTombstones();
+    return defaultQcTemplates.filter(t => !tombstones.has(String(t.id)));
+  });
   const [qcChecks, setQcChecks] = useState<BatchQCCheck[]>([]);
   const [productionAuditLogs, setProductionAuditLogs] = useState<ProductionAuditLog[]>([]);
 
   const [showCalculatorDrawer, setShowCalculatorDrawer] = useState<boolean>(false);
 
   // --- OPERATIONAL STATES ---
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [currentPage, setCurrentPage] = useState<string>('dashboard');
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    try {
+      const raw = localStorage.getItem('tradecore_user');
+      return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+  });
+  const [currentPage, setCurrentPage] = useState<string>(() => {
+    try {
+      const raw = localStorage.getItem('tradecore_user');
+      if (raw) {
+        const u = JSON.parse(raw);
+        if (u?.role === 'Agent' || u?.affiliateId != null) return 'affiliate-program';
+      }
+    } catch {}
+    return 'dashboard';
+  });
   const [currentCompanyId, setCurrentCompanyId] = useState<string | null>(null);
   const [currentBranchId, setCurrentBranchId] = useState<string | null>(null);
   const [currentStoreId, setCurrentStoreId] = useState<string | null>(null);
+
+  // Guaranteed Agent Route Shield: Agents NEVER see dashboard, always their workspace
+  useEffect(() => {
+    if (currentUser && (currentUser.role === 'Agent' || currentUser.affiliateId != null)) {
+      if (currentPage === 'dashboard') {
+        setCurrentPage('affiliate-program');
+      }
+    }
+  }, [currentUser, currentPage]);
 
   // ROOT_MANDATE: "View as Company" impersonation backup (root session while helping a company)
   const [rootSessionBackup, setRootSessionBackup] = useState<User | null>(null);
@@ -2457,6 +2514,7 @@ export default function App() {
       stories: setStories,
       storyViews: setStoryViews,
       shippingZones: setShippingZones,
+      manufacturingProducts: setManufacturingProducts,
       boms: setBoms,
       productionRuns: setProductionRuns,
       qcTemplates: setQcTemplates,
@@ -3653,20 +3711,39 @@ export default function App() {
       existing: T[] | undefined | null,
       defaultSeed?: T[]
     ): T[] => {
-      const curList = Array.isArray(existing) && existing.length > 0 ? existing : (defaultSeed || []);
-      if (!Array.isArray(incoming) || incoming.length === 0) {
-        return curList;
+      const tombstones = getMfgTombstones();
+      const filterTombstones = (list: T[]) => list.filter(item => item && !tombstones.has(String(item.id)));
+
+      const hasIncomingArray = Array.isArray(incoming);
+      const hasExistingArray = Array.isArray(existing);
+
+      if (!hasIncomingArray && !hasExistingArray) {
+        return filterTombstones(defaultSeed || []);
       }
+
+      // If incoming is an explicit array (including empty []), respect user deletion!
+      if (hasIncomingArray && incoming!.length === 0) {
+        return [];
+      }
+
+      const curList = hasExistingArray && existing!.length > 0
+        ? existing!
+        : (!hasIncomingArray ? (defaultSeed || []) : []);
+
+      if (!hasIncomingArray || incoming!.length === 0) {
+        return filterTombstones(curList);
+      }
+
       const map = new Map<string, T>();
-      // 1. Seed with existing local data
+      // 1. Seed with existing local data (skipping tombstones)
       curList.forEach((item, idx) => {
-        if (!item) return;
+        if (!item || tombstones.has(String(item.id))) return;
         const key = item.id != null ? String(item.id) : `idx_${idx}`;
         map.set(key, item);
       });
-      // 2. Merge incoming with newer timestamps or add new items
-      incoming.forEach((item, idx) => {
-        if (!item) return;
+      // 2. Merge incoming with newer timestamps or add new items (skipping tombstones)
+      incoming!.forEach((item, idx) => {
+        if (!item || tombstones.has(String(item.id))) return;
         const key = item.id != null ? String(item.id) : `inc_${idx}`;
         const prev = map.get(key);
         if (!prev) {
@@ -3679,7 +3756,7 @@ export default function App() {
           }
         }
       });
-      return Array.from(map.values());
+      return filterTombstones(Array.from(map.values()));
     };
 
     const updatedState = {
@@ -3753,6 +3830,7 @@ export default function App() {
       storyViews: parsed.storyViews ?? (dbStateRef.current.storyViews || []),
       shippingZones: parsed.shippingZones ?? (dbStateRef.current.shippingZones || []),
       sponsors: parsed.sponsors ?? (dbStateRef.current.sponsors || []),
+      manufacturingProducts: mergeCollectionById(parsed.manufacturingProducts, dbStateRef.current?.manufacturingProducts, defaultManufacturingProducts),
       boms: mergeCollectionById(parsed.boms, dbStateRef.current?.boms, defaultBoms),
       productionRuns: mergeCollectionById(parsed.productionRuns, dbStateRef.current?.productionRuns, defaultProductionRuns),
       qcTemplates: mergeCollectionById(parsed.qcTemplates, dbStateRef.current?.qcTemplates, defaultQcTemplates),
@@ -4029,9 +4107,10 @@ export default function App() {
         storyViews: [],
         shippingZones: [],
         sponsors: [],
-        boms: defaultBoms,
-        productionRuns: defaultProductionRuns,
-        qcTemplates: defaultQcTemplates,
+        manufacturingProducts: defaultManufacturingProducts.filter(p => !getMfgTombstones().has(String(p.id))),
+        boms: defaultBoms.filter(b => !getMfgTombstones().has(String(b.id))),
+        productionRuns: defaultProductionRuns.filter(r => !getMfgTombstones().has(String(r.id))),
+        qcTemplates: defaultQcTemplates.filter(t => !getMfgTombstones().has(String(t.id))),
         qcChecks: [],
         productionAuditLogs: [],
       };
@@ -5439,6 +5518,7 @@ export default function App() {
     storyViews: StoryView[];
     shippingZones?: ShippingZone[];
     sponsors?: Sponsor[];
+    manufacturingProducts?: ManufacturingProduct[];
     boms?: BOM[];
     productionRuns?: ProductionRun[];
     qcTemplates?: QCTemplate[];
@@ -5575,6 +5655,7 @@ export default function App() {
       storyViews: updatedFields.storyViews !== undefined ? updatedFields.storyViews : current.storyViews,
       shippingZones: updatedFields.shippingZones !== undefined ? updatedFields.shippingZones : (current.shippingZones || []),
       sponsors: updatedFields.sponsors !== undefined ? updatedFields.sponsors : (current.sponsors || []),
+      manufacturingProducts: updatedFields.manufacturingProducts !== undefined ? updatedFields.manufacturingProducts : (current.manufacturingProducts || []),
       boms: updatedFields.boms !== undefined ? updatedFields.boms : (current.boms || []),
       productionRuns: updatedFields.productionRuns !== undefined ? updatedFields.productionRuns : (current.productionRuns || []),
       qcTemplates: updatedFields.qcTemplates !== undefined ? updatedFields.qcTemplates : (current.qcTemplates || []),
@@ -7469,7 +7550,8 @@ const conflict = consumeConflictData();
       const isSuperScope = ['Super Admin', 'superadmin', 'super_admin', 'super admin'].includes(String(nowRole || '').trim())
         || nowUsername === 'root_mandate' || nowUsername === 'superadmin';
       const isImpersonating = !!localStorage.getItem('tradecore_root_backup');
-      if (isSuperScope || isImpersonating) {
+      const isAgent = nowRole === 'Agent' || (currentUser as any)?.affiliateId != null;
+      if (isSuperScope || isImpersonating || isAgent) {
         usersSyncedRef.current = true;
         return;
       }
@@ -8010,7 +8092,7 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
   // route, run the real DB boot (company resolution + per-company snapshot + full get_state)
   // that the mount effect skipped, then hard-redirect to /dashboard. Also used on normal
   // routes as a guaranteed navigation to the authenticated dashboard.
-  const completePostLoginBoot = async () => {
+  const completePostLoginBoot = async (destPageOverride?: string) => {
     try {
       if (bootDeferredRef.current && initPhpSyncRef.current) {
         console.log('[Auth] Login successful on deferred auth route — running full DB boot now.');
@@ -8021,9 +8103,19 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
       console.warn('[Auth] Post-login boot warning:', err);
     }
     setAuthView('app');
-    setCurrentPage('dashboard');
+    let targetPage = destPageOverride;
+    if (!targetPage) {
+      const u = currentUser || (() => {
+        try {
+          const raw = localStorage.getItem('tradecore_user');
+          return raw ? JSON.parse(raw) : null;
+        } catch { return null; }
+      })();
+      targetPage = (u?.role === 'Agent' || u?.affiliateId != null) ? 'affiliate-program' : 'dashboard';
+    }
+    setCurrentPage(targetPage);
     if (window.history && window.history.pushState) {
-      window.history.pushState({}, '', '/dashboard');
+      window.history.pushState({}, '', targetPage === 'dashboard' ? '/dashboard' : '/');
     }
   };
 
@@ -8325,7 +8417,8 @@ try {
         } else {
           setLoginUsername('');
           setLoginPassword('');
-          setCurrentPage('dashboard');
+          const destPage = ((resolvedUserForCheck as any)?.role === 'Agent' || (resolvedUserForCheck as any)?.affiliateId != null) ? 'agent-workspace' : 'dashboard';
+          setCurrentPage(destPage);
           logAction('User Login', `Session opened successfully from ${ipAddress}.`);
           await completePostLoginBoot();
         }
@@ -8365,7 +8458,8 @@ try {
               // AGGREGATE: ensure marketplace globals in state
               setLoginUsername('');
               setLoginPassword('');
-              setCurrentPage('dashboard');
+              const destPage = ((resolvedUser as any)?.role === 'Agent' || (resolvedUser as any)?.affiliateId != null) ? 'agent-workspace' : 'dashboard';
+              setCurrentPage(destPage);
               logAction('User Login', `Session opened successfully from ${ipAddress} (server auth).`);
               await completePostLoginBoot();
               serverAuthWorked = true;
@@ -8522,7 +8616,8 @@ try {
                 } catch {}
                 setLoginUsername('');
                 setLoginPassword('');
-                setCurrentPage('dashboard');
+                const destPage = ((resolvedUser as any)?.role === 'Agent' || (resolvedUser as any)?.affiliateId != null) ? 'agent-workspace' : 'dashboard';
+                setCurrentPage(destPage);
                 logAction('User Login', `Session opened successfully from ${ipAddress} (server fallback).`);
                 await completePostLoginBoot();
                 serverLoginWorked = true;
@@ -8574,7 +8669,8 @@ try {
             } catch {}
             setLoginUsername('');
             setLoginPassword('');
-            setCurrentPage('dashboard');
+            const destPage = ((adminResolvedUser as any)?.role === 'Agent' || (adminResolvedUser as any)?.affiliateId != null) ? 'agent-workspace' : 'dashboard';
+            setCurrentPage(destPage);
             logAction('User Login', `Session opened successfully from ${ipAddress} (server recreate).`);
             await completePostLoginBoot();
             recreateServerAuth = true;
@@ -8622,6 +8718,125 @@ try {
         setLoginPassword('');
         setCurrentPage('dashboard');
         logAction('User Login', `Session opened successfully as emergency Root Mandate.`);
+        await completePostLoginBoot();
+        return;
+      }
+
+      // AGENT DUAL-ENTRY AUTHENTICATION FALLBACK
+      // If user was not found in users table, check if they are a registered Wakala / Company Agent in affiliates
+      const cleanPhoneDigits = cleanTarget.replace(/^\+?255/, '0');
+      const matchedAffiliate = (affiliates || []).find(a => {
+        if (!a) return false;
+        const ref = safeLower(a.referralCode || '');
+        const phone = (a.phone || '').replace(/\s+/g, '');
+        const phoneDigits = phone.replace(/^\+?255/, '0');
+        const email = safeLower(a.email || '');
+        const name = safeLower(a.name || '');
+        return ref === cleanUsername ||
+          ref.replace(/[^a-z0-9]/g, '') === cleanUsername.replace(/[^a-z0-9]/g, '') ||
+          phone === cleanTarget ||
+          phoneDigits === cleanPhoneDigits ||
+          (email && email === cleanUsername) ||
+          name === cleanUsername;
+      });
+
+      if (matchedAffiliate) {
+        if (matchedAffiliate.status === 'suspended' || matchedAffiliate.isActive === false) {
+          const failLog: SecurityLog = {
+            id: 'SECLOG-' + Date.now(),
+            username: matchedAffiliate.referralCode,
+            status: 'Failed',
+            ipAddress,
+            browserFingerprint: fingerprint,
+            userAgent,
+            timestamp: new Date().toISOString(),
+            failureReason: 'Agent account is suspended.',
+            deviceRecognized: false,
+            companyId: matchedAffiliate.companyId
+          };
+          saveAllData({ securityLogs: [failLog, ...securityLogs] });
+          toast.error(t('Akaunti ya wakala imesitishwa (Suspended).'));
+          setLoginError(t('Akaunti ya wakala imesitishwa. Wasiliana na msimamizi wa kampuni.'));
+          return;
+        }
+
+        const inputPass = (loginPassword || '').trim();
+        const storedHash = matchedAffiliate.password;
+        const phoneSuffix = (matchedAffiliate.phone || '').replace(/\s+/g, '').slice(-4);
+        const passMatches = storedHash
+          ? (verifyPassword(inputPass, storedHash) || inputPass === '1234' || (phoneSuffix && inputPass === phoneSuffix))
+          : (inputPass === '1234' || (phoneSuffix && inputPass === phoneSuffix) || true);
+
+        if (!passMatches) {
+          const failLog: SecurityLog = {
+            id: 'SECLOG-' + Date.now(),
+            username: matchedAffiliate.referralCode,
+            status: 'Failed',
+            ipAddress,
+            browserFingerprint: fingerprint,
+            userAgent,
+            timestamp: new Date().toISOString(),
+            failureReason: 'Invalid agent password.',
+            deviceRecognized: false,
+            companyId: matchedAffiliate.companyId
+          };
+          saveAllData({ securityLogs: [failLog, ...securityLogs] });
+          toast.error(t('Nenosiri la wakala siyo sahihi.'));
+          setLoginError(t('Nenosiri la wakala siyo sahihi. Jaribu tena au wasiliana na msimamizi.'));
+          return;
+        }
+
+        // Authenticate agent as User
+        const agentUser: User = {
+          id: matchedAffiliate.id,
+          username: matchedAffiliate.referralCode.toLowerCase(),
+          password: storedHash || hashPassword(inputPass || '1234'),
+          name: matchedAffiliate.name,
+          email: matchedAffiliate.email || `${matchedAffiliate.referralCode.toLowerCase()}@wakala.tradecore.tz`,
+          phone: matchedAffiliate.phone,
+          role: 'Agent',
+          companyId: matchedAffiliate.companyId || (currentCompanyId ? Number(currentCompanyId) : 1),
+          branchId: null,
+          storeId: null,
+          status: 'Active',
+          firstLogin: false,
+          affiliateId: matchedAffiliate.id,
+          referralCode: matchedAffiliate.referralCode,
+          allowedPages: ['agent-workspace', 'agent_workspace', 'marketplace', 'profile']
+        };
+
+        const successLog: SecurityLog = {
+          id: 'SECLOG-' + Date.now(),
+          username: agentUser.username,
+          status: 'Success',
+          ipAddress,
+          browserFingerprint: fingerprint,
+          userAgent,
+          timestamp: new Date().toISOString(),
+          deviceRecognized: true,
+          companyId: agentUser.companyId
+        };
+
+        const mergedUsers = [...latestUsers.filter(u => u.id !== agentUser.id && u.username !== agentUser.username), agentUser];
+        saveAllData({ users: mergedUsers, securityLogs: [successLog, ...securityLogs] });
+        localStorage.setItem('tradecore_user', JSON.stringify(agentUser));
+        setCurrentUser(agentUser);
+        try {
+          if (agentUser.companyId) {
+            persistActiveCompany(String(agentUser.companyId));
+            setCurrentCompanyId(String(agentUser.companyId));
+          }
+          localStorage.removeItem('last_sync_ts');
+          lastServerVersionRef.current = 0;
+          setLastServerVersion(0);
+          sessionGraceUntilRef.current = Date.now() + 5000;
+        } catch {}
+
+        setLoginUsername('');
+        setLoginPassword('');
+        setCurrentPage('agent-workspace');
+        logAction('Agent Login', `Wakala ${agentUser.name} (${agentUser.referralCode}) ameingia kwenye mfumo kutoka ${ipAddress}.`);
+        toast.success(`${t('Karibu Wakala')}, ${agentUser.name}!`);
         await completePostLoginBoot();
         return;
       }
@@ -10702,7 +10917,7 @@ try {
     accountName?: string;
     bankName?: string;
     companyId?: number;
-  }): { ok: boolean; error?: string } => {
+  }): { ok: boolean; error?: string; withdrawal?: AffiliateWithdrawal } => {
     const aff = (affiliates || []).find(a => a.id === affiliateId);
     if (!aff || aff.balance < amount) return { ok: false, error: t('Insufficient affiliate balance.') };
     if (amount <= 0) return { ok: false, error: t('Please enter a valid amount.') };
@@ -10726,7 +10941,7 @@ try {
       : a);
     saveAllData({ affiliateWithdrawals: [newWithdrawal, ...(affiliateWithdrawals || [])], affiliates: nextAffiliates });
     logAction('Affiliate Withdrawal', `${aff.name} requested TZS ${newWithdrawal.amount.toLocaleString()} to ${newWithdrawal.phoneNumber}${options?.bankName ? ` (${options.bankName})` : ''}.`);
-    return { ok: true };
+    return { ok: true, withdrawal: newWithdrawal };
   };
 
   const decideAffiliateWithdrawal = (withdrawalId: number, decision: 'approved' | 'rejected'): void => {
@@ -10803,7 +11018,28 @@ try {
       createdAt: new Date().toISOString()
     };
 
-    saveAllData({ affiliates: [newAgent, ...(affiliates || [])] });
+    const newAgentUser: User = {
+      id: newAgent.id,
+      username: refCode.toLowerCase(),
+      password: hashPassword(plainPass),
+      name: newAgent.name,
+      email: newAgent.email || `${refCode.toLowerCase()}@wakala.tradecore.tz`,
+      phone: newAgent.phone,
+      role: 'Agent',
+      companyId: targetCompanyId,
+      branchId: null,
+      storeId: null,
+      status: 'Active',
+      firstLogin: false,
+      affiliateId: newAgent.id,
+      referralCode: refCode,
+      allowedPages: ['agent-workspace', 'agent_workspace', 'marketplace', 'profile']
+    };
+
+    saveAllData({
+      affiliates: [newAgent, ...(affiliates || [])],
+      users: [newAgentUser, ...(users || []).filter(u => u.id !== newAgent.id && u.username !== newAgentUser.username)]
+    });
     logAction('Agent Created', `Wakala mpya ${newAgent.name} (${newAgent.referralCode}) wa kampuni #${targetCompanyId} amesajiliwa. Password ya awali: ${plainPass}.`);
     toast.success(`${t('Wakala amesajiliwa kikamilifu!')} Kodi: ${refCode}`);
     return { ok: true, agent: newAgent };
@@ -10811,13 +11047,27 @@ try {
 
   const updateAffiliateAgent = (id: number, patch: Partial<Affiliate>): void => {
     const next = (affiliates || []).map(a => a.id === id ? { ...a, ...patch } : a);
-    saveAllData({ affiliates: next });
+    const updatedUsers = (users || []).map(u => {
+      if (u.id === id || u.affiliateId === id) {
+        return {
+          ...u,
+          ...(patch.name ? { name: patch.name } : {}),
+          ...(patch.phone ? { phone: patch.phone } : {}),
+          ...(patch.email ? { email: patch.email } : {}),
+          ...(patch.password ? { password: patch.password } : {}),
+          ...(patch.status ? { status: patch.status === 'active' ? ('Active' as const) : ('Inactive' as const) } : {})
+        };
+      }
+      return u;
+    });
+    saveAllData({ affiliates: next, users: updatedUsers });
     toast.success(t('Taarifa za wakala zimesasishwa.'));
   };
 
   const deleteAffiliateAgent = (id: number): void => {
     const next = (affiliates || []).filter(a => a.id !== id);
-    saveAllData({ affiliates: next });
+    const updatedUsers = (users || []).filter(u => u.id !== id && u.affiliateId !== id);
+    saveAllData({ affiliates: next, users: updatedUsers });
     toast.success(t('Wakala ameondolewa.'));
   };
 
@@ -10870,7 +11120,27 @@ try {
       registeredBy: 'self',
       createdAt: nowIso
     };
-    saveAllData({ affiliates: [...(affiliates || []), aff] });
+    const agentUser: User = {
+      id: aff.id,
+      username: code.toLowerCase(),
+      password: aff.password || hashPassword('1234'),
+      name: aff.name,
+      phone: aff.phone,
+      email: `${code.toLowerCase()}@wakala.tradecore.tz`,
+      role: 'Agent',
+      companyId: data.companyId || (currentCompanyId ? Number(currentCompanyId) : 1),
+      branchId: null,
+      storeId: null,
+      status: 'Active',
+      firstLogin: false,
+      affiliateId: aff.id,
+      referralCode: code,
+      allowedPages: ['agent-workspace', 'agent_workspace', 'marketplace', 'profile']
+    };
+    saveAllData({
+      affiliates: [...(affiliates || []), aff],
+      users: [...(users || []).filter(u => u.id !== aff.id && u.username !== agentUser.username), agentUser]
+    });
     logAction('Wakala Register', `${aff.name} (${aff.phone}) registered as wakala with code ${aff.referralCode}.`);
     return { ok: true, affiliate: aff };
   };
@@ -10897,6 +11167,7 @@ try {
     const inputPass = (password || '').trim();
     if (!inputPass) return { ok: false, error: t('Please enter your password.') };
 
+    let resolvedAff = aff;
     if (aff.password) {
       const isMatch = verifyPassword(inputPass, aff.password) || inputPass === '1234' || inputPass === aff.phone.slice(-4);
       if (!isMatch) return { ok: false, error: t('Incorrect password.') };
@@ -10905,10 +11176,33 @@ try {
       const hashed = hashPassword(inputPass);
       const next = (affiliates || []).map(a => a.id === aff.id ? { ...a, password: hashed } : a);
       saveAllData({ affiliates: next });
-      return { ok: true, affiliate: { ...aff, password: hashed } };
+      resolvedAff = { ...aff, password: hashed };
     }
 
-    return { ok: true, affiliate: aff };
+    // Authenticate into user session with role: 'Agent'
+    const agentUser: User = {
+      id: resolvedAff.id,
+      username: resolvedAff.referralCode.toLowerCase(),
+      password: resolvedAff.password || hashPassword(inputPass || '1234'),
+      name: resolvedAff.name,
+      email: resolvedAff.email || `${resolvedAff.referralCode.toLowerCase()}@wakala.tradecore.tz`,
+      phone: resolvedAff.phone,
+      role: 'Agent',
+      companyId: resolvedAff.companyId || (currentCompanyId ? Number(currentCompanyId) : 1),
+      branchId: null,
+      storeId: null,
+      status: 'Active',
+      firstLogin: false,
+      affiliateId: resolvedAff.id,
+      referralCode: resolvedAff.referralCode,
+      allowedPages: ['agent-workspace', 'agent_workspace', 'marketplace', 'profile']
+    };
+    const mergedUsers = [...(users || []).filter(u => u.id !== agentUser.id && u.username !== agentUser.username), agentUser];
+    saveAllData({ users: mergedUsers });
+    localStorage.setItem('tradecore_user', JSON.stringify(agentUser));
+    setCurrentUser(agentUser);
+
+    return { ok: true, affiliate: resolvedAff };
   };
 
   const approveAffiliate = (affiliateId: number, active: boolean): void => {
@@ -14570,7 +14864,7 @@ try {
     // safeObjectValues makes Object.values(null/undefined) impossible to crash on.
     Array.from(new Set(safeObjectValues(rolePermissions).flat())).concat([
       'profile', 'report-tax-vat', 'report-predictive-ai', 'subscriptions',
-      'root-dashboard', 'tra-reports', 'root-disputes', 'manufacturing'
+      'root-dashboard', 'tra-reports', 'root-disputes', 'manufacturing', 'agent-workspace'
     ]),
   [rolePermissions]);
 
@@ -14608,6 +14902,11 @@ try {
       activeRole = stable.role || activeRole;
       activeCompanyId = stable.companyId ?? activeCompanyId;
       activeUserIsRoot = stable.isRoot;
+    }
+
+    // AGENT WORKSPACE: Dedicated workspace for Company Wakala / Agents
+    if (activeRole === 'Agent' || currentUser?.role === 'Agent' || (currentUser as any)?.affiliateId != null) {
+      return ['agent-workspace', 'agent_workspace', 'marketplace', 'profile'];
     }
 
     // ADMIN ACCOUNT GUARANTEE (Requirement 1):
@@ -14653,7 +14952,7 @@ try {
     // Marketplace panels are available to every company staff member and Super Admin,
     // regardless of legacy stored allowedPages values.
     if (activeRoleIsSuper || activeCompanyId) {
-      pages = Array.from(new Set([...pages, 'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'affiliate-program', 'seller-phase2c', 'qr-code-yangu', 'sauti-search', 'tra-report']));
+      pages = Array.from(new Set([...pages, 'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'affiliate-program', 'agent-workspace', 'seller-phase2c', 'qr-code-yangu', 'sauti-search', 'tra-report']));
     }
 
     // ROOT_MANDATE: God Mode dashboard visible only to the root account
@@ -15228,8 +15527,8 @@ try {
         {/* Interactive Visual Analytics Dashboards */}
         <ChartErrorBoundary resetKey={dailySalesData}>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 no-print">
-          {/* Daily Sales & Profit Area Chart */}
-          <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between relative overflow-hidden">
+          {/* Daily Sales & Profit Area Chart — Waving Ripple on Trendlines Only */}
+          <div className="lg:col-span-2 bg-white p-6 rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between relative">
             <div>
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <div className="flex items-center gap-2">
@@ -15289,6 +15588,7 @@ try {
                       strokeWidth={2.5}
                       fillOpacity={1}
                       fill="url(#colorSales)"
+                      className="trendline-wave-area"
                       isAnimationActive={true}
                       animationDuration={1500}
                       animationEasing="ease-in-out"
@@ -15301,6 +15601,7 @@ try {
                       strokeWidth={2.5}
                       fillOpacity={1}
                       fill="url(#colorProfit)"
+                      className="trendline-wave-profit"
                       isAnimationActive={true}
                       animationDuration={1700}
                       animationEasing="ease-in-out"
@@ -15377,7 +15678,7 @@ try {
         </div>
         </ChartErrorBoundary>
 
-        {/* Top Products Inventory Valuation */}
+        {/* Top Products Inventory Valuation — Waving Height Rhythm on Bar Columns Only */}
         <ChartErrorBoundary resetKey={topProductsStockValue}>
         <div className="grid grid-cols-1 gap-6 no-print">
           <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-sm space-y-4">
@@ -15429,12 +15730,12 @@ try {
               </div>
             )}
 
-            {/* Horizontally Scrollable Chart Container */}
+            {/* Horizontally Scrollable Chart Container — Bar Columns Wave Height */}
             <div
               ref={topProductsScrollRef}
               className="overflow-x-auto scroll-smooth pb-3 pt-1 scrollbar-thin select-none"
             >
-              <div style={{ minWidth: `${Math.max(680, topProductsStockValue.length * 85)}px`, height: '240px' }}>
+              <div style={{ minWidth: `${Math.max(680, topProductsStockValue.length * 85)}px`, height: '240px' }} className="waving-bars-chart">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={topProductsStockValue} barSize={38} margin={{ top: 15, right: 15, left: 10, bottom: 20 }}>
                     <defs>
@@ -15478,7 +15779,7 @@ try {
                 </ResponsiveContainer>
               </div>
 
-              {/* Interactive Horizontal Cards Ribbon */}
+              {/* Interactive Horizontal Cards Ribbon — Stable, Clean & Static */}
               <div className="flex items-center gap-3 pt-3 overflow-x-auto pb-1">
                 {topProductsStockValue.map((p, idx) => (
                   <div
@@ -17380,192 +17681,140 @@ try {
     );
   };
 
-  // --- Manufacturing Module: Deduct Raw Materials at Batch Start ---
+  // --- Manufacturing Module: Deduct Raw Materials at Batch Start (Independent Plant Inventory) ---
   const handleDeductBatchStartStock = useCallback((run: ProductionRun) => {
-    const storeIdNum = Number(run.storeId);
-    if (!storeIdNum) return;
-
-    setStockItems(prevStock => {
+    setManufacturingProducts(prevStock => {
       const updated = [...prevStock];
       if (Array.isArray(run.actualRawMaterials) && run.actualRawMaterials.length > 0) {
         run.actualRawMaterials.forEach(rm => {
           const itemIdx = updated.findIndex(p => String(p.id) === String(rm.productId) || (rm.productName && p.name.toLowerCase() === rm.productName.toLowerCase()));
           if (itemIdx >= 0) {
             const currentItem = updated[itemIdx];
-            const currentStoreQty = currentItem.stock?.[storeIdNum] || 0;
-            const newStoreQty = Math.max(0, currentStoreQty - (rm.consumedQty || 0));
-            const updatedBatches = { ...(currentItem.batches || {}) };
-
-            if (Array.isArray(updatedBatches[storeIdNum])) {
-              let qtyToDeduct = rm.consumedQty || 0;
-              const nextBatches = updatedBatches[storeIdNum].map(b => {
-                if (qtyToDeduct <= 0) return b;
-                if (b.qty <= qtyToDeduct) {
-                  qtyToDeduct -= b.qty;
-                  return { ...b, qty: 0 };
-                } else {
-                  const rem = b.qty - qtyToDeduct;
-                  qtyToDeduct = 0;
-                  return { ...b, qty: rem };
-                }
-              }).filter(b => b.qty > 0);
-              updatedBatches[storeIdNum] = nextBatches;
-            }
-
+            const currentQty = currentItem.currentStock || 0;
+            const newQty = Math.max(0, currentQty - (rm.consumedQty || 0));
             updated[itemIdx] = {
               ...currentItem,
-              stock: {
-                ...(currentItem.stock || {}),
-                [storeIdNum]: newStoreQty
-              },
-              batches: updatedBatches
+              currentStock: newQty,
+              updatedAt: new Date().toISOString()
             };
           }
         });
       }
 
-      saveAllData({ stockItems: updated });
+      saveAllData({ manufacturingProducts: updated });
       return updated;
     });
 
     logAction(
       'MANUFACTURING_BATCH_RAW_MATERIALS_DEDUCTED',
-      `Raw material stock parts deducted for batch #${run.batchNumber} (${run.runNumber}) in store #${storeIdNum}`
+      `Plant raw material stock deducted for batch #${run.batchNumber} (${run.runNumber})`
     );
   }, [saveAllData, logAction]);
 
-  // --- Manufacturing Module: Batch Completion Stock Movement ---
-  const handleCompleteBatchStock = useCallback((run: ProductionRun) => {
-    const storeIdNum = Number(run.storeId);
-    if (!storeIdNum) return;
+  // --- Manufacturing Module: Rollback Raw Materials upon Batch Deletion (Independent Plant Inventory) ---
+  const handleRollbackBatchStartStock = useCallback((run: ProductionRun) => {
+    const hadDeductions = !!run.rawMaterialsDeducted || ((run.status as string) !== 'Draft' && run.status !== 'Planned' && Array.isArray(run.actualRawMaterials) && run.actualRawMaterials.length > 0);
+    if (!hadDeductions) return;
 
-    setStockItems(prevStock => {
+    setManufacturingProducts(prevStock => {
+      const updated = [...prevStock];
+      if (Array.isArray(run.actualRawMaterials) && run.actualRawMaterials.length > 0) {
+        run.actualRawMaterials.forEach(rm => {
+          const itemIdx = updated.findIndex(p => String(p.id) === String(rm.productId) || (rm.productName && p.name.toLowerCase() === rm.productName.toLowerCase()));
+          if (itemIdx >= 0) {
+            const currentItem = updated[itemIdx];
+            const currentQty = currentItem.currentStock || 0;
+            const restoredQty = rm.consumedQty || 0;
+            if (restoredQty <= 0) return;
+
+            updated[itemIdx] = {
+              ...currentItem,
+              currentStock: currentQty + restoredQty,
+              updatedAt: new Date().toISOString()
+            };
+          }
+        });
+      }
+
+      saveAllData({ manufacturingProducts: updated });
+      return updated;
+    });
+
+    logAction(
+      'MANUFACTURING_BATCH_RAW_MATERIALS_RESTORED',
+      `Restored plant raw materials for deleted batch #${run.batchNumber} (${run.runNumber})`
+    );
+  }, [saveAllData, logAction]);
+
+  // --- Manufacturing Module: Batch Completion Stock Movement (Independent Plant Inventory) ---
+  const handleCompleteBatchStock = useCallback((run: ProductionRun) => {
+    setManufacturingProducts(prevStock => {
       const updated = [...prevStock];
 
-      // 1. Deduct raw materials consumed from store inventory (only if not already deducted at batch launch)
+      // 1. Deduct raw materials consumed (if not already deducted at batch launch)
       if (!run.rawMaterialsDeducted && Array.isArray(run.actualRawMaterials) && run.actualRawMaterials.length > 0) {
         run.actualRawMaterials.forEach(rm => {
           const itemIdx = updated.findIndex(p => String(p.id) === String(rm.productId) || (rm.productName && p.name.toLowerCase() === rm.productName.toLowerCase()));
           if (itemIdx >= 0) {
             const currentItem = updated[itemIdx];
-            const currentStoreQty = currentItem.stock?.[storeIdNum] || 0;
-            const newStoreQty = Math.max(0, currentStoreQty - (rm.consumedQty || 0));
-            const updatedBatches = { ...(currentItem.batches || {}) };
-
-            if (Array.isArray(updatedBatches[storeIdNum])) {
-              let qtyToDeduct = rm.consumedQty || 0;
-              const nextBatches = updatedBatches[storeIdNum].map(b => {
-                if (qtyToDeduct <= 0) return b;
-                if (b.qty <= qtyToDeduct) {
-                  qtyToDeduct -= b.qty;
-                  return { ...b, qty: 0 };
-                } else {
-                  const rem = b.qty - qtyToDeduct;
-                  qtyToDeduct = 0;
-                  return { ...b, qty: rem };
-                }
-              }).filter(b => b.qty > 0);
-              updatedBatches[storeIdNum] = nextBatches;
-            }
-
+            const currentQty = currentItem.currentStock || 0;
+            const newQty = Math.max(0, currentQty - (rm.consumedQty || 0));
             updated[itemIdx] = {
               ...currentItem,
-              stock: {
-                ...(currentItem.stock || {}),
-                [storeIdNum]: newStoreQty
-              },
-              batches: updatedBatches
+              currentStock: newQty,
+              updatedAt: new Date().toISOString()
             };
           }
         });
       }
 
-      // 2. Add finished goods & by-product outputs with calculated unit costs & FIFO batch
+      // 2. Add finished goods & by-product outputs into manufacturing plant stock
       if (Array.isArray(run.outputs) && run.outputs.length > 0) {
         run.outputs.forEach(out => {
           const qtyProduced = (out.actualQtyKg !== undefined ? out.actualQtyKg : out.actualQty) || 0;
           if (qtyProduced <= 0) return;
-          const itemIdx = updated.findIndex(p => p.id === out.productId);
+          const itemIdx = updated.findIndex(p => String(p.id) === String(out.productId) || (out.productName && p.name.toLowerCase() === out.productName.toLowerCase()));
+          const unitCost = Number(out.unitCost ?? out.calculatedUnitCost) || 0;
+
           if (itemIdx >= 0) {
             const currentItem = updated[itemIdx];
-            const currentStoreQty = currentItem.stock?.[storeIdNum] || 0;
-            const newStoreQty = currentStoreQty + qtyProduced;
-            const unitCost = Number(out.unitCost ?? out.calculatedUnitCost) || Number(currentItem.purchasePrice) || 0;
-
-            const updatedBatches = { ...(currentItem.batches || {}) };
-            const existingBatches = Array.isArray(updatedBatches[storeIdNum]) ? [...updatedBatches[storeIdNum]] : [];
-
-            const newBatchRecord: InventoryBatch = {
-              id: `BATCH-${run.batchNumber}-${out.productId}-${Date.now()}`,
-              poNumber: `MFG-${run.runNumber}`,
-              supplierName: `Production Run #${run.runNumber} (Batch ${run.batchNumber})`,
-              qty: qtyProduced,
-              initialQty: qtyProduced,
-              cost: unitCost,
-              receivedDate: run.actualEndAt ? run.actualEndAt.split('T')[0] : (run.completedDate ? run.completedDate.split('T')[0] : new Date().toISOString().split('T')[0]),
-              expiryDate: run.expiryDate
-            };
-            existingBatches.push(newBatchRecord);
-            updatedBatches[storeIdNum] = existingBatches;
-
-            const updatedExpiryDates = { ...(currentItem.expiryDates || {}) };
-            if (run.expiryDate) {
-              updatedExpiryDates[storeIdNum] = run.expiryDate;
-            }
-
             updated[itemIdx] = {
               ...currentItem,
-              purchasePrice: unitCost > 0 ? unitCost : currentItem.purchasePrice,
-              stock: {
-                ...(currentItem.stock || {}),
-                [storeIdNum]: newStoreQty
-              },
-              batches: updatedBatches,
-              expiryDates: updatedExpiryDates
+              currentStock: (currentItem.currentStock || 0) + qtyProduced,
+              unitCost: unitCost > 0 ? unitCost : currentItem.unitCost,
+              standardPrice: Number(out.marketPrice) || currentItem.standardPrice,
+              updatedAt: new Date().toISOString()
             };
           } else if (out.productName) {
-            const unitCost = Number(out.unitCost ?? out.calculatedUnitCost) || 0;
-            const newBatchRecord: InventoryBatch = {
-              id: `BATCH-${run.batchNumber}-${Date.now()}`,
-              poNumber: `MFG-${run.runNumber}`,
-              supplierName: `Production Run #${run.runNumber} (Batch ${run.batchNumber})`,
-              qty: qtyProduced,
-              initialQty: qtyProduced,
-              cost: unitCost,
-              receivedDate: run.actualEndAt ? run.actualEndAt.split('T')[0] : (run.completedDate ? run.completedDate.split('T')[0] : new Date().toISOString().split('T')[0]),
-              expiryDate: run.expiryDate
-            };
             const cleanCode = String(out.productName).replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase() || 'MFG';
-            const newItemId = typeof out.productId === 'number' && out.productId > 0 ? out.productId : Date.now() + Math.floor(Math.random() * 900);
-            const newStockItem: StockItem = {
+            const newItemId = out.productId || `MFG-${Date.now()}-${Math.floor(Math.random() * 900)}`;
+            const newProduct: ManufacturingProduct = {
               id: newItemId,
+              companyId: run.companyId,
               name: out.productName,
               code: `${cleanCode}-${String(newItemId).slice(-4)}`,
+              type: out.isPrimary ? 'finished_good' : 'by_product',
               category: out.isPrimary ? 'Manufactured Goods' : 'By-Products',
-              purchasePrice: unitCost,
-              retailPrice: Number(out.marketPrice) || (unitCost > 0 ? unitCost * 1.3 : 1000),
-              wholesalePrice: Number(out.marketPrice) || (unitCost > 0 ? unitCost * 1.2 : 900),
-              lowStockQty: 10,
               unit: 'kg',
-              companyId: run.companyId ? Number(run.companyId) : (currentCompanyId ? Number(currentCompanyId) : undefined),
-              stock: { [storeIdNum]: qtyProduced },
-              batches: { [storeIdNum]: [newBatchRecord] },
-              expiryDates: run.expiryDate ? { [storeIdNum]: run.expiryDate } : {}
+              currentStock: qtyProduced,
+              unitCost: unitCost,
+              standardPrice: Number(out.marketPrice) || (unitCost > 0 ? unitCost * 1.3 : 1000),
+              createdAt: new Date().toISOString()
             };
-            updated.push(newStockItem);
+            updated.push(newProduct);
           }
         });
       }
 
-      saveAllData({ stockItems: updated });
+      saveAllData({ manufacturingProducts: updated });
       return updated;
     });
 
     logAction(
       'MANUFACTURING_BATCH_COMPLETED',
-      `Production batch #${run.batchNumber} completed. Stock updated for Store #${storeIdNum} with ${run.outputs?.length || 0} output lines.`
+      `Production batch #${run.batchNumber} completed. Plant stock updated with ${run.outputs?.length || 0} output lines.`
     );
-    toast.success(`Production Run #${run.runNumber} completed! Stock accounts updated.`);
+    toast.success(`Production Run #${run.runNumber} completed! Plant stock updated.`);
   }, [logAction, toast, saveAllData]);
 
   // --- RENDERS MAIN BODY ACCORDING TO NAV PAGE ---
@@ -17581,6 +17830,11 @@ try {
               productionRuns={productionRuns}
               qcTemplates={qcTemplates}
               qcChecks={qcChecks}
+              manufacturingProducts={manufacturingProducts}
+              onSaveManufacturingProducts={(next) => {
+                setManufacturingProducts(next);
+                saveAllData({ manufacturingProducts: next });
+              }}
               stockItems={activeStockItems}
               stores={visibleStores}
               companies={companies}
@@ -17614,6 +17868,7 @@ try {
               rolePermissions={rolePermissions}
               onCompleteBatchStock={handleCompleteBatchStock}
               onDeductBatchStartStock={handleDeductBatchStartStock}
+              onRollbackBatchStartStock={handleRollbackBatchStartStock}
               logAction={logAction}
               t={t}
             />
@@ -18044,6 +18299,37 @@ try {
             onDecideWithdrawal={decideAffiliateWithdrawal}
           />
         );
+      case 'agent-workspace':
+      case 'agent_workspace': {
+        const agentAff = (affiliates || []).find(a =>
+          (currentUser?.affiliateId && a.id === currentUser.affiliateId) ||
+          (currentUser?.referralCode && safeLower(a.referralCode) === safeLower(currentUser.referralCode)) ||
+          a.userId === currentUser?.id ||
+          safeLower(a.referralCode) === safeLower(currentUser?.username || '') ||
+          (a.phone && (currentUser?.phone ? a.phone.replace(/\s+/g, '') === currentUser.phone.replace(/\s+/g, '') : false))
+        ) || (currentUser ? getOrCreateAffiliateForUser(currentUser) : undefined);
+
+        const agentComp = companies.find(c => sameId(c.id, agentAff?.companyId || currentUser?.companyId || currentCompanyId)) || companies[0];
+
+        return (
+          <PanelErrorBoundary panelName="Agent Performance Workspace">
+            <AgentPerformancePortal
+              currentUser={currentUser}
+              affiliate={agentAff}
+              company={agentComp}
+              affiliateSales={affiliateSales || []}
+              affiliateWithdrawals={affiliateWithdrawals || []}
+              affiliateClicks={affiliateClicks || []}
+              orders={marketplaceOrders || []}
+              minWithdrawal={settings.affiliateMinWithdrawal ?? 10000}
+              activeCurrency={activeCurrency}
+              activeExchangeRate={activeExchangeRate}
+              onRequestWithdrawal={requestAffiliateWithdrawal}
+              t={t}
+            />
+          </PanelErrorBoundary>
+        );
+      }
       case 'marketplace-orders':
         return (
           <MarketplaceOrdersPanel

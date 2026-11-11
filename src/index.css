@@ -100,6 +100,113 @@
   border-radius: 3px;
 }
 
+/* ==========================================================================
+   TARGETED CONTINUOUS WAVE & RIPPLE FOR TRENDLINES AND BAR CHARTS ONLY
+   ========================================================================== */
+
+/* Continuous sinusoidal ripple wave on AreaChart stroke curves */
+@keyframes trendlineCurveRipple {
+  0%, 100% {
+    transform: translateY(0px) scaleY(1);
+  }
+  20% {
+    transform: translateY(-2px) scaleY(1.018);
+  }
+  40% {
+    transform: translateY(1.5px) scaleY(0.985);
+  }
+  60% {
+    transform: translateY(-2.8px) scaleY(1.022);
+  }
+  80% {
+    transform: translateY(1px) scaleY(0.99);
+  }
+}
+
+@keyframes trendlineProfitRipple {
+  0%, 100% {
+    transform: translateY(0px) scaleY(1);
+  }
+  25% {
+    transform: translateY(2px) scaleY(0.985);
+  }
+  50% {
+    transform: translateY(-2.5px) scaleY(1.02);
+  }
+  75% {
+    transform: translateY(1.2px) scaleY(0.992);
+  }
+}
+
+/* Continuous breathing height wave on BarChart columns */
+@keyframes barColumnHeightWave {
+  0%, 100% {
+    transform: scaleY(1);
+  }
+  30% {
+    transform: scaleY(1.065);
+  }
+  65% {
+    transform: scaleY(0.955);
+  }
+}
+
+/* Equalizer frequency bars inside badge */
+@keyframes aliveAudioBars {
+  0%, 100% {
+    height: 4px;
+    opacity: 0.6;
+  }
+  50% {
+    height: 12px;
+    opacity: 1;
+  }
+}
+
+/* Target AreaChart curve paths and area fills only — zero effect on card, axes or labels */
+.trendline-wave-area .recharts-area-curve {
+  animation: trendlineCurveRipple 3.6s ease-in-out infinite;
+  transform-origin: center bottom;
+  transform-box: fill-box;
+}
+
+.trendline-wave-area .recharts-area-area {
+  animation: trendlineCurveRipple 3.6s ease-in-out infinite;
+  transform-origin: center bottom;
+  transform-box: fill-box;
+}
+
+.trendline-wave-profit .recharts-area-curve {
+  animation: trendlineProfitRipple 4.2s ease-in-out infinite;
+  transform-origin: center bottom;
+  transform-box: fill-box;
+}
+
+.trendline-wave-profit .recharts-area-area {
+  animation: trendlineProfitRipple 4.2s ease-in-out infinite;
+  transform-origin: center bottom;
+  transform-box: fill-box;
+}
+
+/* Target BarChart column rectangles only with staggered horizontal ripple */
+.waving-bars-chart .recharts-bar-rectangle {
+  animation: barColumnHeightWave 2.8s ease-in-out infinite;
+  transform-origin: center bottom;
+  transform-box: fill-box;
+}
+
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 1) { animation-delay: 0s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 2) { animation-delay: 0.28s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 3) { animation-delay: 0.56s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 4) { animation-delay: 0.84s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 5) { animation-delay: 1.12s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 6) { animation-delay: 1.40s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 7) { animation-delay: 1.68s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 8) { animation-delay: 1.96s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 9) { animation-delay: 2.24s; }
+.waving-bars-chart .recharts-bar-rectangle:nth-child(10n + 10) { animation-delay: 2.52s; }
+
+
 @media print {
   /* Force system color and background rendering (high-contrast / beautiful images and badges) */
   * {

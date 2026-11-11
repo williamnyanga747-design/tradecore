@@ -2,12 +2,14 @@ import React, { useMemo, useState } from 'react';
 import {
   Share2, Copy, Check, MessageCircle, MousePointerClick, ShoppingBag, Wallet as WalletIcon,
   Smartphone, Send, AlertTriangle, ExternalLink, BadgePercent, Plus, Users, Search,
-  CheckCircle2, XCircle, Clock3, MapPin, Edit3, Trash2, Power, UserCheck, ShieldCheck
+  CheckCircle2, XCircle, Clock3, MapPin, Edit3, Trash2, Power, UserCheck, ShieldCheck,
+  Eye, ArrowLeft, TrendingUp, BarChart3, Building2, CreditCard
 } from 'lucide-react';
-import { Affiliate, AffiliateClick, AffiliateSale, AffiliateWithdrawal, Company, User } from '../types';
+import { Affiliate, AffiliateClick, AffiliateSale, AffiliateWithdrawal, Company, User, MarketplaceOrder } from '../types';
 import { TZS } from './marketplace/MarketplaceShared';
 import { sameId } from '../utils/idUtils';
 import { TANZANIA_REGIONS } from '../utils/regions';
+import AgentPerformancePortal from './AgentPerformancePortal';
 
 interface AffiliateProgramPanelProps {
   user: User | null;
@@ -18,9 +20,9 @@ interface AffiliateProgramPanelProps {
   withdrawals: AffiliateWithdrawal[];
   companies: Company[];
   commissionPercent: number;
-  currentCompanyId?: number;
+  currentCompanyId?: number | string | null;
   translate: (text: string) => string;
-  onRequestWithdrawal: (affiliateId: number, amount: number, phoneNumber: string) => { ok: boolean; error?: string };
+  onRequestWithdrawal: (affiliateId: number, amount: number, phoneNumber: string, extra?: any) => { ok: boolean; error?: string; withdrawal?: AffiliateWithdrawal };
   onCreateAgent?: (agent: {
     name: string;
     phone: string;
@@ -36,6 +38,10 @@ interface AffiliateProgramPanelProps {
   onUpdateAgent?: (id: number, patch: Partial<Affiliate>) => void;
   onDeleteAgent?: (id: number) => void;
   onDecideWithdrawal?: (withdrawalId: number, status: 'approved' | 'rejected', adminNote?: string) => void;
+  orders?: MarketplaceOrder[];
+  activeCurrency?: string;
+  activeExchangeRate?: number;
+  minWithdrawal?: number;
 }
 
 const SALE_STATUS_BADGE: Record<string, string> = {
@@ -57,13 +63,16 @@ function companyNameFor(companies: Company[], id: number): string {
 export default function AffiliateProgramPanel({
   user, affiliate, affiliates = [], clicks, sales, withdrawals, companies,
   commissionPercent, currentCompanyId, translate: t, onRequestWithdrawal,
-  onCreateAgent, onUpdateAgent, onDeleteAgent, onDecideWithdrawal
+  onCreateAgent, onUpdateAgent, onDeleteAgent, onDecideWithdrawal,
+  orders = [], activeCurrency = 'TZS', activeExchangeRate = 1, minWithdrawal = 10000
 }: AffiliateProgramPanelProps) {
   const isSuperAdmin = user?.role === 'Super Admin';
   const isAdmin = Boolean(isSuperAdmin || user?.role === 'Admin' || (user as any)?.isAdmin);
+  const isAgent = user?.role === 'Agent' || (user as any)?.affiliateId != null;
   const activeCompanyId = currentCompanyId || user?.companyId;
 
   const [activeTab, setActiveTab] = useState<'agents' | 'withdrawals' | 'my-link'>(isAdmin ? 'agents' : 'my-link');
+  const [inspectingAgent, setInspectingAgent] = useState<Affiliate | null>(null);
   const [amount, setAmount] = useState('');
   const [phone, setPhone] = useState('');
   const [error, setError] = useState('');
@@ -194,8 +203,8 @@ export default function AffiliateProgramPanel({
 
   // Scoped Affiliates according to active company
   const scopedAffiliates = useMemo(() => {
-    if (isSuperAdmin || !activeCompanyId) return affiliates;
-    return affiliates.filter(a => a.companyId === activeCompanyId || !a.companyId);
+    if (isSuperAdmin || !activeCompanyId) return affiliates || [];
+    return (affiliates || []).filter(a => sameId(a.companyId, activeCompanyId) || !a.companyId);
   }, [affiliates, isSuperAdmin, activeCompanyId]);
 
   // Filtered Agents for Admin view
@@ -206,20 +215,110 @@ export default function AffiliateProgramPanel({
     return matchesSearch && matchesRegion;
   });
 
-  // Scoped Withdrawals
+  // Scoped Withdrawals (using sameId to guarantee matching string and number company IDs)
   const scopedWithdrawals = useMemo(() => {
-    if (isSuperAdmin || !activeCompanyId) return withdrawals;
-    return withdrawals.filter(w => {
-      const ag = affiliates.find(a => a.id === w.affiliateId);
-      return w.companyId === activeCompanyId || ag?.companyId === activeCompanyId;
+    if (isSuperAdmin || !activeCompanyId) return withdrawals || [];
+    return (withdrawals || []).filter(w => {
+      const ag = (affiliates || []).find(a => a.id === w.affiliateId);
+      return sameId(w.companyId, activeCompanyId) || sameId(ag?.companyId, activeCompanyId);
     });
   }, [withdrawals, affiliates, isSuperAdmin, activeCompanyId]);
 
   // System Agent Totals
   const totalAgents = scopedAffiliates.length;
   const activeAgents = scopedAffiliates.filter(a => a.isActive !== false && a.status !== 'suspended').length;
-  const totalSystemCommission = affiliates.reduce((sum, a) => sum + (a.totalEarned || 0), 0);
-  const totalSystemBalance = affiliates.reduce((sum, a) => sum + (a.balance || 0), 0);
+  const totalSystemCommission = scopedAffiliates.reduce((sum, a) => sum + (a.totalEarned || 0), 0);
+  const totalSystemBalance = scopedAffiliates.reduce((sum, a) => sum + (a.balance || 0), 0);
+  const pendingPayoutsCount = scopedWithdrawals.filter(w => w.status === 'pending').length;
+
+  // 1. DEDICATED AGENT WORKSPACE VIEW (When logged in as an Agent)
+  if (isAgent) {
+    const targetAffiliate = affiliate || (affiliates || []).find(a =>
+      (user?.affiliateId && a.id === user.affiliateId) ||
+      (user?.referralCode && a.referralCode.toLowerCase() === user.referralCode.toLowerCase()) ||
+      a.userId === user?.id ||
+      a.phone === user?.phone
+    );
+    const agentComp = companies.find(c => sameId(c.id, targetAffiliate?.companyId || activeCompanyId)) || companies[0];
+    const agentSales = targetAffiliate ? (sales || []).filter(s => s.affiliateId === targetAffiliate.id) : (sales || []);
+    const agentWithdrawals = targetAffiliate ? (withdrawals || []).filter(w => w.affiliateId === targetAffiliate.id) : (withdrawals || []);
+
+    return (
+      <AgentPerformancePortal
+        currentUser={user}
+        affiliate={targetAffiliate}
+        company={agentComp}
+        affiliateSales={agentSales}
+        affiliateWithdrawals={agentWithdrawals}
+        affiliateClicks={clicks || []}
+        orders={orders || []}
+        minWithdrawal={minWithdrawal || 10000}
+        activeCurrency={activeCurrency}
+        activeExchangeRate={activeExchangeRate}
+        onRequestWithdrawal={onRequestWithdrawal}
+        t={t}
+      />
+    );
+  }
+
+  // 2. ADMIN INSPECTING INDIVIDUAL AGENT PERFORMANCE
+  if (inspectingAgent) {
+    const agentComp = companies.find(c => sameId(c.id, inspectingAgent.companyId)) || companies[0];
+    const agentSales = (sales || []).filter(s => s.affiliateId === inspectingAgent.id);
+    const agentWithdrawals = (withdrawals || []).filter(w => w.affiliateId === inspectingAgent.id);
+
+    return (
+      <div className="space-y-4">
+        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-xs flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setInspectingAgent(null)}
+              className="px-3.5 py-2 rounded-xl border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-700 text-xs font-bold flex items-center gap-2 cursor-pointer transition shadow-2xs"
+            >
+              <ArrowLeft className="w-4 h-4 text-brand" />
+              <span>{t('Rudi kwenye Orodha ya Mawakala')}</span>
+            </button>
+            <div>
+              <div className="text-sm font-black text-gray-900 flex items-center gap-2">
+                <span>{t('Utendaji wa Wakala')}: {inspectingAgent.name}</span>
+                <span className="font-mono text-xs px-2.5 py-0.5 rounded-md bg-brand/10 text-brand font-bold">
+                  {inspectingAgent.referralCode}
+                </span>
+              </div>
+              <p className="text-xs text-gray-500 font-medium">
+                {inspectingAgent.phone} • {inspectingAgent.region || 'Tanzania'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`px-3 py-1 rounded-full text-xs font-bold ${
+              inspectingAgent.isActive !== false && inspectingAgent.status !== 'suspended'
+                ? 'bg-emerald-100 text-emerald-800'
+                : 'bg-red-100 text-red-800'
+            }`}>
+              {inspectingAgent.isActive !== false && inspectingAgent.status !== 'suspended' ? '● ' + t('Active Agent') : '● ' + t('Suspended')}
+            </span>
+          </div>
+        </div>
+
+        <AgentPerformancePortal
+          currentUser={user}
+          affiliate={inspectingAgent}
+          company={agentComp}
+          affiliateSales={agentSales}
+          affiliateWithdrawals={agentWithdrawals}
+          affiliateClicks={clicks || []}
+          orders={orders || []}
+          minWithdrawal={minWithdrawal || 10000}
+          activeCurrency={activeCurrency}
+          activeExchangeRate={activeExchangeRate}
+          onRequestWithdrawal={onRequestWithdrawal}
+          t={t}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -246,9 +345,9 @@ export default function AffiliateProgramPanel({
               }`}
             >
               <WalletIcon className="w-4 h-4" /> {t('Maombi ya Malipo (Payouts)')}
-              {withdrawals.filter(w => w.status === 'pending').length > 0 && (
-                <span className="bg-amber-500 text-white text-[10px] px-1.5 py-0.2 rounded-full">
-                  {withdrawals.filter(w => w.status === 'pending').length}
+              {pendingPayoutsCount > 0 && (
+                <span className="bg-amber-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full">
+                  {pendingPayoutsCount}
                 </span>
               )}
             </button>
@@ -405,6 +504,15 @@ export default function AffiliateProgramPanel({
                           </td>
                           <td className="px-4 py-3.5 text-right">
                             <div className="flex items-center justify-end gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setInspectingAgent(ag)}
+                                className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-brand bg-brand/10 hover:bg-brand/20 flex items-center gap-1 cursor-pointer transition shadow-2xs mr-1"
+                                title={t('Tazama Utendaji wa Wakala')}
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>{t('Utendaji')}</span>
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => onUpdateAgent && onUpdateAgent(ag.id, { isActive: isSuspended, status: isSuspended ? 'active' : 'suspended' })}
