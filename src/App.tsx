@@ -295,10 +295,11 @@ const NON_SYNCED_KEYS = new Set(['auditTrails', 'active_company_id', 'company_se
 // writes in the system. They are NEVER eligible for micro-flush suppression (shouldFlush)
 // and any dirty master key is enough to force an immediate full-state flush so the edit
 // can never be dropped by a <1KB delta guard or an early dirty-marker clear.
-// DIRECT-MYSQL MIGRATION (2026-09-08-12): companies/branches/stores were REMOVED from this
-// set — they now commit straight to MySQL via the v2_* atomic endpoints (see
-// DIRECT_SYNC_KEYS below), so the blob flush must not be force-armed for them anymore.
-const MASTER_SYNC_KEYS = new Set(['categories']);
+// MASTER-DATA KEYS: company/hierarchy/category edits and critical operational transactions
+// (stockItems, purchaseOrders, salesOrders, expenses) are the highest-value writes.
+// They are NEVER eligible for micro-flush suppression and force an immediate state flush.
+const MASTER_SYNC_KEYS = new Set(['categories', 'stockItems', 'purchaseOrders', 'salesOrders', 'expenses']);
+
 
 // DIRECT-MYSQL COLLECTIONS (2026-09-08-12): these master-data collections are persisted
 // entirely through the v2_* / entity atomic endpoints (INSERT/UPDATE/DELETE straight into
@@ -2933,7 +2934,9 @@ export default function App() {
   const [showStockModal, setShowStockModal] = useState(false);
   const [editingStockItem, setEditingStockItem] = useState<StockItem | null>(null);
   const [productImagePreview, setProductImagePreview] = useState<string>('');
+  const [productImages, setProductImages] = useState<string[]>([]);
   const [productImageCompressing, setProductImageCompressing] = useState<boolean>(false);
+
   const [productImageCompressionStats, setProductImageCompressionStats] = useState<{ original: string; compressed: string; savings: number } | null>(null);
   const [formUseSubUnit, setFormUseSubUnit] = useState(false);
   const [showTransferModal, setShowTransferModal] = useState(false);
@@ -2990,9 +2993,14 @@ export default function App() {
 
   useEffect(() => {
     if (showStockModal) {
-      setProductImagePreview(editingStockItem?.imageUrl || '');
+      const initialImages = editingStockItem?.images && editingStockItem.images.length > 0
+        ? editingStockItem.images.slice(0, 5)
+        : (editingStockItem?.imageUrl ? [editingStockItem.imageUrl] : []);
+      setProductImages(initialImages);
+      setProductImagePreview(initialImages[0] || editingStockItem?.imageUrl || '');
       setProductImageCompressionStats(null);
       setProductImageCompressing(false);
+
       const isUSD = activeCurrency === 'USD';
       const multiplier = isUSD ? 1 : activeExchangeRate;
       
@@ -3721,18 +3729,18 @@ export default function App() {
         return filterTombstones(defaultSeed || []);
       }
 
-      // If incoming is an explicit array (including empty []), respect user deletion!
-      if (hasIncomingArray && incoming!.length === 0) {
-        return [];
-      }
-
+      // CRITICAL FIX: If incoming is empty or missing, NEVER wipe local state!
+      // In distributed/container environments or during initial snapshot sync, an incoming []
+      // often represents a partial or scoped snapshot, NOT a deliberate user deletion of all records.
+      // Explicit deletion of individual records is managed via tombstones.
       const curList = hasExistingArray && existing!.length > 0
         ? existing!
-        : (!hasIncomingArray ? (defaultSeed || []) : []);
+        : (hasIncomingArray && incoming!.length > 0 ? incoming! : (defaultSeed || []));
 
       if (!hasIncomingArray || incoming!.length === 0) {
         return filterTombstones(curList);
       }
+
 
       const map = new Map<string, T>();
       // 1. Seed with existing local data (skipping tombstones)
@@ -4355,9 +4363,33 @@ export default function App() {
           // First real server user list has arrived — safe for the guard effect
           // to make termination decisions now.
           usersSyncedRef.current = true;
-          localStorage.setItem('tradecore_data', JSON.stringify(phpData));
-          // Offline-first: mirror the server-acknowledged state into the durable IDB cache.
-          void cacheSystemState(phpData).catch(() => {});
+          // SAFE LOCALSTORAGE WRITE: Protect non-empty local collections from being overwritten
+          // by a partial or newly booted server snapshot.
+          try {
+            const existingRaw = localStorage.getItem('tradecore_data');
+            let toPersist = phpData;
+            if (existingRaw) {
+              const existingLocal = JSON.parse(existingRaw);
+              if (existingLocal && typeof existingLocal === 'object') {
+                const operationalKeys = ['stockItems', 'purchaseOrders', 'salesOrders', 'expenses', 'customers', 'suppliers', 'taxes', 'categories'];
+                const mergedLocal = { ...existingLocal, ...phpData };
+                for (const k of operationalKeys) {
+                  const localArr = existingLocal[k];
+                  const serverArr = phpData[k];
+                  if (Array.isArray(localArr) && localArr.length > 0 && (!Array.isArray(serverArr) || serverArr.length === 0)) {
+                    mergedLocal[k] = localArr;
+                  }
+                }
+                toPersist = mergedLocal;
+              }
+            }
+            localStorage.setItem('tradecore_data', JSON.stringify(toPersist));
+            void cacheSystemState(toPersist).catch(() => {});
+          } catch {
+            localStorage.setItem('tradecore_data', JSON.stringify(phpData));
+            void cacheSystemState(phpData).catch(() => {});
+          }
+
           // Track server timestamp + version for cross-device polling
           if (phpData.lastUpdated) { lastServerTimestampRef.current = phpData.lastUpdated; noteStateTimestamp(phpData.lastUpdated); }
           if (phpData._version || phpData.version) noteServerVersion(phpData._version ?? phpData.version);
@@ -6000,9 +6032,18 @@ export default function App() {
         (dirtyValuesRef.current as any)[collection] = nextArray;
       }
       try {
-        // localStorage.write REMOVED — source of truth is MySQL database.
-        // The atomic API call below persists directly to the server.
+        // Immediate local mirror: ensure local storage holds the new record immediately
+        // so a fast page refresh, crash, or network glitch never loses the user's action.
+        const currentCacheRaw = localStorage.getItem('tradecore_data');
+        if (currentCacheRaw) {
+          const currentCache = JSON.parse(currentCacheRaw);
+          if (currentCache && typeof currentCache === 'object') {
+            currentCache[collection] = nextArray;
+            localStorage.setItem('tradecore_data', JSON.stringify(currentCache));
+          }
+        }
       } catch {}
+
 
       // --- 3. Isolated micro-update with explicit ack ---
       // OFFLINE gate: the edit is already applied + snapshotted above. Do NOT fire the
@@ -8104,14 +8145,17 @@ const activeCompany = companies.find(c => sameId(c.id, currentCompanyId));
     }
     setAuthView('app');
     let targetPage = destPageOverride;
-    if (!targetPage) {
-      const u = currentUser || (() => {
-        try {
-          const raw = localStorage.getItem('tradecore_user');
-          return raw ? JSON.parse(raw) : null;
-        } catch { return null; }
-      })();
-      targetPage = (u?.role === 'Agent' || u?.affiliateId != null) ? 'affiliate-program' : 'dashboard';
+    const u = (() => {
+      try {
+        const raw = localStorage.getItem('tradecore_user');
+        return raw ? JSON.parse(raw) : null;
+      } catch { return null; }
+    })() || currentUser;
+    const isAgentUser = u?.role === 'Agent' || (u as any)?.affiliateId != null;
+    if (isAgentUser) {
+      targetPage = 'affiliate-program';
+    } else if (!targetPage) {
+      targetPage = 'dashboard';
     }
     setCurrentPage(targetPage);
     if (window.history && window.history.pushState) {
@@ -8417,10 +8461,10 @@ try {
         } else {
           setLoginUsername('');
           setLoginPassword('');
-          const destPage = ((resolvedUserForCheck as any)?.role === 'Agent' || (resolvedUserForCheck as any)?.affiliateId != null) ? 'agent-workspace' : 'dashboard';
+          const destPage = ((resolvedUserForCheck as any)?.role === 'Agent' || (resolvedUserForCheck as any)?.affiliateId != null) ? 'affiliate-program' : 'dashboard';
           setCurrentPage(destPage);
           logAction('User Login', `Session opened successfully from ${ipAddress}.`);
-          await completePostLoginBoot();
+          await completePostLoginBoot(destPage);
         }
       } else {
         // Password Incorrect locally — try server-side atomic login (local hash may be stale)
@@ -8458,10 +8502,10 @@ try {
               // AGGREGATE: ensure marketplace globals in state
               setLoginUsername('');
               setLoginPassword('');
-              const destPage = ((resolvedUser as any)?.role === 'Agent' || (resolvedUser as any)?.affiliateId != null) ? 'agent-workspace' : 'dashboard';
+              const destPage = ((resolvedUser as any)?.role === 'Agent' || (resolvedUser as any)?.affiliateId != null) ? 'affiliate-program' : 'dashboard';
               setCurrentPage(destPage);
               logAction('User Login', `Session opened successfully from ${ipAddress} (server auth).`);
-              await completePostLoginBoot();
+              await completePostLoginBoot(destPage);
               serverAuthWorked = true;
             }
           }
@@ -8616,10 +8660,10 @@ try {
                 } catch {}
                 setLoginUsername('');
                 setLoginPassword('');
-                const destPage = ((resolvedUser as any)?.role === 'Agent' || (resolvedUser as any)?.affiliateId != null) ? 'agent-workspace' : 'dashboard';
+                const destPage = ((resolvedUser as any)?.role === 'Agent' || (resolvedUser as any)?.affiliateId != null) ? 'affiliate-program' : 'dashboard';
                 setCurrentPage(destPage);
                 logAction('User Login', `Session opened successfully from ${ipAddress} (server fallback).`);
-                await completePostLoginBoot();
+                await completePostLoginBoot(destPage);
                 serverLoginWorked = true;
               }
             }
@@ -8669,10 +8713,10 @@ try {
             } catch {}
             setLoginUsername('');
             setLoginPassword('');
-            const destPage = ((adminResolvedUser as any)?.role === 'Agent' || (adminResolvedUser as any)?.affiliateId != null) ? 'agent-workspace' : 'dashboard';
+            const destPage = ((adminResolvedUser as any)?.role === 'Agent' || (adminResolvedUser as any)?.affiliateId != null) ? 'affiliate-program' : 'dashboard';
             setCurrentPage(destPage);
             logAction('User Login', `Session opened successfully from ${ipAddress} (server recreate).`);
-            await completePostLoginBoot();
+            await completePostLoginBoot(destPage);
             recreateServerAuth = true;
           }
         }
@@ -8802,7 +8846,7 @@ try {
           firstLogin: false,
           affiliateId: matchedAffiliate.id,
           referralCode: matchedAffiliate.referralCode,
-          allowedPages: ['agent-workspace', 'agent_workspace', 'marketplace', 'profile']
+          allowedPages: ['affiliate-program', 'agent-workspace', 'agent_workspace', 'marketplace', 'profile']
         };
 
         const successLog: SecurityLog = {
@@ -8834,10 +8878,10 @@ try {
 
         setLoginUsername('');
         setLoginPassword('');
-        setCurrentPage('agent-workspace');
+        setCurrentPage('affiliate-program');
         logAction('Agent Login', `Wakala ${agentUser.name} (${agentUser.referralCode}) ameingia kwenye mfumo kutoka ${ipAddress}.`);
         toast.success(`${t('Karibu Wakala')}, ${agentUser.name}!`);
-        await completePostLoginBoot();
+        await completePostLoginBoot('affiliate-program');
         return;
       }
 
@@ -10924,10 +10968,11 @@ try {
     const minWdr = settings.affiliateMinWithdrawal ?? 10000;
     if (amount < minWdr) return { ok: false, error: t('Minimum withdrawal is') + ` ${minWdr.toLocaleString()} TZS.` };
     const nowIso = new Date().toISOString();
+    const resolvedCompanyId = options?.companyId || aff.companyId || (currentUser?.companyId ? Number(currentUser.companyId) : undefined);
     const newWithdrawal: AffiliateWithdrawal = {
       id: Date.now(),
       affiliateId,
-      companyId: options?.companyId || aff.companyId,
+      companyId: resolvedCompanyId,
       amount: Math.round(amount * 100) / 100,
       phoneNumber: phoneNumber.trim(),
       method: options?.method || 'mpesa',
@@ -10944,7 +10989,11 @@ try {
     return { ok: true, withdrawal: newWithdrawal };
   };
 
-  const decideAffiliateWithdrawal = (withdrawalId: number, decision: 'approved' | 'rejected'): void => {
+  const decideAffiliateWithdrawal = (
+    withdrawalId: number,
+    decision: 'approved' | 'rejected',
+    extra?: { paymentReference?: string; adminNote?: string } | string
+  ): void => {
     const nowIso = new Date().toISOString();
     const target = (affiliateWithdrawals || []).find(w => w.id === withdrawalId);
     if (!target || target.status !== 'pending') return;
@@ -10960,11 +11009,21 @@ try {
         ? { ...a, totalWithdrawn: Math.round((a.totalWithdrawn + target.amount) * 100) / 100 }
         : a);
     }
+    const adminNote = typeof extra === 'string' ? extra : extra?.adminNote;
+    const paymentRef = typeof extra === 'object' ? extra?.paymentReference : undefined;
     const next = (affiliateWithdrawals || []).map(w => w.id === withdrawalId
-      ? { ...w, status: decision, approvedAt: decision === 'approved' ? nowIso : w.approvedAt, decidedBy: currentUser?.username }
+      ? {
+          ...w,
+          status: decision,
+          approvedAt: decision === 'approved' ? nowIso : w.approvedAt,
+          decidedBy: currentUser?.username,
+          paymentReference: paymentRef || w.paymentReference,
+          adminNote: adminNote || w.adminNote
+        }
       : w);
     saveAllData({ affiliateWithdrawals: next, affiliates: nextAffiliates });
-    logAction('Affiliate Withdrawal ' + (decision === 'approved' ? 'Approved' : 'Rejected'), `Affiliate withdrawal #${withdrawalId} (TZS ${target.amount.toLocaleString()}) ${decision}.`);
+    logAction('Affiliate Withdrawal ' + (decision === 'approved' ? 'Approved' : 'Rejected'), `Affiliate withdrawal #${withdrawalId} (TZS ${target.amount.toLocaleString()}) ${decision}.${paymentRef ? ` Ref: ${paymentRef}` : ''}`);
+    toast.success(decision === 'approved' ? t('Malipo ya wakala yameidhinishwa kikamilifu!') : t('Ombi la malipo limekataliwa na salio limerudishwa kwa wakala.'));
   };
 
   const recordAffiliateClick = (affiliateId: number, url?: string): void => {
@@ -14906,7 +14965,7 @@ try {
 
     // AGENT WORKSPACE: Dedicated workspace for Company Wakala / Agents
     if (activeRole === 'Agent' || currentUser?.role === 'Agent' || (currentUser as any)?.affiliateId != null) {
-      return ['agent-workspace', 'agent_workspace', 'marketplace', 'profile'];
+      return ['affiliate-program', 'agent-workspace', 'agent_workspace', 'marketplace', 'profile'];
     }
 
     // ADMIN ACCOUNT GUARANTEE (Requirement 1):
@@ -16541,13 +16600,19 @@ try {
                           ) : (
                             <div className="w-[22px] shrink-0" />
                           )}
-                          <div className="w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center font-bold text-brand overflow-hidden border border-gray-200/65 flex-shrink-0">
-                            {p.imageUrl ? (
-                              <img src={p.imageUrl} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          <div className="relative w-10 h-10 rounded-lg bg-gray-100 flex items-center justify-center font-bold text-brand overflow-hidden border border-gray-200/65 flex-shrink-0">
+                            {p.imageUrl || (p.images && p.images[0]) ? (
+                              <img src={p.imageUrl || p.images![0]} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                             ) : (
                               'P'
                             )}
+                            {p.images && p.images.length > 1 && (
+                              <span className="absolute bottom-0 right-0 bg-black/75 text-white text-[8px] font-bold px-1 rounded-tl">
+                                +{p.images.length}
+                              </span>
+                            )}
                           </div>
+
                           <div>
                             <span className="font-bold text-gray-900 block">{p.name}</span>
                             <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
@@ -17819,6 +17884,50 @@ try {
 
   // --- RENDERS MAIN BODY ACCORDING TO NAV PAGE ---
   const renderMainContent = () => {
+    // Guaranteed Agent Guard: Agents never access operational dashboard, always their workspace in AffiliateProgramPanel
+    if (currentUser && (currentUser.role === 'Agent' || (currentUser as any)?.affiliateId != null)) {
+      if (currentPage === 'profile') {
+        return (
+          <PanelErrorBoundary panelName="Profile">
+            <Profile
+              currentUser={currentUser}
+              onUpdateCurrentUser={(updated) => setCurrentUser(updated)}
+              translate={t}
+              onLogout={handleLogout}
+              saveAllData={saveAllData}
+              users={users}
+              logAction={logAction}
+              onPasswordChange={handleProfilePasswordChange}
+              onOpenGame={() => {}}
+            />
+          </PanelErrorBoundary>
+        );
+      }
+      return (
+        <AffiliateProgramPanel
+          user={currentUser}
+          currentCompanyId={currentCompanyId != null ? currentCompanyId : currentUser?.companyId}
+          affiliate={currentUser ? getOrCreateAffiliateForUser(currentUser) : undefined}
+          affiliates={affiliates}
+          clicks={affiliateClicks}
+          sales={affiliateSales}
+          withdrawals={affiliateWithdrawals}
+          companies={companies}
+          commissionPercent={settings.affiliateCommissionPercent ?? defaultAffiliateCommissionPercent}
+          translate={t}
+          onRequestWithdrawal={requestAffiliateWithdrawal}
+          onCreateAgent={createAffiliateAgent}
+          onUpdateAgent={updateAffiliateAgent}
+          onDeleteAgent={deleteAffiliateAgent}
+          onDecideWithdrawal={decideAffiliateWithdrawal}
+          orders={marketplaceOrders}
+          activeCurrency={activeCurrency}
+          activeExchangeRate={activeExchangeRate}
+          minWithdrawal={settings.affiliateMinWithdrawal ?? 10000}
+        />
+      );
+    }
+
     switch (currentPage) {
       case 'dashboard': return renderDashboard();
       case 'stock-items': return renderStockItems();
@@ -18280,6 +18389,8 @@ try {
           />
         );
       case 'affiliate-program':
+      case 'agent-workspace':
+      case 'agent_workspace':
         return (
           <AffiliateProgramPanel
             user={currentUser}
@@ -18297,39 +18408,12 @@ try {
             onUpdateAgent={updateAffiliateAgent}
             onDeleteAgent={deleteAffiliateAgent}
             onDecideWithdrawal={decideAffiliateWithdrawal}
+            orders={marketplaceOrders}
+            activeCurrency={activeCurrency}
+            activeExchangeRate={activeExchangeRate}
+            minWithdrawal={settings.affiliateMinWithdrawal ?? 10000}
           />
         );
-      case 'agent-workspace':
-      case 'agent_workspace': {
-        const agentAff = (affiliates || []).find(a =>
-          (currentUser?.affiliateId && a.id === currentUser.affiliateId) ||
-          (currentUser?.referralCode && safeLower(a.referralCode) === safeLower(currentUser.referralCode)) ||
-          a.userId === currentUser?.id ||
-          safeLower(a.referralCode) === safeLower(currentUser?.username || '') ||
-          (a.phone && (currentUser?.phone ? a.phone.replace(/\s+/g, '') === currentUser.phone.replace(/\s+/g, '') : false))
-        ) || (currentUser ? getOrCreateAffiliateForUser(currentUser) : undefined);
-
-        const agentComp = companies.find(c => sameId(c.id, agentAff?.companyId || currentUser?.companyId || currentCompanyId)) || companies[0];
-
-        return (
-          <PanelErrorBoundary panelName="Agent Performance Workspace">
-            <AgentPerformancePortal
-              currentUser={currentUser}
-              affiliate={agentAff}
-              company={agentComp}
-              affiliateSales={affiliateSales || []}
-              affiliateWithdrawals={affiliateWithdrawals || []}
-              affiliateClicks={affiliateClicks || []}
-              orders={marketplaceOrders || []}
-              minWithdrawal={settings.affiliateMinWithdrawal ?? 10000}
-              activeCurrency={activeCurrency}
-              activeExchangeRate={activeExchangeRate}
-              onRequestWithdrawal={requestAffiliateWithdrawal}
-              t={t}
-            />
-          </PanelErrorBoundary>
-        );
-      }
       case 'marketplace-orders':
         return (
           <MarketplaceOrdersPanel
@@ -20203,6 +20287,11 @@ try {
                   }
                 });
 
+                const resolvedImages = productImages.length > 0
+                  ? productImages.slice(0, 5)
+                  : (imageUrl ? [imageUrl] : []);
+                const primaryImage = resolvedImages[0] || imageUrl || '';
+
                 if (editingStockItem) {
                   // ISOLATED MICRO-UPDATE (PATCH-style): commit ONLY this record via
                   // mutateCollectionRecord (atomic functional setState + per-record
@@ -20220,7 +20309,10 @@ try {
                     company_id: editingStockItem.companyId || (editingStockItem as any).company_id || targetProductCompId,
                     name, code, category: cat, unit,
                     purchasePrice: finalPPrice, retailPrice: finalRPrice, wholesalePrice: finalWPrice, partnerPrice: finalPartnerPrice,
-                    lowStockQty: lowLimit, imageUrl, expiryDate: expiryDate || undefined,
+                    lowStockQty: lowLimit,
+                    imageUrl: primaryImage,
+                    images: resolvedImages,
+                    expiryDate: expiryDate || undefined,
                     expiryDates: Object.keys(expiryDates).length > 0 ? expiryDates : undefined,
                     useSubUnitPricing,
                     subUnitName,
@@ -20251,7 +20343,9 @@ try {
                     name, code, category: cat, unit,
                     stock: pStockObj,
                     purchasePrice: finalPPrice, retailPrice: finalRPrice, wholesalePrice: finalWPrice, partnerPrice: finalPartnerPrice,
-                    lowStockQty: lowLimit, imageUrl,
+                    lowStockQty: lowLimit,
+                    imageUrl: primaryImage,
+                    images: resolvedImages,
                     expiryDate: expiryDate || undefined,
                     expiryDates: Object.keys(expiryDates).length > 0 ? expiryDates : undefined,
                     useSubUnitPricing,
@@ -20272,7 +20366,9 @@ try {
                 }
                 setShowStockModal(false);
                 setProductImagePreview('');
+                setProductImages([]);
                 setProductImageCompressionStats(null);
+
               }}
               className="p-5 space-y-4 overflow-y-auto"
             >
@@ -20286,9 +20382,12 @@ try {
                   className="w-full px-3 py-2 border rounded-lg text-sm bg-gray-50 outline-none"
                 />
               </div>
-              <div className="space-y-1.5">
+              <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-semibold text-gray-700">{t('Product Image (URL, Upload, or Camera)')}</label>
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-xs font-semibold text-gray-700">{t('Product Images Gallery (Up to 5 Photos)')}</label>
+                    <span className="text-[11px] font-bold text-gray-400">({productImages.length}/5)</span>
+                  </div>
                   {productImageCompressionStats && (
                     <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                       <Sparkles className="w-3 h-3 text-emerald-500" />
@@ -20302,22 +20401,83 @@ try {
                     </span>
                   )}
                 </div>
+
+                {/* Multi-Image Preview Grid */}
+                {productImages.length > 0 && (
+                  <div className="grid grid-cols-5 gap-2 p-2 bg-gray-50 border rounded-xl">
+                    {productImages.map((imgUrl, idx) => (
+                      <div key={idx} className="relative group rounded-lg overflow-hidden border border-gray-200 bg-white aspect-square flex items-center justify-center shadow-2xs">
+                        <img
+                          src={imgUrl}
+                          alt={`Product photo ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                          onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
+                        />
+                        {/* Primary Badge */}
+                        {idx === 0 ? (
+                          <span className="absolute top-1 left-1 bg-brand text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow-xs">
+                            {t('Primary')}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Reorder this image to index 0 (make primary)
+                              const next = [imgUrl, ...productImages.filter((_, i) => i !== idx)];
+                              setProductImages(next);
+                              setProductImagePreview(next[0] || '');
+                            }}
+                            className="absolute top-1 left-1 opacity-0 group-hover:opacity-100 bg-black/60 hover:bg-brand text-white text-[9px] font-semibold px-1.5 py-0.5 rounded transition shadow-xs"
+                            title={t('Set as Primary Cover')}
+                          >
+                            {t('Make Cover')}
+                          </button>
+                        )}
+                        {/* Delete Button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = productImages.filter((_, i) => i !== idx);
+                            setProductImages(next);
+                            setProductImagePreview(next[0] || '');
+                          }}
+                          className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 bg-red-600 hover:bg-red-700 text-white p-1 rounded-full shadow-xs transition"
+                          title={t('Remove image')}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                    {/* Placeholder slots for remaining images */}
+                    {Array.from({ length: 5 - productImages.length }).map((_, i) => (
+                      <div key={`empty_${i}`} className="border-2 border-dashed border-gray-200 rounded-lg aspect-square flex flex-col items-center justify-center text-gray-300 text-[10px]">
+                        <span>+{productImages.length + i + 1}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Upload & Add Controls */}
                 <div className="flex flex-wrap sm:flex-nowrap gap-2 items-center">
                   <input
                     type="text"
                     name="imageUrl"
                     id="modal-image-url-input"
-                    placeholder="https://images.unsplash.com/... or snapshot"
+                    placeholder="https://... au bandika picha hapa"
                     value={productImagePreview}
                     onChange={(e) => {
-                      setProductImagePreview(e.target.value);
+                      const val = e.target.value;
+                      setProductImagePreview(val);
+                      if (val.trim() && !productImages.includes(val.trim()) && productImages.length < 5) {
+                        setProductImages([...productImages, val.trim()]);
+                      }
                       setProductImageCompressionStats(null);
                     }}
                     className="flex-1 min-w-[160px] px-3 py-2 border rounded-lg text-sm bg-gray-50 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500"
                   />
                   <button
                     type="button"
-                    disabled={productImageCompressing}
+                    disabled={productImageCompressing || productImages.length >= 5}
                     onClick={async () => {
                       try {
                         setShowCameraCaptureModal(true);
@@ -20335,36 +20495,38 @@ try {
                         setShowCameraCaptureModal(false);
                       }
                     }}
-                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shadow-xs"
+                    className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shadow-xs cursor-pointer"
                   >
                     <Camera className="w-3.5 h-3.5 text-white" />
                     {t('Camera')}
                   </button>
-                  <label className={`bg-gray-100 hover:bg-gray-200 border cursor-pointer text-gray-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition whitespace-nowrap ${productImageCompressing ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <label className={`bg-gray-100 hover:bg-gray-200 border cursor-pointer text-gray-700 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition whitespace-nowrap ${productImageCompressing || productImages.length >= 5 ? 'opacity-50 pointer-events-none' : ''}`}>
                     {productImageCompressing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
-                    {t('Upload')}
+                    {t('Upload Photos')}
                     <input
                       type="file"
                       accept="image/*"
+                      multiple
                       className="hidden"
-                      disabled={productImageCompressing}
+                      disabled={productImageCompressing || productImages.length >= 5}
                       onChange={async (e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
+                        const files = Array.from(e.target.files || []) as File[];
+                        if (files.length > 0) {
+
                           setProductImageCompressing(true);
                           try {
-                            const res = await compressImageFile(file, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 });
-                            setProductImagePreview(res.dataUrl);
-                            const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
-                            if (input) {
-                              input.value = res.dataUrl;
+                            const availableSlots = 5 - productImages.length;
+                            const filesToProcess = files.slice(0, availableSlots);
+                            const newCompressed: string[] = [];
+                            for (const file of filesToProcess) {
+                              const res = await compressImageFile(file, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 });
+                              newCompressed.push(res.dataUrl);
                             }
-                            setProductImageCompressionStats({
-                              original: formatByteSize(res.originalBytes),
-                              compressed: formatByteSize(res.compressedBytes),
-                              savings: res.savingsPercent,
-                            });
-                            toast.success(`${t('Photo compressed')} (${formatByteSize(res.originalBytes)} → ${formatByteSize(res.compressedBytes)}, -${res.savingsPercent}%)`);
+
+                            const updated = [...productImages, ...newCompressed].slice(0, 5);
+                            setProductImages(updated);
+                            setProductImagePreview(updated[0] || '');
+                            toast.success(`${newCompressed.length} ${t('picha zimebanwa na kuongezwa kikamilifu!')}`);
                           } catch (err) {
                             toast.error(t('Failed to compress image file'));
                           } finally {
@@ -20375,31 +20537,24 @@ try {
                       }}
                     />
                   </label>
-                  <label className={`bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 cursor-pointer px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition whitespace-nowrap sm:hidden ${productImageCompressing ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <label className={`bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 cursor-pointer px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition whitespace-nowrap sm:hidden ${productImageCompressing || productImages.length >= 5 ? 'opacity-50 pointer-events-none' : ''}`}>
                     📸 {t('Snap')}
                     <input
                       type="file"
                       accept="image/*"
                       capture="environment"
                       className="hidden"
-                      disabled={productImageCompressing}
+                      disabled={productImageCompressing || productImages.length >= 5}
                       onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (file) {
                           setProductImageCompressing(true);
                           try {
                             const res = await compressImageFile(file, { maxWidth: 1024, maxHeight: 1024, quality: 0.78 });
-                            setProductImagePreview(res.dataUrl);
-                            const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
-                            if (input) {
-                              input.value = res.dataUrl;
-                            }
-                            setProductImageCompressionStats({
-                              original: formatByteSize(res.originalBytes),
-                              compressed: formatByteSize(res.compressedBytes),
-                              savings: res.savingsPercent,
-                            });
-                            toast.success(`${t('Photo compressed')} (${formatByteSize(res.originalBytes)} → ${formatByteSize(res.compressedBytes)}, -${res.savingsPercent}%)`);
+                            const updated = [...productImages, res.dataUrl].slice(0, 5);
+                            setProductImages(updated);
+                            setProductImagePreview(updated[0] || '');
+                            toast.success(`${t('Photo compressed')} (${formatByteSize(res.originalBytes)} → ${formatByteSize(res.compressedBytes)})`);
                           } catch (err) {
                             toast.error(t('Failed to compress image file'));
                           } finally {
@@ -20411,41 +20566,8 @@ try {
                     />
                   </label>
                 </div>
-
-                {productImagePreview && (
-                  <div className="flex items-center gap-3 p-2 bg-gray-50 border rounded-lg">
-                    <img
-                      src={productImagePreview}
-                      alt="Product preview"
-                      className="w-12 h-12 rounded object-cover border bg-white shrink-0"
-                      onError={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs font-bold text-gray-800 truncate">
-                        {productImagePreview.startsWith('data:') ? t('Attached Image (Compressed)') : t('Image URL Linked')}
-                      </p>
-                      <p className="text-[10px] text-gray-500 truncate">
-                        {productImagePreview.startsWith('data:') 
-                          ? `${formatByteSize(Math.round(productImagePreview.length * 0.75))} base64 payload`
-                          : productImagePreview}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setProductImagePreview('');
-                        setProductImageCompressionStats(null);
-                        const input = document.getElementById('modal-image-url-input') as HTMLInputElement;
-                        if (input) input.value = '';
-                      }}
-                      className="text-xs text-red-600 hover:text-red-700 hover:bg-red-50 p-1.5 rounded transition"
-                      title={t('Remove Image')}
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
               </div>
+
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-gray-700">SKU / Barcode</label>
                 <input

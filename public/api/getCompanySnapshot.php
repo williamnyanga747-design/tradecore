@@ -80,6 +80,56 @@ try {
                 }));
             }
 
+            // Filter scoped stock items
+            $stockList = $data['stockItems'] ?? [];
+            if (is_array($stockList)) {
+                $stockItems = array_values(array_filter($stockList, function($s) use ($companyId) {
+                    return $companyId === '' || (string)($s['company_id'] ?? $s['companyId'] ?? '') === $companyId || !isset($s['company_id']);
+                }));
+            }
+
+            // Filter scoped sales orders
+            $soList = $data['salesOrders'] ?? [];
+            if (is_array($soList)) {
+                $salesOrders = array_values(array_filter($soList, function($s) use ($companyId) {
+                    return $companyId === '' || (string)($s['company_id'] ?? $s['companyId'] ?? '') === $companyId || !isset($s['company_id']);
+                }));
+            }
+
+            // Filter scoped purchase orders
+            $poList = $data['purchaseOrders'] ?? [];
+            if (is_array($poList)) {
+                $purchaseOrders = array_values(array_filter($poList, function($p) use ($companyId) {
+                    return $companyId === '' || (string)($p['company_id'] ?? $p['companyId'] ?? '') === $companyId || !isset($p['company_id']);
+                }));
+            }
+
+            // Filter scoped expenses
+            $expList = $data['expenses'] ?? [];
+            if (is_array($expList)) {
+                $expenses = array_values(array_filter($expList, function($e) use ($companyId) {
+                    return $companyId === '' || (string)($e['company_id'] ?? $e['companyId'] ?? '') === $companyId || !isset($e['company_id']);
+                }));
+            }
+
+            // Filter scoped customers
+            $custList = $data['customers'] ?? [];
+            if (is_array($custList)) {
+                $customers = array_values(array_filter($custList, function($c) use ($companyId) {
+                    return $companyId === '' || (string)($c['company_id'] ?? $c['companyId'] ?? '') === $companyId || !isset($c['company_id']);
+                }));
+            }
+
+            // Filter scoped suppliers
+            $suppList = $data['suppliers'] ?? [];
+            if (is_array($suppList)) {
+                $suppliers = array_values(array_filter($suppList, function($s) use ($companyId) {
+                    return $companyId === '' || (string)($s['company_id'] ?? $s['companyId'] ?? '') === $companyId || !isset($s['company_id']);
+                }));
+            }
+
+            $taxes = $data['taxes'] ?? [];
+
             $cList = $data['categories'] ?? [];
             if (is_array($cList)) {
                 $categories = $cList;
@@ -112,8 +162,16 @@ try {
         'branches' => $branches,
         'stores' => $stores,
         'products' => $products,
+        'marketplaceProducts' => $products,
         'categories' => $categories,
         'users' => $users,
+        'stockItems' => $stockItems ?? [],
+        'salesOrders' => $salesOrders ?? [],
+        'purchaseOrders' => $purchaseOrders ?? [],
+        'expenses' => $expenses ?? [],
+        'customers' => $customers ?? [],
+        'suppliers' => $suppliers ?? [],
+        'taxes' => $taxes ?? [],
         'server_ts' => $now
     ], JSON_UNESCAPED_UNICODE);
 } catch (Throwable $e) {

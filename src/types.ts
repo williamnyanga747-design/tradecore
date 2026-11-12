@@ -402,7 +402,9 @@ export interface StockItem {
   lowStockQty: number;
   unit?: string;
   imageUrl?: string;
+  images?: string[]; // Up to 5 product images gallery
   expiryDate?: string; // Optional Expiry Date field (YYYY-MM-DD)
+
   expiryDates?: { [storeId: number]: string }; // Store-specific expiry dates (storeId -> YYYY-MM-DD)
   batches?: { [storeId: number]: InventoryBatch[] }; // FIFO Batch Tracking per store
   useSubUnitPricing?: boolean;
@@ -659,7 +661,11 @@ export interface Settings {
   whatsappBot?: WhatsappBotSettings;
   loyalty?: LoyaltySettings;
   manufacturing?: ManufacturingSettings;
+  allowAdminDataRecovery?: boolean;
+  companyBackupAccess?: Record<string | number, boolean>; // Super Admin grants per-company backup access
 }
+
+
 
 export interface SubscriptionPlan {
   id: number;
@@ -867,6 +873,8 @@ export interface AffiliateWithdrawal {
   requestedAt: string;
   approvedAt?: string;
   decidedBy?: string;
+  paymentReference?: string;
+  adminNote?: string;
 }
 
 /** One Swahili voice-search query (TAFTA KWA SAUTI). */

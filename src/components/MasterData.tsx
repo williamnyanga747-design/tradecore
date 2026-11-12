@@ -5,7 +5,7 @@ import {
 import { defaultTaxes } from '../initialData';
 import {
   Plus, Pencil, Trash2, X, Store as StoreIcon, Database, RefreshCw, FileText, MessageSquare,
-  Search, Loader2, Globe, Building2, CheckCircle2, AlertCircle, Copy, Lock, ShieldCheck
+  Search, Loader2, Globe, Building2, CheckCircle2, AlertCircle, Copy, Lock, ShieldCheck, Download, Upload, Shield, Save
 } from 'lucide-react';
 import { formatMoney } from '../utils/format';
 import { ConfirmActionModal } from './ConfirmActionModal';
@@ -2134,7 +2134,358 @@ export default function MasterData({
             )}
           </div>
 
+          {/* Super Admin Per-Company Backup Access Delegation Manager */}
+          {isSuperAdmin && (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-5 space-y-3">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-2">
+                <div>
+                  <h4 className="font-bold text-gray-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                    🏢 {t('Usimamizi wa Ruhusa za Backup kwa Kila Kampuni')}
+                  </h4>
+                  <p className="text-[11px] text-gray-500">
+                    {t('Washa au zima uwezo wa Admin wa kila kampuni kupakua na kurejesha backup ya kampuni yake pekee.')}
+                  </p>
+                </div>
+                <span className="text-xs font-bold text-brand bg-brand/10 px-2 py-0.5 rounded">
+                  {companies.filter(c => !c.isDeleted).length} {t('Companies')}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1">
+                {companies.filter(c => !c.isDeleted).map((comp) => {
+                  const isEnabled = Boolean(
+                    settings?.companyBackupAccess?.[comp.id] || settings?.companyBackupAccess?.[String(comp.id)]
+                  );
+                  return (
+                    <div key={comp.id} className="flex items-center justify-between p-2.5 rounded-lg border border-gray-100 hover:border-blue-200 bg-gray-50/50">
+                      <div className="min-w-0 pr-2">
+                        <span className="font-bold text-xs text-gray-800 block truncate">{comp.name}</span>
+                        <span className="text-[10px] text-gray-500 block truncate">{(comp as any).city || comp.region || `ID: ${comp.id}`}</span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const currentAccess = { ...(settings?.companyBackupAccess || {}) };
+                          if (isEnabled) {
+                            delete currentAccess[comp.id];
+                            delete currentAccess[String(comp.id)];
+                          } else {
+                            currentAccess[comp.id] = true;
+                            currentAccess[String(comp.id)] = true;
+                          }
+                          const updated = {
+                            ...settings,
+                            companyBackupAccess: currentAccess
+                          };
+                          saveAllData({ settings: updated });
+                          toast.success(isEnabled
+                            ? t(`Ufikiaji wa Backup umezuiwa kwa: ${comp.name}`)
+                            : t(`Ufikiaji wa Backup umeruhusiwa kwa: ${comp.name}`)
+                          );
+                          logAction?.('Toggled Company Backup Access', `${isEnabled ? 'Revoked' : 'Granted'} backup privileges for ${comp.name} (${comp.id})`);
+                        }}
+                        className={`text-xs font-bold px-3 py-1 rounded-md transition cursor-pointer shrink-0 ${
+                          isEnabled
+                            ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                            : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                        }`}
+                      >
+                        {isEnabled ? t('Imeruhusiwa') : t('Imezuiwa')}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+
+          {/* Enterprise Backup & Resilience Center */}
+          {(() => {
+            const effectiveCompanyId = currentUser?.companyId || currentCompanyId;
+            const hasCompanyBackupAccess = isSuperAdmin || Boolean(
+              effectiveCompanyId && (settings?.companyBackupAccess?.[effectiveCompanyId] || settings?.companyBackupAccess?.[String(effectiveCompanyId)])
+            );
+
+            if (!hasCompanyBackupAccess) {
+              return (
+                <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-5 text-center space-y-2">
+                  <div className="w-10 h-10 bg-amber-100 text-amber-700 rounded-full flex items-center justify-center mx-auto">
+                    <Lock className="w-5 h-5" />
+                  </div>
+                  <h4 className="font-bold text-gray-900 text-sm">{t('Enterprise Backup Center Is Restricted')}</h4>
+                  <p className="text-xs text-gray-600 max-w-lg mx-auto">
+                    {t('Kituo hiki cha Hifadhi na Uokoaji wa Data kinaruhusiwa kwa Super Admin pekee, au Admin aliyepewa kibali maalum cha kampuni yake na Super Admin katika Mipangilio.')}
+                  </p>
+                </div>
+              );
+            }
+
+            // Strictly filter data to current company if user is not Super Admin
+            const scopedStock = isSuperAdmin
+              ? stockItems
+              : stockItems.filter(s => sameId(s.companyId, effectiveCompanyId));
+            const scopedPurchases = isSuperAdmin
+              ? purchaseOrders
+              : purchaseOrders.filter(po => {
+                  const s = stores.find(st => st.id === po.storeId);
+                  return sameId(s?.companyId, effectiveCompanyId);
+                });
+            const scopedSales = isSuperAdmin
+              ? salesOrders
+              : salesOrders.filter(so => {
+                  const s = stores.find(st => st.id === so.storeId);
+                  return sameId(s?.companyId, effectiveCompanyId);
+                });
+            const scopedCustomers = isSuperAdmin
+              ? customers
+              : customers.filter(c => sameId((c as any).companyId, effectiveCompanyId));
+            const scopedSuppliers = isSuperAdmin
+              ? suppliers
+              : suppliers.filter(s => sameId((s as any).companyId, effectiveCompanyId));
+            const scopedCompanies = isSuperAdmin
+              ? companies
+              : companies.filter(c => sameId(c.id, effectiveCompanyId));
+            const scopedBranches = isSuperAdmin
+              ? branches
+              : branches.filter(b => sameId(b.companyId, effectiveCompanyId));
+            const scopedStores = isSuperAdmin
+              ? stores
+              : stores.filter(s => sameId(s.companyId, effectiveCompanyId));
+            const scopedCategories = isSuperAdmin
+              ? categories
+              : categories.filter(cat => cat.startsWith(`co_${effectiveCompanyId}:`) || !cat.includes(':'));
+
+            return (
+              <div className="bg-white rounded-xl border border-blue-200 shadow-sm p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 bg-blue-50 text-blue-700 rounded-lg">
+                      <ShieldCheck className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="font-bold text-gray-900 text-sm">
+                          {isSuperAdmin
+                            ? t('Enterprise Data Protection & Backup Center (Global Super Admin)')
+                            : t('Enterprise Data Protection & Backup Center (Company Scoped)')}
+                        </h4>
+                        {!isSuperAdmin && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 bg-blue-100 text-blue-800 rounded">
+                            {companies.find(c => sameId(c.id, effectiveCompanyId))?.name || `Company #${effectiveCompanyId}`}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        {isSuperAdmin
+                          ? t('Ulinzi thabiti wa data ya biashara zote: Pakua au rejesha data ya mfumo mzima kwa usalama.')
+                          : t('Ulinzi thabiti wa kampuni yako pekee: Hifadhi na rudisha bidhaa, mauzo na ununuzi wa kampuni yako bila kuathiri kampuni nyingine.')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs font-semibold px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 w-fit">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    {t('Multi-Tenant Row Isolation Active')}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* 1. Pakua Backup ya JSON */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        const fullBackup = {
+                          version: '2.0',
+                          scope: isSuperAdmin ? 'global' : `company_${effectiveCompanyId}`,
+                          companyId: isSuperAdmin ? undefined : effectiveCompanyId,
+                          exportedAt: new Date().toISOString(),
+                          companies: scopedCompanies,
+                          branches: scopedBranches,
+                          stores: scopedStores,
+                          categories: scopedCategories,
+                          stockItems: scopedStock,
+                          purchaseOrders: scopedPurchases,
+                          salesOrders: scopedSales,
+                          expenses: (window as any).TRADECORE_LAST_STATE?.expenses || [],
+                          customers: scopedCustomers,
+                          suppliers: scopedSuppliers,
+                          taxes
+                        };
+                        const blob = new Blob([JSON.stringify(fullBackup, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        const dateStr = new Date().toISOString().split('T')[0];
+                        const filenamePrefix = isSuperAdmin ? 'tradecore_global_backup' : `tradecore_company_${effectiveCompanyId}_backup`;
+                        a.download = `${filenamePrefix}_${dateStr}.json`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        toast.success(t('Backup ya biashara imepakuliwa kikamilifu!'));
+                        logAction?.('Data Backup Downloaded', `Exported ${isSuperAdmin ? 'global' : `company ${effectiveCompanyId}`} backup json`);
+                      } catch (e: any) {
+                        toast.error(t('Hitilafu ya kupakua backup: ') + (e?.message || 'Error'));
+                      }
+                    }}
+                    className="flex items-center justify-center gap-2 px-4 py-3 bg-brand text-white font-bold text-xs rounded-xl hover:bg-brand-dark transition shadow-xs cursor-pointer active:scale-95"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>{isSuperAdmin ? t('Pakua Backup ya Mfumo Mzima (JSON)') : t('Pakua Backup ya Kampuni Yangu (JSON)')}</span>
+                  </button>
+
+                  {/* 2. Rejesha Kutoka Faili la JSON */}
+                  <label className="flex items-center justify-center gap-2 px-4 py-3 bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold text-xs rounded-xl hover:bg-emerald-100 transition shadow-xs cursor-pointer active:scale-95">
+                    <Upload className="w-4 h-4" />
+                    <span>{t('Rejesha Data Kutoka Faili')}</span>
+                    <input
+                      type="file"
+                      accept=".json"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                          try {
+                            const content = event.target?.result as string;
+                            const parsed = JSON.parse(content);
+                            if (!parsed || typeof parsed !== 'object') {
+                              throw new Error('Faili halina muundo sahihi wa data');
+                            }
+
+                            // TENANT ROW ISOLATION GUARD:
+                            // If user is a Company Admin, force and rewrite every restored record
+                            // to belong strictly to their authorized companyId. Rejects foreign IDs.
+                            const payloadToSave: any = {};
+                            if (Array.isArray(parsed.stockItems) && parsed.stockItems.length > 0) {
+                              payloadToSave.stockItems = isSuperAdmin
+                                ? parsed.stockItems
+                                : parsed.stockItems.map((item: any) => ({
+                                    ...item,
+                                    companyId: effectiveCompanyId,
+                                    company_id: effectiveCompanyId
+                                  }));
+                            }
+                            if (Array.isArray(parsed.purchaseOrders) && parsed.purchaseOrders.length > 0) {
+                              payloadToSave.purchaseOrders = isSuperAdmin
+                                ? parsed.purchaseOrders
+                                : parsed.purchaseOrders.map((po: any) => ({
+                                    ...po,
+                                    companyId: effectiveCompanyId,
+                                    company_id: effectiveCompanyId
+                                  }));
+                            }
+                            if (Array.isArray(parsed.salesOrders) && parsed.salesOrders.length > 0) {
+                              payloadToSave.salesOrders = isSuperAdmin
+                                ? parsed.salesOrders
+                                : parsed.salesOrders.map((so: any) => ({
+                                    ...so,
+                                    companyId: effectiveCompanyId,
+                                    company_id: effectiveCompanyId
+                                  }));
+                            }
+                            if (Array.isArray(parsed.customers) && parsed.customers.length > 0) {
+                              payloadToSave.customers = isSuperAdmin
+                                ? parsed.customers
+                                : parsed.customers.map((c: any) => ({ ...c, companyId: effectiveCompanyId }));
+                            }
+                            if (Array.isArray(parsed.suppliers) && parsed.suppliers.length > 0) {
+                              payloadToSave.suppliers = isSuperAdmin
+                                ? parsed.suppliers
+                                : parsed.suppliers.map((s: any) => ({ ...s, companyId: effectiveCompanyId }));
+                            }
+                            if (Array.isArray(parsed.categories) && parsed.categories.length > 0) {
+                              payloadToSave.categories = isSuperAdmin
+                                ? parsed.categories
+                                : parsed.categories.map((cat: any) =>
+                                    typeof cat === 'string' && !cat.startsWith(`co_${effectiveCompanyId}:`)
+                                      ? `co_${effectiveCompanyId}:${cleanCategoryName(cat)}`
+                                      : cat
+                                  );
+                            }
+                            if (Array.isArray(parsed.expenses) && parsed.expenses.length > 0) {
+                              payloadToSave.expenses = isSuperAdmin
+                                ? parsed.expenses
+                                : parsed.expenses.map((exp: any) => ({ ...exp, companyId: effectiveCompanyId }));
+                            }
+
+                            saveAllData(payloadToSave);
+                            toast.success(t('Data ya biashara imerejeshwa kikamilifu kwa usalama wa hali ya juu!'));
+                            logAction?.('Data Restored From File', `Restored ${Object.keys(payloadToSave).length} collections strictly isolated for company ${effectiveCompanyId}`);
+                          } catch (err: any) {
+                            toast.error(t('Hitilafu wakati wa kurejesha: ') + (err?.message || 'Muundo batili'));
+                          }
+                        };
+                        reader.readAsText(file);
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+
+                  {/* 3. Hamisha Bidhaa (Export Stock CSV) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      try {
+                        const activeStock = scopedStock.filter(s => !s.isDeleted);
+                        const header = ['ID', 'Code', 'Name', 'Category', 'TotalStock', 'PurchasePrice', 'RetailPrice', 'WholesalePrice', 'LowStockAlert'];
+                        const rows = activeStock.map(s => {
+                          const totalQty = s.stock ? Object.values(s.stock).reduce((acc: number, val: any) => acc + (Number(val) || 0), 0) : 0;
+                          return [
+                            s.id,
+                            `"${(s.code || '').replace(/"/g, '""')}"`,
+                            `"${(s.name || '').replace(/"/g, '""')}"`,
+                            `"${(s.category || '').replace(/"/g, '""')}"`,
+                            totalQty,
+                            s.purchasePrice ?? 0,
+                            s.retailPrice ?? 0,
+                            s.wholesalePrice ?? 0,
+                            s.lowStockQty ?? 0
+                          ];
+                        });
+                        const csvContent = [header.join(','), ...rows.map(r => r.join(','))].join('\n');
+                        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        const filename = isSuperAdmin
+                          ? `bidhaa_na_stoo_global_${new Date().toISOString().split('T')[0]}.csv`
+                          : `bidhaa_na_stoo_company_${effectiveCompanyId}_${new Date().toISOString().split('T')[0]}.csv`;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        toast.success(t('Ripoti ya bidhaa imepakuliwa kama CSV!'));
+                      } catch (e: any) {
+                        toast.error(t('Hitilafu ya CSV: ') + (e?.message || 'Error'));
+                      }
+                    }}
+                    className="flex items-center justify-center gap-2 px-4 py-3 bg-amber-50 text-amber-900 border border-amber-200 font-bold text-xs rounded-xl hover:bg-amber-100 transition shadow-xs cursor-pointer active:scale-95"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>{t('Hamisha Bidhaa (CSV)')}</span>
+                  </button>
+                </div>
+
+                <div className="bg-gray-50 rounded-lg p-3 text-[11px] text-gray-600 flex items-start gap-2 border border-gray-200">
+                  <Shield className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <span>
+                    <strong>{t('Kumbuka ya Usalama wa Data & Multi-Tenant Isolation:')}</strong> {isSuperAdmin
+                      ? t('Super Admin anadhibiti data yote ya mfumo mzima. Unaweza pia kuruhusu au kuzuia Admin wa kila kampuni kupakua/kurejesha data yake katika jopo la mipangilio hapa chini.')
+                      : t('Data zote za kampuni yako zimehifadhiwa kwa ulinzi wa hali ya juu (Row-Level Security). Huwezi kuona wala kuathiri data ya kampuni nyingine.')}
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
+
+
           {/* Companies Section */}
+
           {isSuperAdmin && (
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b bg-gray-50 flex items-center justify-between">

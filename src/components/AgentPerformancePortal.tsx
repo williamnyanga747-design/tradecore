@@ -25,7 +25,7 @@ interface AgentPerformancePortalProps {
     affiliateId: number,
     amount: number,
     phoneNumber: string,
-    extra?: { method?: string; accountName?: string; bankName?: string }
+    extra?: { method?: string; accountName?: string; bankName?: string; companyId?: number }
   ) => { ok: boolean; error?: string; withdrawal?: AffiliateWithdrawal };
   t: (text: string) => string;
 }
@@ -169,7 +169,8 @@ export default function AgentPerformancePortal({
         {
           method: payoutMethod,
           accountName: payoutMethod === 'bank' ? accountName.trim() : undefined,
-          bankName: payoutMethod === 'bank' ? `${bankName.trim()} - A/C: ${accountNumber.trim()}` : undefined
+          bankName: payoutMethod === 'bank' ? `${bankName.trim()} - A/C: ${accountNumber.trim()}` : undefined,
+          companyId: company?.id ? Number(company.id) : (affiliate?.companyId ? Number(affiliate.companyId) : (currentUser?.companyId ? Number(currentUser.companyId) : undefined))
         }
       );
 

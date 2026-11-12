@@ -37,7 +37,7 @@ interface AffiliateProgramPanelProps {
   }) => { ok: boolean; error?: string; agent?: Affiliate };
   onUpdateAgent?: (id: number, patch: Partial<Affiliate>) => void;
   onDeleteAgent?: (id: number) => void;
-  onDecideWithdrawal?: (withdrawalId: number, status: 'approved' | 'rejected', adminNote?: string) => void;
+  onDecideWithdrawal?: (withdrawalId: number, status: 'approved' | 'rejected', extra?: { paymentReference?: string; adminNote?: string } | string) => void;
   orders?: MarketplaceOrder[];
   activeCurrency?: string;
   activeExchangeRate?: number;
@@ -71,8 +71,14 @@ export default function AffiliateProgramPanel({
   const isAgent = user?.role === 'Agent' || (user as any)?.affiliateId != null;
   const activeCompanyId = currentCompanyId || user?.companyId;
 
-  const [activeTab, setActiveTab] = useState<'agents' | 'withdrawals' | 'my-link'>(isAdmin ? 'agents' : 'my-link');
+  const [activeTab, setActiveTab] = useState<'agents' | 'withdrawals' | 'performance' | 'my-link'>(isAdmin ? 'agents' : 'my-link');
   const [inspectingAgent, setInspectingAgent] = useState<Affiliate | null>(null);
+  const [processingPayout, setProcessingPayout] = useState<AffiliateWithdrawal | null>(null);
+  const [payoutPaymentRef, setPayoutPaymentRef] = useState('');
+  const [payoutAdminNote, setPayoutAdminNote] = useState('');
+  const [rejectingPayout, setRejectingPayout] = useState<AffiliateWithdrawal | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [payoutStatusFilter, setPayoutStatusFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
   const [amount, setAmount] = useState('');
   const [phone, setPhone] = useState('');
   const [error, setError] = useState('');
@@ -220,16 +226,29 @@ export default function AffiliateProgramPanel({
     if (isSuperAdmin || !activeCompanyId) return withdrawals || [];
     return (withdrawals || []).filter(w => {
       const ag = (affiliates || []).find(a => a.id === w.affiliateId);
-      return sameId(w.companyId, activeCompanyId) || sameId(ag?.companyId, activeCompanyId);
+      return sameId(w.companyId, activeCompanyId) || sameId(ag?.companyId, activeCompanyId) || !w.companyId || !ag?.companyId;
     });
   }, [withdrawals, affiliates, isSuperAdmin, activeCompanyId]);
+
+  const pendingWithdrawals = scopedWithdrawals.filter(w => w.status === 'pending');
+  const approvedWithdrawals = scopedWithdrawals.filter(w => w.status === 'approved');
+  const rejectedWithdrawals = scopedWithdrawals.filter(w => w.status === 'rejected');
+  const pendingAmount = pendingWithdrawals.reduce((sum, w) => sum + (w.amount || 0), 0);
+  const approvedAmount = approvedWithdrawals.reduce((sum, w) => sum + (w.amount || 0), 0);
+
+  const displayedWithdrawals = scopedWithdrawals.filter(w => {
+    if (payoutStatusFilter === 'all') return true;
+    return w.status === payoutStatusFilter;
+  });
+
+  const currentInspecting = inspectingAgent || scopedAffiliates[0] || null;
 
   // System Agent Totals
   const totalAgents = scopedAffiliates.length;
   const activeAgents = scopedAffiliates.filter(a => a.isActive !== false && a.status !== 'suspended').length;
   const totalSystemCommission = scopedAffiliates.reduce((sum, a) => sum + (a.totalEarned || 0), 0);
   const totalSystemBalance = scopedAffiliates.reduce((sum, a) => sum + (a.balance || 0), 0);
-  const pendingPayoutsCount = scopedWithdrawals.filter(w => w.status === 'pending').length;
+  const pendingPayoutsCount = pendingWithdrawals.length;
 
   // 1. DEDICATED AGENT WORKSPACE VIEW (When logged in as an Agent)
   if (isAgent) {
@@ -261,71 +280,12 @@ export default function AffiliateProgramPanel({
     );
   }
 
-  // 2. ADMIN INSPECTING INDIVIDUAL AGENT PERFORMANCE
-  if (inspectingAgent) {
-    const agentComp = companies.find(c => sameId(c.id, inspectingAgent.companyId)) || companies[0];
-    const agentSales = (sales || []).filter(s => s.affiliateId === inspectingAgent.id);
-    const agentWithdrawals = (withdrawals || []).filter(w => w.affiliateId === inspectingAgent.id);
-
-    return (
-      <div className="space-y-4">
-        <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-xs flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setInspectingAgent(null)}
-              className="px-3.5 py-2 rounded-xl border border-gray-200 bg-gray-50 hover:bg-gray-100 text-gray-700 text-xs font-bold flex items-center gap-2 cursor-pointer transition shadow-2xs"
-            >
-              <ArrowLeft className="w-4 h-4 text-brand" />
-              <span>{t('Rudi kwenye Orodha ya Mawakala')}</span>
-            </button>
-            <div>
-              <div className="text-sm font-black text-gray-900 flex items-center gap-2">
-                <span>{t('Utendaji wa Wakala')}: {inspectingAgent.name}</span>
-                <span className="font-mono text-xs px-2.5 py-0.5 rounded-md bg-brand/10 text-brand font-bold">
-                  {inspectingAgent.referralCode}
-                </span>
-              </div>
-              <p className="text-xs text-gray-500 font-medium">
-                {inspectingAgent.phone} • {inspectingAgent.region || 'Tanzania'}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className={`px-3 py-1 rounded-full text-xs font-bold ${
-              inspectingAgent.isActive !== false && inspectingAgent.status !== 'suspended'
-                ? 'bg-emerald-100 text-emerald-800'
-                : 'bg-red-100 text-red-800'
-            }`}>
-              {inspectingAgent.isActive !== false && inspectingAgent.status !== 'suspended' ? '● ' + t('Active Agent') : '● ' + t('Suspended')}
-            </span>
-          </div>
-        </div>
-
-        <AgentPerformancePortal
-          currentUser={user}
-          affiliate={inspectingAgent}
-          company={agentComp}
-          affiliateSales={agentSales}
-          affiliateWithdrawals={agentWithdrawals}
-          affiliateClicks={clicks || []}
-          orders={orders || []}
-          minWithdrawal={minWithdrawal || 10000}
-          activeCurrency={activeCurrency}
-          activeExchangeRate={activeExchangeRate}
-          onRequestWithdrawal={onRequestWithdrawal}
-          t={t}
-        />
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-4">
       {/* Admin Mode Tab Navigation */}
       {isAdmin && (
         <div className="flex items-center justify-between gap-3 flex-wrap border-b border-gray-200 pb-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={() => setActiveTab('agents')}
               className={`px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${
@@ -346,10 +306,25 @@ export default function AffiliateProgramPanel({
             >
               <WalletIcon className="w-4 h-4" /> {t('Maombi ya Malipo (Payouts)')}
               {pendingPayoutsCount > 0 && (
-                <span className="bg-amber-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full">
-                  {pendingPayoutsCount}
+                <span className="bg-amber-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full animate-pulse">
+                  {pendingPayoutsCount} {t('Mpya')}
                 </span>
               )}
+            </button>
+            <button
+              onClick={() => {
+                if (!inspectingAgent && scopedAffiliates.length > 0) {
+                  setInspectingAgent(scopedAffiliates[0]);
+                }
+                setActiveTab('performance');
+              }}
+              className={`px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'performance'
+                  ? 'bg-brand text-white shadow-sm'
+                  : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              <TrendingUp className="w-4 h-4" /> {t('Utendaji wa Kila Wakala (Performance)')}
             </button>
             <button
               onClick={() => setActiveTab('my-link')}
@@ -359,7 +334,7 @@ export default function AffiliateProgramPanel({
                   : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'
               }`}
             >
-              <Share2 className="w-4 h-4" /> {t('Link Yangu ya Kibinafsi')}
+              <Share2 className="w-4 h-4" /> {t('Link Yangu')}
             </button>
           </div>
 
@@ -506,7 +481,10 @@ export default function AffiliateProgramPanel({
                             <div className="flex items-center justify-end gap-1">
                               <button
                                 type="button"
-                                onClick={() => setInspectingAgent(ag)}
+                                onClick={() => {
+                                  setInspectingAgent(ag);
+                                  setActiveTab('performance');
+                                }}
                                 className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-brand bg-brand/10 hover:bg-brand/20 flex items-center gap-1 cursor-pointer transition shadow-2xs mr-1"
                                 title={t('Tazama Utendaji wa Wakala')}
                               >
@@ -548,99 +526,334 @@ export default function AffiliateProgramPanel({
         </div>
       )}
 
-      {/* ================= 2. ADMIN WITHDRAWALS TAB ================= */}
+      {/* ================= 2. ADMIN WITHDRAWALS (PAYOUTS) TAB ================= */}
       {isAdmin && activeTab === 'withdrawals' && (
-        <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-4 shadow-xs">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <h3 className="text-sm font-black text-gray-900">{t('Maombi ya Kutoa Pesa ya Mawakala (Payouts)')}</h3>
-              <p className="text-xs text-gray-500 mt-0.5">{t('Thibitisha na idhinisha malipo ya kamisheni kwa namba za simu za M-Pesa.')}</p>
+        <div className="space-y-4">
+          {/* Payout Summary Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-gray-500 uppercase">{t('Jumla ya Maombi')}</span>
+                <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                  <CreditCard className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="text-xl font-black text-gray-900 mt-1">{scopedWithdrawals.length}</div>
+              <div className="text-[11px] text-gray-500 mt-0.5">{t('Maombi yote ya kutoa fedha')}</div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-amber-200 bg-amber-50/30 p-4 shadow-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-amber-700 uppercase">{t('Yanasubiri Idhini')}</span>
+                <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                  <Clock3 className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="text-xl font-black text-amber-900 mt-1">{TZS(pendingAmount)}</div>
+              <div className="text-[11px] text-amber-700 font-bold mt-0.5">{pendingWithdrawals.length} {t('maombi hayajalipwa')}</div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-emerald-200 bg-emerald-50/30 p-4 shadow-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-emerald-700 uppercase">{t('Yaliyolipwa Kikamilifu')}</span>
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                  <CheckCircle2 className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="text-xl font-black text-emerald-900 mt-1">{TZS(approvedAmount)}</div>
+              <div className="text-[11px] text-emerald-700 font-bold mt-0.5">{approvedWithdrawals.length} {t('yamethibitishwa')}</div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-red-600 uppercase">{t('Yaliyokataliwa')}</span>
+                <div className="w-8 h-8 rounded-xl bg-red-50 text-red-600 flex items-center justify-center">
+                  <XCircle className="w-4 h-4" />
+                </div>
+              </div>
+              <div className="text-xl font-black text-gray-900 mt-1">{rejectedWithdrawals.length}</div>
+              <div className="text-[11px] text-gray-500 mt-0.5">{t('Maombi yaliyofutwa au kukataliwa')}</div>
             </div>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead className="bg-gray-50 text-gray-500 font-bold uppercase text-[10px] border-b">
-                <tr>
-                  <th className="px-4 py-2.5">{t('Tarehe')}</th>
-                  <th className="px-4 py-2.5">{t('Wakala')}</th>
-                  {isSuperAdmin && <th className="px-4 py-2.5">{t('Kampuni')}</th>}
-                  <th className="px-4 py-2.5">{t('Njia & Akaunti')}</th>
-                  <th className="px-4 py-2.5 text-right">{t('Kiasi')}</th>
-                  <th className="px-4 py-2.5 text-center">{t('Hali')}</th>
-                  <th className="px-4 py-2.5 text-right">{t('Vitendo')}</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {scopedWithdrawals.length === 0 ? (
+          {/* Withdrawals Table Container */}
+          <div className="bg-white rounded-2xl border border-gray-200 p-5 space-y-4 shadow-xs">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <h3 className="text-sm font-black text-gray-900 flex items-center gap-2">
+                  <WalletIcon className="w-4 h-4 text-brand" />
+                  {t('Maombi ya Malipo ya Mawakala (Agent Payouts)')}
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {t('Tazama maombi ya mawakala, fanya malipo kwa namba zao za simu/benki, na weka namba ya kumbukumbu (Reference).')}
+                </p>
+              </div>
+
+              {/* Status filter tabs */}
+              <div className="flex items-center gap-1.5 bg-gray-100 p-1 rounded-xl">
+                <button
+                  type="button"
+                  onClick={() => setPayoutStatusFilter('all')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
+                    payoutStatusFilter === 'all' ? 'bg-white text-gray-900 shadow-2xs' : 'text-gray-500 hover:text-gray-900'
+                  }`}
+                >
+                  {t('Zote')} ({scopedWithdrawals.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPayoutStatusFilter('pending')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
+                    payoutStatusFilter === 'pending' ? 'bg-amber-500 text-white shadow-2xs' : 'text-amber-700 hover:text-amber-900'
+                  }`}
+                >
+                  {t('Inasubiri')} ({pendingWithdrawals.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPayoutStatusFilter('approved')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
+                    payoutStatusFilter === 'approved' ? 'bg-emerald-600 text-white shadow-2xs' : 'text-emerald-700 hover:text-emerald-900'
+                  }`}
+                >
+                  {t('Zilizoidhinishwa')} ({approvedWithdrawals.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPayoutStatusFilter('rejected')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition ${
+                    payoutStatusFilter === 'rejected' ? 'bg-red-600 text-white shadow-2xs' : 'text-red-600 hover:text-red-800'
+                  }`}
+                >
+                  {t('Zilizokataliwa')} ({rejectedWithdrawals.length})
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-gray-50 text-gray-500 font-bold uppercase text-[10px] border-b border-gray-100">
                   <tr>
-                    <td colSpan={isSuperAdmin ? 7 : 6} className="px-4 py-8 text-center text-gray-400">
-                      {t('Hakuna maombi ya kutoa pesa bado.')}
-                    </td>
+                    <th className="px-4 py-3">{t('Tarehe')}</th>
+                    <th className="px-4 py-3">{t('Wakala')}</th>
+                    {isSuperAdmin && <th className="px-4 py-3">{t('Kampuni')}</th>}
+                    <th className="px-4 py-3">{t('Njia & Akaunti ya Malipo')}</th>
+                    <th className="px-4 py-3 text-right">{t('Kiasi')}</th>
+                    <th className="px-4 py-3 text-center">{t('Hali')}</th>
+                    <th className="px-4 py-3">{t('Kumbukumbu / Note')}</th>
+                    <th className="px-4 py-3 text-right">{t('Vitendo')}</th>
                   </tr>
-                ) : (
-                  scopedWithdrawals.map(w => {
-                    const ag = affiliates.find(a => a.id === w.affiliateId);
-                    const comp = companies.find(c => c.id === w.companyId || c.id === ag?.companyId);
-                    return (
-                      <tr key={w.id} className="hover:bg-gray-50">
-                        <td className="px-4 py-3 text-gray-500 font-mono">
-                          {new Date(w.requestedAt).toLocaleDateString()}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="font-black text-gray-900">{ag?.name || `Agent #${w.affiliateId}`}</div>
-                          <div className="text-[10px] font-mono text-gray-500">{ag?.referralCode}</div>
-                        </td>
-                        {isSuperAdmin && (
-                          <td className="px-4 py-3 text-gray-700 font-semibold">
-                            {comp ? comp.name : t('Global')}
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {displayedWithdrawals.length === 0 ? (
+                    <tr>
+                      <td colSpan={isSuperAdmin ? 8 : 7} className="px-4 py-12 text-center text-gray-400">
+                        <CreditCard className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                        <div className="font-bold text-gray-600">{t('Hakuna maombi ya malipo katika sehemu hii.')}</div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">{t('Maombi mapya ya mawakala yataonekana hapa pindi wakala anapoomba kutoa kamisheni.')}</div>
+                      </td>
+                    </tr>
+                  ) : (
+                    displayedWithdrawals.map(w => {
+                      const ag = (affiliates || []).find(a => a.id === w.affiliateId);
+                      const comp = companies.find(c => sameId(c.id, w.companyId) || sameId(c.id, ag?.companyId));
+                      return (
+                        <tr key={w.id} className="hover:bg-gray-50/60 transition">
+                          <td className="px-4 py-3.5 text-gray-500 font-mono">
+                            <div>{new Date(w.requestedAt).toLocaleDateString()}</div>
+                            <div className="text-[10px] text-gray-400">{new Date(w.requestedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
                           </td>
-                        )}
-                        <td className="px-4 py-3">
-                          <div className="font-mono font-bold text-gray-900">{w.phoneNumber}</div>
-                          <div className="text-[10px] text-gray-500 font-bold uppercase">
-                            {w.method || 'M-Pesa'}{w.bankName ? ` (${w.bankName})` : ''}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3 text-right font-black text-emerald-700">
-                          {TZS(w.amount)}
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                            w.status === 'approved' ? 'bg-emerald-100 text-emerald-800' :
-                            w.status === 'rejected' ? 'bg-red-100 text-red-800' :
-                            'bg-amber-100 text-amber-800'
-                          }`}>
-                            {w.status === 'approved' ? '✓ Imelipwa' : w.status === 'rejected' ? 'Imekataliwa' : 'Inasubiri'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          {w.status === 'pending' && onDecideWithdrawal && (
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => onDecideWithdrawal(w.id, 'approved')}
-                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold cursor-pointer shadow-xs"
-                              >
-                                {t('Idhinisha')}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => onDecideWithdrawal(w.id, 'rejected')}
-                                className="px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-xs font-bold cursor-pointer"
-                              >
-                                {t('Kataa')}
-                              </button>
+                          <td className="px-4 py-3.5">
+                            <div className="font-black text-gray-900">{ag?.name || `Agent #${w.affiliateId}`}</div>
+                            <div className="flex items-center gap-1.5 mt-0.5">
+                              <span className="text-[10px] font-mono text-brand font-bold bg-brand/10 px-1.5 py-0.2 rounded">
+                                {ag?.referralCode || 'N/A'}
+                              </span>
+                              <span className="text-[10px] text-gray-500">{ag?.phone}</span>
                             </div>
+                          </td>
+                          {isSuperAdmin && (
+                            <td className="px-4 py-3.5 text-gray-700 font-semibold">
+                              {comp ? comp.name : t('Global')}
+                            </td>
                           )}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                          <td className="px-4 py-3.5">
+                            <div className="font-mono font-black text-gray-900">{w.phoneNumber || (w as any).accountNumber}</div>
+                            <div className="text-[10px] text-gray-600 font-bold uppercase flex items-center gap-1 mt-0.5">
+                              <Smartphone className="w-3 h-3 text-emerald-600" />
+                              <span>{w.method || 'M-Pesa'}</span>
+                              {w.bankName && <span className="text-gray-400">({w.bankName})</span>}
+                            </div>
+                            {(w as any).accountName && (
+                              <div className="text-[10px] text-gray-500 font-medium">Jina: {(w as any).accountName}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3.5 text-right font-black text-emerald-700 text-sm">
+                            {TZS(w.amount)}
+                          </td>
+                          <td className="px-4 py-3.5 text-center">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                              w.status === 'approved' ? 'bg-emerald-100 text-emerald-800' :
+                              w.status === 'rejected' ? 'bg-red-100 text-red-800' :
+                              'bg-amber-100 text-amber-800 animate-pulse'
+                            }`}>
+                              {w.status === 'approved' && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
+                              {w.status === 'rejected' && <XCircle className="w-3 h-3 text-red-600" />}
+                              {w.status === 'pending' && <Clock3 className="w-3 h-3 text-amber-600" />}
+                              {w.status === 'approved' ? t('✓ Imelipwa') : w.status === 'rejected' ? t('Imekataliwa') : t('Inasubiri Malipo')}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            {w.paymentReference && (
+                              <div className="font-mono text-[11px] font-bold text-gray-900 bg-gray-100 px-2 py-0.5 rounded inline-block">
+                                Ref: {w.paymentReference}
+                              </div>
+                            )}
+                            {w.adminNote && (
+                              <div className="text-[10px] text-gray-500 italic mt-0.5">
+                                "{w.adminNote}"
+                              </div>
+                            )}
+                            {!w.paymentReference && !w.adminNote && (
+                              <span className="text-gray-300 text-[10px]">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3.5 text-right">
+                            {w.status === 'pending' && onDecideWithdrawal ? (
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setProcessingPayout(w);
+                                    setPayoutPaymentRef('');
+                                    setPayoutAdminNote('');
+                                  }}
+                                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-black cursor-pointer shadow-xs transition flex items-center gap-1"
+                                  title={t('Fanya Malipo na Idhinisha')}
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>{t('Lipa / Idhinisha')}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setRejectingPayout(w);
+                                    setRejectionReason('');
+                                  }}
+                                  className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-xs font-bold cursor-pointer transition flex items-center gap-1"
+                                  title={t('Kataa Ombi la Malipo')}
+                                >
+                                  <XCircle className="w-3.5 h-3.5" />
+                                  <span>{t('Kataa')}</span>
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-[11px] text-gray-400 font-semibold">{t('Imekamilika')}</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
+        </div>
+      )}
+
+      {/* ================= 3. AGENT PERFORMANCE INSPECTOR TAB (Integrated Agent Workspace) ================= */}
+      {isAdmin && activeTab === 'performance' && (
+        <div className="space-y-4">
+          {/* Top Inspector Switcher Bar */}
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-xs flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setActiveTab('agents')}
+                className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-bold cursor-pointer flex items-center gap-1.5 transition"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>{t('Rudi Orodha')}</span>
+              </button>
+              <div>
+                <h3 className="text-sm font-black text-gray-900 flex items-center gap-1.5">
+                  <BarChart3 className="w-4 h-4 text-brand" />
+                  {t('Utendaji wa Wakala (Agent Performance Inspector)')}
+                </h3>
+                <p className="text-xs text-gray-500">{t('Chagua wakala hapa chini kutazama workspace yake, mauzo, mibofyo na maombi ya kutoa fedha.')}</p>
+              </div>
+            </div>
+
+            {/* Agent Selector Dropdown */}
+            {scopedAffiliates.length > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-gray-600 hidden sm:inline">{t('Chagua Wakala:')}</span>
+                <select
+                  value={currentInspecting?.id || ''}
+                  onChange={e => {
+                    const found = scopedAffiliates.find(a => a.id === Number(e.target.value));
+                    if (found) setInspectingAgent(found);
+                  }}
+                  className="px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl text-xs font-bold text-gray-900 outline-none focus:ring-2 focus:ring-brand cursor-pointer shadow-2xs"
+                >
+                  {scopedAffiliates.map(a => (
+                    <option key={a.id} value={a.id}>
+                      {a.name} ({a.referralCode}) — {a.region || 'Tanzania'}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {/* Embedded Agent Workspace Portal */}
+          {currentInspecting ? (
+            <div className="border-t border-gray-100 pt-1">
+              <div className="mb-3 px-1 flex items-center justify-between text-xs text-gray-500">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-gray-700">{t('Unatazama:')} <strong className="text-brand font-black">{currentInspecting.name}</strong></span>
+                  <span className="font-mono text-[11px] bg-brand/10 text-brand px-2 py-0.5 rounded font-bold">{currentInspecting.referralCode}</span>
+                  <span className="text-gray-400">·</span>
+                  <span>{currentInspecting.region || 'Tanzania'}</span>
+                </div>
+                <div className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                  {t('Kamisheni:')} {currentInspecting.commissionPercent || commissionPercent}%
+                </div>
+              </div>
+
+              <AgentPerformancePortal
+                currentUser={user}
+                affiliate={currentInspecting}
+                company={companies.find(c => sameId(c.id, currentInspecting.companyId || activeCompanyId)) || companies[0]}
+                affiliateSales={(sales || []).filter(s => s.affiliateId === currentInspecting.id)}
+                affiliateWithdrawals={(withdrawals || []).filter(w => w.affiliateId === currentInspecting.id)}
+                affiliateClicks={clicks || []}
+                orders={orders || []}
+                minWithdrawal={minWithdrawal || 10000}
+                activeCurrency={activeCurrency}
+                activeExchangeRate={activeExchangeRate}
+                onRequestWithdrawal={onRequestWithdrawal}
+                t={t}
+              />
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl border border-gray-200 p-12 text-center text-gray-400">
+              <Users className="w-10 h-10 mx-auto mb-2 text-gray-300" />
+              <div className="font-black text-gray-700 text-sm">{t('Hakuna wakala aliyesajiliwa bado.')}</div>
+              <p className="text-xs text-gray-400 mt-1">{t('Nenda kwenye kichupo cha "Mawakala Wote" na usajili wakala mpya ili kuona utendaji wake hapa.')}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('agents');
+                  setShowCreateModal(true);
+                }}
+                className="mt-4 px-4 py-2 bg-brand text-white rounded-xl text-xs font-black cursor-pointer shadow-sm hover:bg-brand/90 transition"
+              >
+                + {t('Sajili Wakala wa Kwanza')}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -948,6 +1161,176 @@ export default function AffiliateProgramPanel({
                   className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md cursor-pointer transition flex items-center gap-1.5"
                 >
                   <Plus className="w-4 h-4" /> {t('Kamilisha Usajili wa Wakala')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: APPROVE & PAY AGENT ================= */}
+      {processingPayout && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto" onClick={() => setProcessingPayout(null)}>
+          <div className="bg-white rounded-2xl border border-gray-200 p-6 w-full max-w-md space-y-4 shadow-2xl my-8 animate-in fade-in" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                  <CreditCard className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-gray-900">{t('Idhinisha & Kamilisha Malipo ya Wakala')}</h4>
+                  <p className="text-[11px] text-gray-500">{t('Weka namba ya kumbukumbu ya muamala kisha thibitisha.')}</p>
+                </div>
+              </div>
+              <button onClick={() => setProcessingPayout(null)} className="p-1 rounded-lg text-gray-400 hover:bg-gray-100 cursor-pointer">✕</button>
+            </div>
+
+            {/* Payout Details Card */}
+            <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500 font-semibold">{t('Wakala:')}</span>
+                <span className="font-black text-gray-900">
+                  {affiliates.find(a => a.id === processingPayout.affiliateId)?.name || `Agent #${processingPayout.affiliateId}`}
+                </span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500 font-semibold">{t('Namba / Akaunti:')}</span>
+                <span className="font-mono font-bold text-gray-900">{processingPayout.phoneNumber || (processingPayout as any).accountNumber}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-gray-500 font-semibold">{t('Njia ya Malipo:')}</span>
+                <span className="font-bold text-gray-800 uppercase">{processingPayout.method || 'M-Pesa'}{processingPayout.bankName ? ` (${processingPayout.bankName})` : ''}</span>
+              </div>
+              <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+                <span className="text-gray-700 font-bold">{t('Kiasi cha Kulipa:')}</span>
+                <span className="text-base font-black text-emerald-700">{TZS(processingPayout.amount)}</span>
+              </div>
+            </div>
+
+            <form
+              onSubmit={e => {
+                e.preventDefault();
+                if (onDecideWithdrawal && processingPayout) {
+                  onDecideWithdrawal(processingPayout.id, 'approved', {
+                    paymentReference: payoutPaymentRef.trim() || undefined,
+                    adminNote: payoutAdminNote.trim() || undefined
+                  });
+                }
+                setProcessingPayout(null);
+                setPayoutPaymentRef('');
+                setPayoutAdminNote('');
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="text-xs font-bold text-gray-700 block mb-1">
+                  {t('Namba ya Kumbukumbu ya Malipo (Transaction Ref / Code)')}
+                </label>
+                <input
+                  type="text"
+                  value={payoutPaymentRef}
+                  onChange={e => setPayoutPaymentRef(e.target.value)}
+                  placeholder="Mfano: QK84920489 au TXN-10492"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-mono font-bold outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+                <p className="text-[10px] text-gray-400 mt-1">
+                  {t('Weka namba ya muamala ya M-Pesa, Tigo au benki uliyolipia ili iwe kumbukumbu rasmi.')}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-gray-700 block mb-1">
+                  {t('Ujumbe / Maelezo ya Ziada (Hiari)')}
+                </label>
+                <input
+                  type="text"
+                  value={payoutAdminNote}
+                  onChange={e => setPayoutAdminNote(e.target.value)}
+                  placeholder="Mfano: Malipo ya kamisheni ya mwezi huu yamekamilika"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-semibold outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setProcessingPayout(null)}
+                  className="px-4 py-2 border border-gray-300 rounded-xl text-xs font-bold text-gray-600 hover:bg-gray-50 cursor-pointer"
+                >
+                  {t('Ghairi')}
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md cursor-pointer transition flex items-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" /> {t('Kamilisha & Idhinisha Malipo')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ================= MODAL: REJECT PAYOUT ================= */}
+      {rejectingPayout && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 overflow-y-auto" onClick={() => setRejectingPayout(null)}>
+          <div className="bg-white rounded-2xl border border-gray-200 p-6 w-full max-w-md space-y-4 shadow-2xl my-8 animate-in fade-in" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-red-100 text-red-700 flex items-center justify-center">
+                  <XCircle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-gray-900">{t('Kataa Ombi la Malipo')}</h4>
+                  <p className="text-[11px] text-gray-500">{t('Salio litarudishwa kwenye akaunti ya wakala.')}</p>
+                </div>
+              </div>
+              <button onClick={() => setRejectingPayout(null)} className="p-1 rounded-lg text-gray-400 hover:bg-gray-100 cursor-pointer">✕</button>
+            </div>
+
+            <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-800">
+              {t('Una uhakika unataka kukataa ombi la')} <strong>{TZS(rejectingPayout.amount)}</strong> {t('kwa')} <strong>{affiliates.find(a => a.id === rejectingPayout.affiliateId)?.name || `Agent #${rejectingPayout.affiliateId}`}</strong>?
+            </div>
+
+            <form
+              onSubmit={e => {
+                e.preventDefault();
+                if (onDecideWithdrawal && rejectingPayout) {
+                  onDecideWithdrawal(rejectingPayout.id, 'rejected', {
+                    adminNote: rejectionReason.trim() || undefined
+                  });
+                }
+                setRejectingPayout(null);
+                setRejectionReason('');
+              }}
+              className="space-y-3"
+            >
+              <div>
+                <label className="text-xs font-bold text-gray-700 block mb-1">
+                  {t('Sababu ya Kukataa (Itaonekana kwa Wakala)')}
+                </label>
+                <textarea
+                  rows={3}
+                  value={rejectionReason}
+                  onChange={e => setRejectionReason(e.target.value)}
+                  placeholder="Mfano: Namba ya simu ya M-Pesa si sahihi au haipatikani..."
+                  className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs font-semibold outline-none focus:ring-2 focus:ring-red-500"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRejectingPayout(null)}
+                  className="px-4 py-2 border border-gray-300 rounded-xl text-xs font-bold text-gray-600 hover:bg-gray-50 cursor-pointer"
+                >
+                  {t('Ghairi')}
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black shadow-md cursor-pointer transition flex items-center gap-1.5"
+                >
+                  <XCircle className="w-4 h-4" /> {t('Kataa Ombi')}
                 </button>
               </div>
             </form>

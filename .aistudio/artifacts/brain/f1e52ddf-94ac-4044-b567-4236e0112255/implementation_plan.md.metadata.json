@@ -1,6 +1,0 @@
-{
-  "summary":  "Hardware-grade WebAuthn biometric fingerprint authentication with discoverable passkeys, removal of insecure public account dropdowns, strict hardware verification, and condition-gated sign-in visibility.",
-  "updatedAt":  "2026-11-07T14:45:39.532402235Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

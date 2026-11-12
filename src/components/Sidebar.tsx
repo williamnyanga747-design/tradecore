@@ -98,6 +98,7 @@ function SidebarInner({
     'report-unit-velocity', 'report-tax-vat', 'report-predictive-ai',
     'user-info', 'user-access',
     'marketplace-orders', 'marketplace-settings', 'seller-wallet', 'seller-phase2c', 'affiliate-program', 'agent-workspace', 'agent_workspace', 'qr-code-yangu', 'sauti-search', 'tra-report', 'profile'
+  ];
   const isAgentRole = currentUser?.role === 'Agent' || (currentUser as any)?.affiliateId != null;
   const pages = isAgentRole
     ? (allowedPages && allowedPages.length > 0 ? allowedPages.filter(p => p !== 'dashboard') : ['affiliate-program', 'profile'])
